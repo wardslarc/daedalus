@@ -50,7 +50,7 @@ Done when: Bilyo imports, the kit lands on `daedalus/kit`, profile rules are sav
 Imports from a URL clone to `~/work/<name>` for Work projects (WSL file system) and
 `~/projects/<name>` for Client and Personal.
 
-- [ ] **T2.1 Kit template** `[claude]` — [[SPEC#Projects hub]]
+- [x] **T2.1 Kit template** `[claude]` — [[SPEC#Projects hub]]
   `kit/`: AGENTS.md, CLAUDE.md, docs/INTAKE.md, docs/SPEC.md, docs/PLAN.md, docs/decisions/,
   .editorconfig, .claudeignore — generic versions of this repo's own scaffold, with placeholders.
   check: `pnpm --filter @daedalus/kit test` (manifest lists every file; no file names a real project)
