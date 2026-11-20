@@ -6,13 +6,14 @@
  * survives Next's dev reloads).
  */
 import type { DaedalusDb } from "@daedalus/db";
-import type { ImportInput, importProject } from "@daedalus/projects";
+import type { CreateInput, createProject, ImportInput, importProject } from "@daedalus/projects";
 
 export type Services = {
   db: DaedalusDb;
   dataDir: string;
   repoRoot: string;
   importProject(input: ImportInput): ReturnType<typeof importProject>;
+  createProject(input: CreateInput): ReturnType<typeof createProject>;
 };
 
 export const SERVICES_KEY = Symbol.for("daedalus.services");
