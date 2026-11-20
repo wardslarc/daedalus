@@ -44,9 +44,48 @@ implements, and a check. `[you]` = learning mode: the owner writes it.
   Vitest, Playwright, lint, root `pnpm typecheck` / `pnpm test`.
   check: `pnpm typecheck && pnpm test` green
 
-## M2–M9 (outline)
+## M2 — Projects and profiles
 
-- M2 Projects and profiles — import with auto-kit, profile rules — [[SPEC#Projects hub]] [[SPEC#Profiles]]
+Done when: Bilyo imports, the kit lands on `daedalus/kit`, profile rules are saved.
+Imports from a URL clone to `~/work/<name>` for Work projects (WSL file system) and
+`~/projects/<name>` for Client and Personal.
+
+- [ ] **T2.1 Kit template** `[claude]` — [[SPEC#Projects hub]]
+  `kit/`: AGENTS.md, CLAUDE.md, docs/INTAKE.md, docs/SPEC.md, docs/PLAN.md, docs/decisions/,
+  .editorconfig, .claudeignore — generic versions of this repo's own scaffold, with placeholders.
+  check: `pnpm --filter @daedalus/kit test` (manifest lists every file; no file names a real project)
+- [ ] **T2.2 Profile rules** `[claude]` — [[SPEC#Profiles]]
+  `packages/core/profiles.ts`: Work / Client / Personal rules (git host, Gemini allowed,
+  skip-permissions forbidden on Work, learning mode on Personal) and server-side guards such as
+  `assertProviderAllowed(project, provider)`. Not the task state machine (M5, owner).
+  check: unit tests, including "a Work project can't be given to Gemini through the API"
+- [ ] **T2.3 Git basics** `[gemini]` — [[SPEC#Projects hub]]
+  `packages/git`: init, current branch, create branch, commit given files, detect GitHub/GitLab
+  from the remote, clone. Plain `git` via child_process with argument arrays, never a shell.
+  check: `pnpm --filter @daedalus/git test` against temp repos
+- [ ] **T2.4 Import project** `[claude]` — [[SPEC#Projects hub]] [[SPEC#Profiles]]
+  `POST /api/projects/import` (local folder or GitHub/GitLab URL): validate the path or URL,
+  clone to the profile's folder if needed, add missing kit files on branch `daedalus/kit`
+  (main untouched), save the project row with its profile. Wires `@daedalus/db` into the server.
+  check: e2e imports a fixture repo; `git log main` unchanged; kit commit exists on `daedalus/kit`
+- [ ] **T2.5 New project from kit** `[gemini]` — [[SPEC#Projects hub]]
+  `POST /api/projects/new`: new folder in the profile's folder, `git init`, copy kit, first
+  commit, project row.
+  check: e2e creates a project; the folder has the kit and one commit
+- [ ] **T2.6 Projects hub screen** `[gemini]` — [[SPEC#Projects hub]]
+  Cards from the DB (name, profile, stage, running agents, items waiting), profile filter,
+  search, Import and New dialogs, "Merge kit" button. Matches `docs/design/layout.md`.
+  check: screenshot vs design with three fixture projects
+- [ ] **T2.7 Profile settings** `[gemini]` — [[SPEC#Profiles]]
+  Per-project profile and overrides (e.g. Gemini allowed for one client) saved through the API,
+  always validated by T2.2's rules on the server.
+  check: e2e — a Work project's "Gemini allowed" can't be turned on, even by a direct POST
+- [ ] **T2.8 Bilyo import** `[you]`
+  Import Bilyo for real and review its `daedalus/kit` branch.
+  check: the M2 done-when above
+
+## M3–M9 (outline)
+
 - M3 Workshop — ACP sessions in xterm.js — [[SPEC#Workshop]]
 - M4 Project chat — [[SPEC#Project chat]]
 - M5 Pipeline and runner — task state machine `[you]` — [[SPEC#Pipeline]] [[SPEC#Task runner]]
