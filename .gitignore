@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .next/
+next-env.d.ts
 *.log
 .env
 .env.*
@@ -8,5 +9,9 @@ dist/
 # Daedalus runtime data (SQLite, run logs) — never commit
 .daedalus-data/
 spikes/out/
+# Test outputs
+test-results/
+playwright-report/
+coverage/
 .DS_Store
 Thumbs.db
