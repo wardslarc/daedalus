@@ -68,11 +68,11 @@ Imports from a URL clone to `~/work/<name>` for Work projects (WSL file system) 
   clone to the profile's folder if needed, add missing kit files on branch `daedalus/kit`
   (main untouched), save the project row with its profile. Wires `@daedalus/db` into the server.
   check: e2e imports a fixture repo; `git log main` unchanged; kit commit exists on `daedalus/kit`
-- [ ] **T2.5 New project from kit** `[gemini]` — [[SPEC#Projects hub]]
+- [x] **T2.5 New project from kit** `[gemini]` — [[SPEC#Projects hub]]
   `POST /api/projects/new`: new folder in the profile's folder, `git init`, copy kit, first
   commit, project row.
   check: e2e creates a project; the folder has the kit and one commit
-- [ ] **T2.6 Projects hub screen** `[gemini]` — [[SPEC#Projects hub]]
+- [x] **T2.6 Projects hub screen** `[gemini]` — [[SPEC#Projects hub]]
   Cards from the DB (name, profile, stage, running agents, items waiting), profile filter,
   search, Import and New dialogs, "Merge kit" button. Matches `docs/design/layout.md`.
   check: screenshot vs design with three fixture projects

@@ -1,9 +1,11 @@
 /** Server-only: builds the services object (server.ts calls this before serving). */
+import { existsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { openDb, projects } from "@daedalus/db";
-import { ImportError, importProject, mergeKit, realGitOps } from "@daedalus/projects";
+import { branchExists } from "@daedalus/git";
+import { createProject, ImportError, importProject, mergeKit, realGitOps } from "@daedalus/projects";
 import { SERVICES_KEY, type Services, type ServicesHolder } from "./services.js";
 
 export type ServicesOptions = { dataDir: string; repoRoot: string };
@@ -14,6 +16,7 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
   const existing = holder[SERVICES_KEY];
   if (existing) return existing;
   const db = openDb(join(dataDir, "daedalus.db"));
+  const home = process.env.DAE_PROJECTS_HOME || homedir();
   const services: Services = {
     db,
     dataDir,
@@ -22,11 +25,37 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
       importProject(input, {
         db,
         git: realGitOps,
-        home: homedir(),
+        home,
         forbiddenRoots: [repoRoot, dataDir],
         tmpRoot: tmpdir(),
         today: new Date().toISOString().slice(0, 10),
       }),
+    createProject: (input) =>
+      createProject(input, {
+        db,
+        git: realGitOps,
+        home,
+        today: new Date().toISOString().slice(0, 10),
+      }),
+    listProjects: async () => {
+      const rows = db.select().from(projects).all();
+      return Promise.all(
+        rows.map(async (p) => {
+          let kitPending = false;
+          if (existsSync(p.localPath)) {
+            try {
+              kitPending = await branchExists(p.localPath, "daedalus/kit");
+            } catch {
+              kitPending = false;
+            }
+          }
+          return {
+            ...p,
+            kitPending,
+          };
+        }),
+      );
+    },
     mergeKit: async (projectId) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);

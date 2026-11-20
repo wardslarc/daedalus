@@ -3,6 +3,7 @@ import type { GitOps } from "./import.js";
 
 /** The real git implementation of GitOps (@daedalus/git: argument arrays, no shell). */
 export const realGitOps: GitOps = {
+  init: (dir, opts) => git.init(dir, opts),
   isRepo: git.isRepo,
   clone: (url, dest) => git.clone(url, dest),
   branchExists: git.branchExists,

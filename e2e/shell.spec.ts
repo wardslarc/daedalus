@@ -55,6 +55,14 @@ test.describe("app shell", () => {
     await page.goto("/projects");
     await expect(page.getByRole("heading", { level: 1, name: "Projects" })).toBeVisible();
 
+    // The real Space Grotesk face must actually have loaded (status "loaded"), not just be
+    // named in the CSS: if the font download fails, the browser silently uses the fallback.
+    const realFaceLoaded = await page.evaluate(async () => {
+      await document.fonts.ready;
+      return [...document.fonts].some((f) => /Space Grotesk/.test(f.family) && !/Fallback/.test(f.family) && f.status === "loaded");
+    });
+    expect(realFaceLoaded).toBe(true);
+
     const isFontLoaded = await page.evaluate(() => {
       const h1 = document.querySelector("h1");
       const family = h1 ? getComputedStyle(h1).fontFamily : "";

@@ -5,14 +5,20 @@
  * handlers reach them through this object on globalThis (Symbol.for key, so it also
  * survives Next's dev reloads).
  */
-import type { DaedalusDb } from "@daedalus/db";
-import type { ImportInput, importProject, mergeKit } from "@daedalus/projects";
+import type { DaedalusDb, projects } from "@daedalus/db";
+import type { CreateInput, createProject, ImportInput, importProject, mergeKit } from "@daedalus/projects";
+
+export type ProjectWithKit = typeof projects.$inferSelect & {
+  kitPending: boolean;
+};
 
 export type Services = {
   db: DaedalusDb;
   dataDir: string;
   repoRoot: string;
   importProject(input: ImportInput): ReturnType<typeof importProject>;
+  createProject(input: CreateInput): ReturnType<typeof createProject>;
+  listProjects(): Promise<ProjectWithKit[]>;
   /** Merge daedalus/kit into the project's default branch (T2.9). 404 if no such project. */
   mergeKit(projectId: number): ReturnType<typeof mergeKit>;
 };
