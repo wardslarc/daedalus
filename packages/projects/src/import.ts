@@ -15,6 +15,7 @@ const KIT_COMMIT_MESSAGE = "Add Daedalus project kit\n\nMissing kit files added 
 
 /** The git operations import needs; @daedalus/git provides them, tests fake them. */
 export type GitOps = {
+  init?: (dir: string, opts?: { initialBranch?: string }) => Promise<void>;
   isRepo(dir: string): Promise<boolean>;
   clone(url: string, dest: string): Promise<void>;
   branchExists(dir: string, name: string): Promise<boolean>;
