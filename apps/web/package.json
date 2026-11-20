@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@node-rs/argon2": "2.2.2",
     "next": "16.4.5",
     "react": "19.3.1",
     "react-dom": "19.3.1",

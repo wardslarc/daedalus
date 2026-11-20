@@ -5,7 +5,7 @@ personal — runs through one workflow (intake → mock → spec → plan → bu
 review → ship), with **Claude Code** and **Antigravity (Gemini)** as agents,
 connected over the [Agent Client Protocol](https://agentclientprotocol.com).
 
-> Status: **M0 — spikes.** Nothing to run as an app yet.
+> Status: **M1 — skeleton.** The server, login and workspace tooling run; the app shell is next.
 
 ## Docs
 
@@ -19,6 +19,18 @@ connected over the [Agent Client Protocol](https://agentclientprotocol.com).
 - Node 22+, pnpm (via `corepack enable`)
 - Claude Code and Antigravity CLI (`agy`) installed and logged in
 - For work: WSL, with repos inside the WSL file system
+
+## Run it
+
+```bash
+corepack enable
+pnpm install
+pnpm dae set-password   # once: sets the one password (stored as an argon2id hash)
+pnpm dae                # http://127.0.0.1:4317
+```
+
+Checks: `pnpm typecheck && pnpm test && pnpm lint` · end-to-end: `pnpm test:e2e`
+(uses its own port and a throwaway data folder).
 
 ## M0 spikes
 

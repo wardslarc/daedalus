@@ -3,18 +3,15 @@
  * Later milestones mount the WebSocket, job queue, git, docs index and SQLite here.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import nextModule from "next";
+import createNext from "next";
+import { withAuth } from "./src/auth/http.js";
+import { APP_DIR, dataDir } from "./src/data-dir.js";
 import { isAllowedHost } from "./src/host-check.js";
 
 /** Never configurable: Daedalus is local-only (AGENTS.md, SPEC#Security). */
 export const HOST = "127.0.0.1";
 export const DEFAULT_PORT = 4317;
-
-// next is CommonJS: under NodeNext its types put the factory on .default, while at
-// runtime the default import may already be the factory. Accept either.
-const createNext = (nextModule.default ?? nextModule) as typeof nextModule.default;
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 
@@ -51,10 +48,11 @@ function parsePort(raw: string | undefined): number {
 async function main(): Promise<void> {
   const port = parsePort(process.env.DAE_PORT);
   const dev = process.env.NODE_ENV !== "production";
-  const app = createNext({ dev, hostname: HOST, port, dir: dirname(fileURLToPath(import.meta.url)) });
+  const app = createNext({ dev, hostname: HOST, port, dir: APP_DIR });
   await app.prepare();
   const handle = app.getRequestHandler();
-  const server = await listen(port, (req, res) => handle(req, res));
+  const auth = withAuth({ port, dataDir: dataDir() }, (req, res) => handle(req, res));
+  const server = await listen(port, auth.handler);
   console.log(`Daedalus ready on http://${HOST}:${port}${dev ? " (dev)" : ""}`);
 
   const stop = (): void => {

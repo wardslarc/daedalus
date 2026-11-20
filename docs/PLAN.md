@@ -34,7 +34,7 @@ implements, and a check. `[you]` = learning mode: the owner writes it.
 - [ ] **T1.2 SQLite + migrations** `[gemini]` — [[SPEC#Projects hub]]
   `packages/db`: better-sqlite3 + Drizzle, tables from the build plan, first migration.
   check: `pnpm --filter @daedalus/db test`
-- [ ] **T1.3 Login** `[claude]` — [[SPEC#Security]]
+- [x] **T1.3 Login** `[claude]` — [[SPEC#Security]]
   One password (argon2 hash), session cookie, CSRF on posts.
   check: e2e test: wrong password rejected, right password lands on Projects
 - [ ] **T1.4 App shell** `[gemini]` — [[SPEC#Projects hub]]
