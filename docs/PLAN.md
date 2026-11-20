@@ -54,7 +54,7 @@ Imports from a URL clone to `~/work/<name>` for Work projects (WSL file system) 
   `kit/`: AGENTS.md, CLAUDE.md, docs/INTAKE.md, docs/SPEC.md, docs/PLAN.md, docs/decisions/,
   .editorconfig, .claudeignore — generic versions of this repo's own scaffold, with placeholders.
   check: `pnpm --filter @daedalus/kit test` (manifest lists every file; no file names a real project)
-- [ ] **T2.2 Profile rules** `[claude]` — [[SPEC#Profiles]]
+- [x] **T2.2 Profile rules** `[claude]` — [[SPEC#Profiles]]
   `packages/core/profiles.ts`: Work / Client / Personal rules (git host, Gemini allowed,
   skip-permissions forbidden on Work, learning mode on Personal) and server-side guards such as
   `assertProviderAllowed(project, provider)`. Not the task state machine (M5, owner).
