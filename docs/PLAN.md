@@ -6,15 +6,15 @@ implements, and a check. `[you]` = learning mode: the owner writes it.
 
 ## M0 — Spikes (current)
 
-- [~] **T0.1 ACP client spike** `[claude]` — [[SPEC#Providers]]
+- [x] **T0.1 ACP client spike** `[claude]` — [[SPEC#Providers]]
   Start an agent over ACP in a folder, stream its updates, auto-answer
   permission requests, stop cleanly. Works with any ACP command.
   check: `pnpm spike:acp -- claude <test-folder>` prints the agent's reply and exits 0
-- [ ] **T0.2 Antigravity over ACP** `[you]` — [[SPEC#Providers]]
+- [x] **T0.2 Antigravity over ACP** `[you]` — [[SPEC#Providers]]
   Find the launch command for Antigravity's ACP agent on this PC (registry
   entry `antigravity-acp`, or an `agy` flag) and add it to `spikes/providers.json`.
   check: `pnpm spike:acp -- antigravity <test-folder>` prints a reply and exits 0
-- [~] **T0.3 agy headless in node-pty** `[claude]` — [[SPEC#Providers]]
+- [x] **T0.3 agy headless in node-pty** `[claude]` — [[SPEC#Providers]]
   check: `pnpm spike:pty -- <test-folder>` prints agy's answer and exits without hanging
 - [ ] **T0.4 Usage readings** `[you]` — [[SPEC#Usage and quota]]
   Run both spikes and note whether `usage_update` events arrive and what they contain
@@ -40,7 +40,7 @@ implements, and a check. `[you]` = learning mode: the owner writes it.
 - [ ] **T1.4 App shell** `[gemini]` — [[SPEC#Projects hub]]
   Sidebar and empty screens matching the "Daedalus 1.0 Layout" design.
   check: screenshot vs design
-- [ ] **T1.5 Workspace tooling** `[gemini]`
+- [x] **T1.5 Workspace tooling** `[gemini]`
   Vitest, Playwright, lint, root `pnpm typecheck` / `pnpm test`.
   check: `pnpm typecheck && pnpm test` green
 
