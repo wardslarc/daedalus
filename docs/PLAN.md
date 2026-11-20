@@ -80,7 +80,7 @@ Imports from a URL clone to `~/work/<name>` for Work projects (WSL file system) 
   Per-project profile and overrides (e.g. Gemini allowed for one client) saved through the API,
   always validated by T2.2's rules on the server.
   check: e2e — a Work project's "Gemini allowed" can't be turned on, even by a direct POST
-- [~] **T2.9 Merge kit** `[claude]` — [[SPEC#Projects hub]]
+- [x] **T2.9 Merge kit** `[claude]` — [[SPEC#Projects hub]]
   `POST /api/projects/:id/merge-kit` and a "Merge kit" button on the card: merge `daedalus/kit`
   into the default branch only when asked. Refuses a checkout with uncommitted changes, merges
   through a temporary worktree when the branch isn't checked out, aborts on conflicts.

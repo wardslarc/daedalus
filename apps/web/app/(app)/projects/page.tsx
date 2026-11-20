@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useProfile, type Profile } from "../../components/use-profile";
 import { postJson } from "../../csrf-fetch";
+import { MergeKitControl } from "./merge-kit-control";
 
 const PROFILES: Profile[] = ["All", "Work", "Client", "Personal"];
 
@@ -30,6 +31,8 @@ export default function ProjectsPage() {
   const [currentProfile, selectProfile] = useProfile();
   const [projects, setProjects] = useState<ProjectData[]>([]);
   const [search, setSearch] = useState("");
+  // Cards whose kit was just merged, so they can say so after the list reloads.
+  const [mergedIds, setMergedIds] = useState<Set<number>>(() => new Set());
   const [isHydrated, setIsHydrated] = useState(false);
 
   // Dialog states
@@ -330,9 +333,23 @@ export default function ProjectsPage() {
                   <div className="project-card-stage">
                     <span className="project-stage-name">Imported</span>
                     {p.kitPending && (
-                      <p className="project-kit-pending">
-                        Kit ready on daedalus/kit — review and merge it in your repo
-                      </p>
+                      <>
+                        <p className="project-kit-pending">
+                          Kit ready on daedalus/kit — review and merge it in your repo
+                        </p>
+                        <MergeKitControl
+                          projectId={p.id}
+                          localPath={p.localPath}
+                          defaultBranch={p.defaultBranch}
+                          onMerged={async () => {
+                            setMergedIds((prev) => new Set(prev).add(p.id));
+                            await loadProjects();
+                          }}
+                        />
+                      </>
+                    )}
+                    {!p.kitPending && mergedIds.has(p.id) && (
+                      <p className="merge-kit-done">Kit merged into {p.defaultBranch}.</p>
                     )}
                   </div>
                   <div className="project-card-agents">No agents running</div>

@@ -64,3 +64,41 @@ test.describe("merge kit", () => {
     expect((await post(page, "/api/projects/999999/merge-kit")).status).toBe(404);
   });
 });
+
+test.describe("merge kit from the project card", () => {
+  test("asks first, then merges; the kit notice disappears", async ({ page }) => {
+    const dir = fixtureRepo();
+    await login(page);
+    expect((await post(page, "/api/projects/import", { source: dir, profile: "personal", name: "Card Merge" })).status).toBe(201);
+
+    await page.goto("/projects");
+    const card = page.getByRole("article", { name: "Card Merge" });
+    await card.getByRole("button", { name: "Merge kit" }).click();
+
+    // Confirmation spells out what will happen; nothing merged yet.
+    await expect(card.getByText(`Merge daedalus/kit into main in ${dir}?`)).toBeVisible();
+    expect(git(dir, "branch", "--list", "daedalus/kit")).toContain("daedalus/kit");
+    await card.getByRole("button", { name: "Cancel" }).click();
+    await expect(card.getByRole("button", { name: "Merge kit" })).toBeVisible();
+
+    await card.getByRole("button", { name: "Merge kit" }).click();
+    await card.getByRole("button", { name: "Merge", exact: true }).click();
+    await expect(card.getByText("Kit merged into main.")).toBeVisible();
+    await expect(card.getByText(/Kit ready on daedalus\/kit/)).not.toBeVisible();
+    expect(git(dir, "log", "-1", "--format=%s", "main")).toBe("Merge Daedalus project kit");
+  });
+
+  test("shows the server's reason when the merge is refused", async ({ page }) => {
+    const dir = fixtureRepo();
+    await login(page);
+    expect((await post(page, "/api/projects/import", { source: dir, profile: "personal", name: "Dirty Merge" })).status).toBe(201);
+    writeFileSync(join(dir, "README.md"), "# fixture\nuncommitted\n");
+
+    await page.goto("/projects");
+    const card = page.getByRole("article", { name: "Dirty Merge" });
+    await card.getByRole("button", { name: "Merge kit" }).click();
+    await card.getByRole("button", { name: "Merge", exact: true }).click();
+    await expect(card.getByRole("alert")).toContainText(/commit or stash/i);
+    expect(git(dir, "branch", "--list", "daedalus/kit")).toContain("daedalus/kit");
+  });
+});
