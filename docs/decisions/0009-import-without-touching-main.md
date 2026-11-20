@@ -20,6 +20,12 @@
     refused; Work repos must not be under `/mnt`), then clone, kit, and the database row. A
     fresh clone is deleted if a later step fails; a folder the owner pointed at never is.
   - Git runs only through `@daedalus/git` (argument arrays, no shell, refs validated).
+- **Merging (T2.9):** only on an explicit "Merge kit" click. If the default branch is
+  checked out and has staged or modified tracked files, Daedalus refuses and asks the owner to
+  commit or stash; it never stashes, resets or forces. If the branch isn't checked out, the
+  merge happens in a temporary worktree. Always `--no-ff --no-verify`; a conflict is aborted
+  and reported with its paths, leaving both branches as they were. On success
+  `daedalus/kit` is deleted.
 - **Consequences:** Import never surprises the owner's working copy, but the kit only takes
-  effect once `daedalus/kit` is merged ("Merge kit" in T2.6). Re-importing after deleting the
+  effect once `daedalus/kit` is merged ("Merge kit", T2.9). Re-importing after deleting the
   project row works; re-adding the kit after a merge needs the branch deleted first.
