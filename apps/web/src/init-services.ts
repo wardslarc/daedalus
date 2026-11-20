@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { openDb, projects } from "@daedalus/db";
 import { branchExists } from "@daedalus/git";
+import { validateProjectSettings } from "@daedalus/core/profiles";
 import { createProject, ImportError, importProject, mergeKit, realGitOps } from "@daedalus/projects";
 import { SERVICES_KEY, type Services, type ServicesHolder } from "./services.js";
 
@@ -60,6 +61,22 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
       return mergeKit(project, { tmpRoot: tmpdir() });
+    },
+    updateProjectSettings: async (id, input) => {
+      const project = db.select().from(projects).where(eq(projects.id, id)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      const requestedGemini = input.geminiAllowed !== undefined ? input.geminiAllowed : project.geminiAllowed;
+      const settings = validateProjectSettings(input.profile, { geminiAllowed: requestedGemini });
+      const updated = db
+        .update(projects)
+        .set({
+          profile: settings.profile,
+          geminiAllowed: settings.geminiAllowed,
+        })
+        .where(eq(projects.id, id))
+        .returning()
+        .get();
+      return { project: updated };
     },
   };
   holder[SERVICES_KEY] = services;

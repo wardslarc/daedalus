@@ -489,6 +489,35 @@ describe("@daedalus/db", () => {
     after.$client.close();
   });
 
+  it("migration 0002 applies on a database that already has project rows and keeps them with origin 'imported'", () => {
+    // Build a migrations folder holding only 0000 and 0001, as an existing install would have had.
+    const src = fileURLToPath(new URL("../migrations", import.meta.url));
+    const old = mkdtempSync(join(tmpdir(), "dae-mig-0002-"));
+    cpSync(src, old, { recursive: true });
+    const journalPath = join(old, "meta", "_journal.json");
+    const journal = JSON.parse(readFileSync(journalPath, "utf8")) as { entries: { idx: number }[] };
+    journal.entries = journal.entries.filter((e) => e.idx <= 1);
+    writeFileSync(journalPath, JSON.stringify(journal));
+
+    const file = join(mkdtempSync(join(tmpdir(), "dae-db-")), "d.db");
+    const before = openDb(file, { migrationsFolder: old });
+    before.$client
+      .prepare(
+        "INSERT INTO projects (name, local_path, profile, default_branch, gemini_allowed) VALUES ('Kept 0002', '/tmp/kept0002', 'work', 'main', 0)",
+      )
+      .run();
+    before.$client.close();
+
+    const after = openDb(file);
+    const row = after.$client.prepare("SELECT name, origin FROM projects WHERE name = 'Kept 0002'").get() as {
+      name: string;
+      origin: string;
+    };
+    expect(row).toEqual({ name: "Kept 0002", origin: "imported" });
+    expect(after.$client.pragma("foreign_keys", { simple: true })).toBe(1);
+    after.$client.close();
+  });
+
   it("defaults projects.gemini_allowed to false when omitted", () => {
     const db = openDb(":memory:");
     const [project] = db

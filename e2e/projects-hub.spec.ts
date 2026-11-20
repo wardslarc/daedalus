@@ -81,12 +81,12 @@ test.describe("projects hub", () => {
     await importBtn.click();
     await importDialog.getByLabel("Source").fill(repoWork.dir);
     await importDialog.getByLabel("Work").check();
-    await importDialog.getByLabel(/Name/).fill("Work Project");
+    await importDialog.getByLabel(/Name/).fill("Hub Work");
     await importDialog.getByRole("button", { name: "Import", exact: true }).click();
     await expect(importDialog).not.toBeVisible();
 
     // Card 1 appears
-    const workCard = page.getByRole("article", { name: "Work Project" });
+    const workCard = page.getByRole("article", { name: "Hub Work" });
     await expect(workCard).toBeVisible();
     await expect(workCard.getByText("Work", { exact: true })).toBeVisible();
 
@@ -97,12 +97,12 @@ test.describe("projects hub", () => {
     const geminiCheckbox = importDialog.getByLabel("Allow Gemini");
     await expect(geminiCheckbox).toBeVisible();
     await geminiCheckbox.check();
-    await importDialog.getByLabel(/Name/).fill("Client Project");
+    await importDialog.getByLabel(/Name/).fill("Hub Client");
     await importDialog.getByRole("button", { name: "Import", exact: true }).click();
     await expect(importDialog).not.toBeVisible();
 
     // Card 2 appears
-    const clientCard = page.getByRole("article", { name: "Client Project" });
+    const clientCard = page.getByRole("article", { name: "Hub Client" });
     await expect(clientCard).toBeVisible();
     await expect(clientCard.getByText("Client", { exact: true })).toBeVisible();
 
@@ -110,12 +110,12 @@ test.describe("projects hub", () => {
     await importBtn.click();
     await importDialog.getByLabel("Source").fill(repoPersonal.dir);
     await importDialog.getByLabel("Personal").check();
-    await importDialog.getByLabel(/Name/).fill("Personal Project");
+    await importDialog.getByLabel(/Name/).fill("Hub Personal");
     await importDialog.getByRole("button", { name: "Import", exact: true }).click();
     await expect(importDialog).not.toBeVisible();
 
     // Card 3 appears
-    const personalCard = page.getByRole("article", { name: "Personal Project" });
+    const personalCard = page.getByRole("article", { name: "Hub Personal" });
     await expect(personalCard).toBeVisible();
     await expect(personalCard.getByText("Personal", { exact: true })).toBeVisible();
 
@@ -155,12 +155,12 @@ test.describe("projects hub", () => {
 
     // 7. Search filtering
     const searchInput = page.getByLabel("Search");
-    await searchInput.fill("Client Project");
+    await searchInput.fill("Hub Client");
     await expect(workCard).not.toBeVisible();
     await expect(clientCard).toBeVisible();
     await expect(personalCard).not.toBeVisible();
 
-    await searchInput.fill("");
+    await searchInput.fill("Hub");
     await expect(workCard).toBeVisible();
     await expect(clientCard).toBeVisible();
     await expect(personalCard).toBeVisible();
