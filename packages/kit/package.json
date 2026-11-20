@@ -1,0 +1,22 @@
+{
+  "name": "@daedalus/kit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reads and renders the project kit in /kit for new and imported projects",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3",
+    "vitest": "5.1.1"
+  }
+}
