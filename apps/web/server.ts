@@ -9,7 +9,7 @@ import createNext from "next";
 import { withAuth } from "./src/auth/http.js";
 import { APP_DIR, dataDir } from "./src/data-dir.js";
 import { isAllowedHost } from "./src/host-check.js";
-import { closeServices, initServices } from "./src/services.js";
+import { closeServices, initServices } from "./src/init-services.js";
 
 /** Never configurable: Daedalus is local-only (AGENTS.md, SPEC#Security). */
 export const HOST = "127.0.0.1";

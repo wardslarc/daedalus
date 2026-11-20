@@ -63,7 +63,7 @@ Imports from a URL clone to `~/work/<name>` for Work projects (WSL file system) 
   `packages/git`: init, current branch, create branch, commit given files, detect GitHub/GitLab
   from the remote, clone. Plain `git` via child_process with argument arrays, never a shell.
   check: `pnpm --filter @daedalus/git test` against temp repos
-- [ ] **T2.4 Import project** `[claude]` — [[SPEC#Projects hub]] [[SPEC#Profiles]]
+- [x] **T2.4 Import project** `[claude]` — [[SPEC#Projects hub]] [[SPEC#Profiles]]
   `POST /api/projects/import` (local folder or GitHub/GitLab URL): validate the path or URL,
   clone to the profile's folder if needed, add missing kit files on branch `daedalus/kit`
   (main untouched), save the project row with its profile. Wires `@daedalus/db` into the server.

@@ -2,8 +2,8 @@
  * Import a project (T2.4): validate, clone if needed, put missing kit files on
  * daedalus/kit through a temporary worktree, save the row. ADR 0009.
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, type Stats } from "node:fs";
+import { basename, dirname, join, sep } from "node:path";
 import { eq } from "drizzle-orm";
 import { projects, type DaedalusDb } from "@daedalus/db";
 import { cloneRoot, gitHostWarning, profileRulesMarkdown, rulesFor, validateProjectSettings } from "@daedalus/core/profiles";
@@ -27,7 +27,41 @@ export type GitOps = {
   commitFiles(dir: string, files: string[], message: string, opts?: { noVerify?: boolean }): Promise<string>;
 };
 
-export type KitResult = { status: "added"; branch: string; sha: string; files: string[] } | { status: "complete" } | { status: "exists"; branch: string };
+export type KitResult =
+  | { status: "added"; branch: string; sha: string; files: string[]; skipped: string[] }
+  | { status: "complete"; skipped: string[] }
+  | { status: "exists"; branch: string; skipped: string[] };
+
+/**
+ * Write one kit file inside root without ever following a symlink: every path part is
+ * checked with lstat (a symlink, even a dangling one, or anything already there means
+ * skip), folders are made one level at a time, the parent must still resolve inside root,
+ * and the file is created exclusively ("wx"). Returns false when skipped.
+ */
+function safeWrite(root: string, rel: string, content: string): boolean {
+  const parts = rel.split("/");
+  let cur = root;
+  for (let i = 0; i < parts.length; i++) {
+    cur = join(cur, parts[i] ?? "");
+    let st: Stats | null;
+    try {
+      st = lstatSync(cur);
+    } catch {
+      st = null;
+    }
+    const last = i === parts.length - 1;
+    if (st) {
+      if (st.isSymbolicLink() || last || !st.isDirectory()) return false;
+    } else if (!last) {
+      mkdirSync(cur);
+    }
+  }
+  const realRoot = realpathSync(root);
+  const realParent = realpathSync(dirname(cur));
+  if (realParent !== realRoot && !realParent.startsWith(realRoot + sep)) return false;
+  writeFileSync(cur, content, { flag: "wx" });
+  return true;
+}
 
 /**
  * Add the kit files the project doesn't have, as one commit on daedalus/kit. Works in a
@@ -41,24 +75,25 @@ export async function addKitOnBranch(
 ): Promise<KitResult> {
   // Files the owner already has (committed or not) are theirs: never offered.
   const wanted = missingKitFiles(repoDir);
-  if (wanted.length === 0) return { status: "complete" };
-  if (await git.branchExists(repoDir, KIT_BRANCH)) return { status: "exists", branch: KIT_BRANCH };
+  if (wanted.length === 0) return { status: "complete", skipped: [] };
+  if (await git.branchExists(repoDir, KIT_BRANCH)) return { status: "exists", branch: KIT_BRANCH, skipped: [] };
 
   const worktree = join(mkdtempSync(join(tmpRoot, "daedalus-kit-")), "wt");
   await git.addWorktree(repoDir, worktree, { branch: KIT_BRANCH, from: baseBranch });
   let committed = false;
   try {
-    // Also skip anything the base branch already tracks (e.g. deleted locally but committed).
-    const files = wanted.filter((f) => !existsSync(join(worktree, f)));
-    const rendered = renderKit(vars).filter((f) => files.includes(f.path));
-    for (const f of rendered) {
-      mkdirSync(dirname(join(worktree, f.path)), { recursive: true });
-      writeFileSync(join(worktree, f.path), f.content);
+    // The worktree holds the base branch, which the imported repo controls: anything it
+    // already has at a kit path (a tracked file, or a symlink that could point anywhere)
+    // is left alone and never written through.
+    const written: string[] = [];
+    const skipped: string[] = [];
+    for (const f of renderKit(vars).filter((k) => wanted.includes(k.path))) {
+      (safeWrite(worktree, f.path, f.content) ? written : skipped).push(f.path);
     }
-    if (rendered.length === 0) return { status: "complete" };
-    const sha = await git.commitFiles(worktree, rendered.map((f) => f.path), KIT_COMMIT_MESSAGE, { noVerify: true });
+    if (written.length === 0) return { status: "complete", skipped };
+    const sha = await git.commitFiles(worktree, written, KIT_COMMIT_MESSAGE, { noVerify: true });
     committed = true;
-    return { status: "added", branch: KIT_BRANCH, sha, files: rendered.map((f) => f.path) };
+    return { status: "added", branch: KIT_BRANCH, sha, files: written, skipped };
   } finally {
     await git.removeWorktree(repoDir, worktree);
     rmSync(dirname(worktree), { recursive: true, force: true });
@@ -142,7 +177,11 @@ export async function importProject(input: ImportInput, deps: ImportDeps) {
       })
       .returning()
       .get();
-    return { project, kit, warnings: warning ? [warning] : [] };
+    const warnings = warning ? [warning] : [];
+    if (kit.skipped.length > 0) {
+      warnings.push(`Skipped kit files that would have gone through a symlink or over an existing path: ${kit.skipped.join(", ")}.`);
+    }
+    return { project, kit, warnings };
   } catch (err) {
     if (cloned) rmSync(dir, { recursive: true, force: true });
     throw err;

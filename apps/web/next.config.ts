@@ -2,9 +2,8 @@ import type { NextConfig } from "next";
 
 const config: NextConfig = {
   poweredByHeader: false,
-  // Workspace packages ship TypeScript source; Next compiles them for route handlers.
-  transpilePackages: ["@daedalus/db", "@daedalus/core", "@daedalus/kit", "@daedalus/projects"],
-  // Native module: load it from node_modules at runtime, never bundle it.
+  // Route handlers reach the database and workspace packages only through the services
+  // object that server.ts builds (src/services.ts), so nothing here needs bundling.
   serverExternalPackages: ["better-sqlite3"],
 };
 

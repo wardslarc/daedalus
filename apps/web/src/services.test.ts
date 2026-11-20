@@ -2,7 +2,8 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { closeServices, getServices, initServices } from "./services.js";
+import { closeServices, initServices } from "./init-services.js";
+import { getServices } from "./services.js";
 
 describe("services", () => {
   afterEach(() => closeServices());

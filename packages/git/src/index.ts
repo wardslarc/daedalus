@@ -236,3 +236,9 @@ export function detectHost(url: string): "github" | "gitlab" | "other" {
 
   return "other";
 }
+
+/** Deletes a local branch (even if unmerged). git refuses the checked-out branch. */
+export async function deleteBranch(dir: string, name: string): Promise<void> {
+  await validateBranchName(name, dir);
+  await execGit(["branch", "-D", "--end-of-options", name], { cwd: dir });
+}

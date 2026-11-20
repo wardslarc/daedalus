@@ -1,35 +1,25 @@
 /**
- * Process-wide services (today: the SQLite database), opened once by server.ts and read by
- * Next.js route handlers. Kept on globalThis under a Symbol.for key so Next's dev reloads,
- * which re-evaluate modules, still see the same instance.
+ * Process-wide services, read by Next.js route handlers. Built once by server.ts (see
+ * init-services.ts), which runs under tsx and loads the workspace packages directly.
+ * This file has only type imports, so Next.js never bundles those packages; route
+ * handlers reach them through this object on globalThis (Symbol.for key, so it also
+ * survives Next's dev reloads).
  */
-import { join } from "node:path";
-import { openDb, type DaedalusDb } from "@daedalus/db";
+import type { DaedalusDb } from "@daedalus/db";
+import type { ImportInput, importProject } from "@daedalus/projects";
 
-export type Services = { db: DaedalusDb; dataDir: string; repoRoot: string };
-export type ServicesOptions = { dataDir: string; repoRoot: string };
+export type Services = {
+  db: DaedalusDb;
+  dataDir: string;
+  repoRoot: string;
+  importProject(input: ImportInput): ReturnType<typeof importProject>;
+};
 
-const KEY = Symbol.for("daedalus.services");
-type Holder = { [KEY]?: Services };
-const holder = globalThis as Holder;
-
-export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
-  const existing = holder[KEY];
-  if (existing) return existing;
-  const db = openDb(join(dataDir, "daedalus.db"));
-  const services: Services = { db, dataDir, repoRoot };
-  holder[KEY] = services;
-  return services;
-}
+export const SERVICES_KEY = Symbol.for("daedalus.services");
+export type ServicesHolder = { [SERVICES_KEY]?: Services };
 
 export function getServices(): Services {
-  const services = holder[KEY];
+  const services = (globalThis as ServicesHolder)[SERVICES_KEY];
   if (!services) throw new Error("Daedalus services are not initialised: start the app with `pnpm dae`.");
   return services;
-}
-
-/** Close the database and forget the instance (shutdown and tests). */
-export function closeServices(): void {
-  holder[KEY]?.db.$client.close();
-  delete holder[KEY];
 }

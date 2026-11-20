@@ -309,6 +309,9 @@ importers:
       '@daedalus/db':
         specifier: workspace:*
         version: link:../db
+      '@daedalus/git':
+        specifier: workspace:*
+        version: link:../git
       '@daedalus/kit':
         specifier: workspace:*
         version: link:../kit

@@ -22,6 +22,7 @@
   "dependencies": {
     "@daedalus/core": "workspace:*",
     "@daedalus/db": "workspace:*",
+    "@daedalus/git": "workspace:*",
     "@daedalus/kit": "workspace:*",
     "drizzle-orm": "0.45.4"
   }
