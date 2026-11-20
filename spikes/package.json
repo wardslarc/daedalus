@@ -1,0 +1,21 @@
+{
+  "name": "@daedalus/spikes",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "M0 throwaway spikes: ACP client and agy-in-pty",
+  "scripts": {
+    "acp": "tsx acp-spike.ts",
+    "pty": "tsx pty-spike.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "2.8.0",
+    "node-pty": "1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "4.23.15",
+    "typescript": "^5.9.0"
+  }
+}

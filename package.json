@@ -1,0 +1,15 @@
+{
+  "name": "daedalus",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local mission control for agentic development with Claude Code and Antigravity",
+  "packageManager": "pnpm@12.21.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "spike:acp": "pnpm --filter @daedalus/spikes acp",
+    "spike:pty": "pnpm --filter @daedalus/spikes pty",
+    "typecheck": "pnpm -r typecheck"
+  }
+}

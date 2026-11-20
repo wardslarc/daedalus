@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.next/
+*.log
+.env
+.env.*
+!.env.example
+# Daedalus runtime data (SQLite, run logs) — never commit
+.daedalus-data/
+spikes/out/
+.DS_Store
+Thumbs.db

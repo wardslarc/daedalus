@@ -1,0 +1,11 @@
+{
+  "claude": {
+    "command": "npx",
+    "args": ["-y", "@agentclientprotocol/claude-agent-acp@0.109.0"]
+  },
+  "antigravity": {
+    "command": "",
+    "args": [],
+    "note": "T0.2: fill in the launch command for Antigravity's ACP agent (ACP registry id: antigravity-acp)"
+  }
+}
