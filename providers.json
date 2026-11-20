@@ -1,0 +1,22 @@
+{
+  "providers": [
+    {
+      "id": "claude",
+      "kind": "acp",
+      "command": "npx",
+      "args": ["-y", "@agentclientprotocol/claude-agent-acp@0.109.0"],
+      "roles": ["lead", "coder", "reviewer", "reader"],
+      "allowedProfiles": ["work", "client", "personal"],
+      "version": "0.109.0"
+    },
+    {
+      "id": "antigravity",
+      "kind": "acp",
+      "command": "agy",
+      "args": ["acp", "--sandbox"],
+      "roles": ["coder", "reviewer", "reader"],
+      "allowedProfiles": ["client", "personal"],
+      "version": "1.5.8"
+    }
+  ]
+}

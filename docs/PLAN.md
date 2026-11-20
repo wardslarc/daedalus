@@ -93,7 +93,7 @@ Imports from a URL clone to `~/work/<name>` for Work projects (WSL file system) 
 
 Done when: you can chat with Claude and agy side by side on one project.
 
-- [ ] **T3.1 Provider registry** `[claude]` — [[SPEC#Providers]]
+- [x] **T3.1 Provider registry** `[claude]` — [[SPEC#Providers]]
   `packages/providers`: `providers.json` schema (id, kind acp|cli, command, args, roles,
   allowed profiles, pinned version), load + validate at startup, seed the `providers` table.
   Unknown fields and unpinned versions are errors.
