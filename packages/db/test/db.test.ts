@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { cpSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { eq } from "drizzle-orm";
 import {
   openDb,
@@ -48,7 +52,7 @@ describe("@daedalus/db", () => {
       .values({
         name: "Daedalus",
         localPath: "/home/user/daedalus",
-        profile: "default",
+        profile: "personal",
         gitHost: "github",
         gitRemote: "git@github.com:user/daedalus.git",
         defaultBranch: "main",
@@ -318,6 +322,7 @@ describe("@daedalus/db", () => {
       .values({
         name: "Cascade Project",
         localPath: "/path",
+        profile: "personal",
       })
       .returning()
       .all();
@@ -448,6 +453,42 @@ describe("@daedalus/db", () => {
     expect(remainingUsage).toHaveLength(0);
   });
 
+  it("requires projects.profile to be work, client or personal (no default)", () => {
+    const db = openDb(":memory:");
+    const insert = db.$client.prepare("INSERT INTO projects (name, local_path, profile) VALUES (?, ?, ?)");
+    for (const p of ["work", "client", "personal"]) {
+      expect(() => insert.run(`p-${p}`, `/tmp/p-${p}`, p)).not.toThrow();
+    }
+    expect(() => insert.run("bad", "/tmp/bad", "default")).toThrowError(/CHECK constraint failed/i);
+    expect(() => insert.run("bad2", "/tmp/bad2", "Work")).toThrowError(/CHECK constraint failed/i);
+    expect(() =>
+      db.$client.prepare("INSERT INTO projects (name, local_path) VALUES (?, ?)").run("none", "/tmp/none"),
+    ).toThrowError(/NOT NULL constraint failed/i);
+  });
+
+  it("migrating an existing DB to the profile CHECK keeps projects and their tasks", () => {
+    // Build a migrations folder holding only 0000, as an existing install would have had.
+    const src = fileURLToPath(new URL("../migrations", import.meta.url));
+    const old = mkdtempSync(join(tmpdir(), "dae-mig-"));
+    cpSync(src, old, { recursive: true });
+    const journalPath = join(old, "meta", "_journal.json");
+    const journal = JSON.parse(readFileSync(journalPath, "utf8")) as { entries: { idx: number }[] };
+    journal.entries = journal.entries.filter((e) => e.idx === 0);
+    writeFileSync(journalPath, JSON.stringify(journal));
+
+    const file = join(mkdtempSync(join(tmpdir(), "dae-db-")), "d.db");
+    const before = openDb(file, { migrationsFolder: old });
+    before.$client.prepare("INSERT INTO projects (name, local_path, profile) VALUES ('Kept', '/tmp/kept', 'personal')").run();
+    before.$client.prepare("INSERT INTO tasks (project_id, code, title) VALUES (1, 'T1', 'Survives')").run();
+    before.$client.close();
+
+    const after = openDb(file);
+    expect(after.$client.prepare("SELECT name FROM projects").all()).toEqual([{ name: "Kept" }]);
+    expect(after.$client.prepare("SELECT title FROM tasks").all()).toEqual([{ title: "Survives" }]);
+    expect(after.$client.pragma("foreign_keys", { simple: true })).toBe(1);
+    after.$client.close();
+  });
+
   it("defaults projects.gemini_allowed to false when omitted", () => {
     const db = openDb(":memory:");
     const [project] = db
@@ -455,6 +496,7 @@ describe("@daedalus/db", () => {
       .values({
         name: "Untrusted Project",
         localPath: "/tmp/untrusted",
+        profile: "personal",
       })
       .returning()
       .all();
@@ -478,6 +520,7 @@ describe("@daedalus/db", () => {
       .values({
         name: "Test Project",
         localPath: "/tmp/project",
+        profile: "personal",
       })
       .returning()
       .all();
@@ -550,6 +593,7 @@ describe("@daedalus/db", () => {
       .values({
         name: "Project 1",
         localPath: "/unique/path",
+        profile: "personal",
       })
       .returning()
       .all();
@@ -560,6 +604,7 @@ describe("@daedalus/db", () => {
         .values({
           name: "Project 2",
           localPath: "/unique/path",
+          profile: "personal",
         })
         .run();
     }).toThrowError(/UNIQUE constraint failed/i);
@@ -589,6 +634,7 @@ describe("@daedalus/db", () => {
       .values({
         name: "Project 2",
         localPath: "/other/path",
+        profile: "personal",
       })
       .returning()
       .all();

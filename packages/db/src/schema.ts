@@ -11,7 +11,7 @@ export const projects = sqliteTable("projects", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
   localPath: text("local_path").notNull().unique(),
-  profile: text("profile").notNull().default("default"),
+  profile: text("profile", { enum: ["work", "client", "personal"] }).notNull(),
   gitHost: text("git_host"),
   gitRemote: text("git_remote"),
   defaultBranch: text("default_branch").notNull().default("main"),
@@ -21,7 +21,10 @@ export const projects = sqliteTable("projects", {
   createdAt: text("created_at")
     .notNull()
     .default(sql`(CURRENT_TIMESTAMP)`),
-});
+},
+(table) => [
+  check("projects_profile_check", sql`${table.profile} in ('work', 'client', 'personal')`),
+]);
 
 export const providers = sqliteTable(
   "providers",

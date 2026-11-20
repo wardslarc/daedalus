@@ -3,11 +3,13 @@
  * Later milestones mount the WebSocket, job queue, git, docs index and SQLite here.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import createNext from "next";
 import { withAuth } from "./src/auth/http.js";
 import { APP_DIR, dataDir } from "./src/data-dir.js";
 import { isAllowedHost } from "./src/host-check.js";
+import { closeServices, initServices } from "./src/init-services.js";
 
 /** Never configurable: Daedalus is local-only (AGENTS.md, SPEC#Security). */
 export const HOST = "127.0.0.1";
@@ -48,6 +50,8 @@ function parsePort(raw: string | undefined): number {
 async function main(): Promise<void> {
   const port = parsePort(process.env.DAE_PORT);
   const dev = process.env.NODE_ENV !== "production";
+  // Open the database (and run migrations) before serving anything.
+  initServices({ dataDir: dataDir(), repoRoot: join(APP_DIR, "..", "..") });
   const app = createNext({ dev, hostname: HOST, port, dir: APP_DIR });
   await app.prepare();
   const handle = app.getRequestHandler();
@@ -56,7 +60,10 @@ async function main(): Promise<void> {
   console.log(`Daedalus ready on http://${HOST}:${port}${dev ? " (dev)" : ""}`);
 
   const stop = (): void => {
-    server.close(() => process.exit(0));
+    server.close(() => {
+      closeServices();
+      process.exit(0);
+    });
     setTimeout(() => process.exit(0), 3000).unref();
   };
   process.once("SIGINT", stop);

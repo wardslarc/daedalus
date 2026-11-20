@@ -26,7 +26,6 @@ export function openDb(dbPath: string = getDefaultDbPath(), options?: OpenDbOpti
   }
 
   const sqlite = new Database(dbPath);
-  sqlite.pragma("foreign_keys = ON");
   sqlite.pragma("journal_mode = WAL");
 
   const db = drizzle(sqlite, { schema });
@@ -35,7 +34,18 @@ export function openDb(dbPath: string = getDefaultDbPath(), options?: OpenDbOpti
     options?.migrationsFolder ??
     fileURLToPath(new URL("../migrations", import.meta.url));
 
+  // Migrations that rebuild a table (DROP + RENAME) would cascade-delete child rows if
+  // foreign keys were on, and drizzle runs migrations inside a transaction, where the
+  // migration's own "PRAGMA foreign_keys=OFF" is ignored. So switch them off here, migrate,
+  // verify every reference still resolves, and only then switch them back on.
+  sqlite.pragma("foreign_keys = OFF");
   migrate(db, { migrationsFolder });
+  const broken = sqlite.pragma("foreign_key_check") as unknown[];
+  if (broken.length > 0) {
+    sqlite.close();
+    throw new Error(`Database migration left ${broken.length} broken foreign key reference(s); not opening ${dbPath}`);
+  }
+  sqlite.pragma("foreign_keys = ON");
 
   return db;
 }
