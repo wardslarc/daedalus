@@ -6,7 +6,7 @@
  * survives Next's dev reloads).
  */
 import type { DaedalusDb, projects } from "@daedalus/db";
-import type { CreateInput, createProject, ImportInput, importProject } from "@daedalus/projects";
+import type { CreateInput, createProject, ImportInput, importProject, mergeKit } from "@daedalus/projects";
 
 export type ProjectWithKit = typeof projects.$inferSelect & {
   kitPending: boolean;
@@ -19,6 +19,8 @@ export type Services = {
   importProject(input: ImportInput): ReturnType<typeof importProject>;
   createProject(input: CreateInput): ReturnType<typeof createProject>;
   listProjects(): Promise<ProjectWithKit[]>;
+  /** Merge daedalus/kit into the project's default branch (T2.9). 404 if no such project. */
+  mergeKit(projectId: number): ReturnType<typeof mergeKit>;
 };
 
 export const SERVICES_KEY = Symbol.for("daedalus.services");

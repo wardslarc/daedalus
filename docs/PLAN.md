@@ -80,6 +80,11 @@ Imports from a URL clone to `~/work/<name>` for Work projects (WSL file system) 
   Per-project profile and overrides (e.g. Gemini allowed for one client) saved through the API,
   always validated by T2.2's rules on the server.
   check: e2e — a Work project's "Gemini allowed" can't be turned on, even by a direct POST
+- [x] **T2.9 Merge kit** `[claude]` — [[SPEC#Projects hub]]
+  `POST /api/projects/:id/merge-kit` and a "Merge kit" button on the card: merge `daedalus/kit`
+  into the default branch only when asked. Refuses a checkout with uncommitted changes, merges
+  through a temporary worktree when the branch isn't checked out, aborts on conflicts.
+  check: e2e merges once then answers 409; real-git tests for clean, dirty, other-branch, conflict
 - [ ] **T2.8 Bilyo import** `[you]`
   Import Bilyo for real and review its `daedalus/kit` branch.
   check: the M2 done-when above

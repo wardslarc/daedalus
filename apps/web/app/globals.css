@@ -827,3 +827,68 @@ dialog.modal-dialog::backdrop {
   gap: 10px;
   margin-top: 8px;
 }
+
+/* Merge kit control on project cards (T2.9) */
+.merge-kit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.merge-kit-question {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.merge-kit-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.merge-kit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.btn-primary-sm,
+.btn-secondary-sm {
+  align-self: flex-start;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font: 500 12px var(--font-body);
+  cursor: pointer;
+}
+.btn-primary-sm {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.btn-secondary-sm {
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent-soft-ink);
+}
+.btn-primary-sm:disabled,
+.btn-secondary-sm:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.btn-primary-sm:focus-visible,
+.btn-secondary-sm:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.merge-kit-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
+  white-space: pre-line;
+}
+.merge-kit-done {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--ok);
+}

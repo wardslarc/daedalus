@@ -2,9 +2,10 @@
 import { existsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import { openDb, projects } from "@daedalus/db";
 import { branchExists } from "@daedalus/git";
-import { createProject, importProject, realGitOps } from "@daedalus/projects";
+import { createProject, ImportError, importProject, mergeKit, realGitOps } from "@daedalus/projects";
 import { SERVICES_KEY, type Services, type ServicesHolder } from "./services.js";
 
 export type ServicesOptions = { dataDir: string; repoRoot: string };
@@ -54,6 +55,11 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
           };
         }),
       );
+    },
+    mergeKit: async (projectId) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return mergeKit(project, { tmpRoot: tmpdir() });
     },
   };
   holder[SERVICES_KEY] = services;
