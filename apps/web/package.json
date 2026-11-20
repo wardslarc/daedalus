@@ -12,6 +12,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@daedalus/core": "workspace:*",
+    "@daedalus/db": "workspace:*",
+    "@daedalus/kit": "workspace:*",
+    "@daedalus/projects": "workspace:*",
     "@node-rs/argon2": "2.2.2",
     "next": "16.4.5",
     "react": "19.3.1",
