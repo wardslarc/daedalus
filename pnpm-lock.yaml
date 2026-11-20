@@ -205,6 +205,9 @@ importers:
       '@daedalus/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@daedalus/git':
+        specifier: workspace:*
+        version: link:../../packages/git
       '@daedalus/kit':
         specifier: workspace:*
         version: link:../../packages/kit

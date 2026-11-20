@@ -72,7 +72,7 @@ Imports from a URL clone to `~/work/<name>` for Work projects (WSL file system) 
   `POST /api/projects/new`: new folder in the profile's folder, `git init`, copy kit, first
   commit, project row.
   check: e2e creates a project; the folder has the kit and one commit
-- [ ] **T2.6 Projects hub screen** `[gemini]` — [[SPEC#Projects hub]]
+- [x] **T2.6 Projects hub screen** `[gemini]` — [[SPEC#Projects hub]]
   Cards from the DB (name, profile, stage, running agents, items waiting), profile filter,
   search, Import and New dialogs, "Merge kit" button. Matches `docs/design/layout.md`.
   check: screenshot vs design with three fixture projects

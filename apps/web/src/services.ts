@@ -5,8 +5,12 @@
  * handlers reach them through this object on globalThis (Symbol.for key, so it also
  * survives Next's dev reloads).
  */
-import type { DaedalusDb } from "@daedalus/db";
+import type { DaedalusDb, projects } from "@daedalus/db";
 import type { CreateInput, createProject, ImportInput, importProject } from "@daedalus/projects";
+
+export type ProjectWithKit = typeof projects.$inferSelect & {
+  kitPending: boolean;
+};
 
 export type Services = {
   db: DaedalusDb;
@@ -14,6 +18,7 @@ export type Services = {
   repoRoot: string;
   importProject(input: ImportInput): ReturnType<typeof importProject>;
   createProject(input: CreateInput): ReturnType<typeof createProject>;
+  listProjects(): Promise<ProjectWithKit[]>;
 };
 
 export const SERVICES_KEY = Symbol.for("daedalus.services");
