@@ -89,9 +89,46 @@ Imports from a URL clone to `~/work/<name>` for Work projects (WSL file system) 
   Import Bilyo for real and review its `daedalus/kit` branch.
   check: the M2 done-when above
 
-## M3–M9 (outline)
+## M3 — Workshop
 
-- M3 Workshop — ACP sessions in xterm.js — [[SPEC#Workshop]]
+Done when: you can chat with Claude and agy side by side on one project.
+
+- [ ] **T3.1 Provider registry** `[claude]` — [[SPEC#Providers]]
+  `packages/providers`: `providers.json` schema (id, kind acp|cli, command, args, roles,
+  allowed profiles, pinned version), load + validate at startup, seed the `providers` table.
+  Unknown fields and unpinned versions are errors.
+  check: `pnpm --filter @daedalus/providers test`
+- [ ] **T3.2 ACP session manager** `[claude]` — [[SPEC#Providers]] [[SPEC#Profiles]]
+  Start an ACP agent in a project folder (profile guard first), stream session updates, send
+  prompts, cancel, stop; one process per session, all killed on server exit. Permission
+  requests are passed to the owner, never auto-approved. Grows out of the M0 ACP spike.
+  check: integration tests against a fake ACP agent script; a Work project can't start agy
+- [ ] **T3.3 WebSocket channel** `[claude]` — [[SPEC#Security]]
+  `upgrade` handler on the custom server: Host allowlist, session cookie and Origin checked
+  before any socket opens; one channel per session; typed messages.
+  check: tests — no session, foreign Origin or foreign Host are all refused
+- [ ] **T3.4 Workshop screen** `[gemini]` — [[SPEC#Workshop]]
+  Start a session (project + provider), one console per session in xterm.js, an input to
+  type into it, stop button, sessions side by side. Matches the Workshop board, exported to
+  `docs/design/workshop.md`.
+  check: e2e with the fake agent; screenshot vs design
+- [ ] **T3.5 Permission prompts** `[gemini]` — [[SPEC#Workshop]]
+  Show the agent's permission requests inline in its console with Allow once / Deny.
+  check: e2e — a denied request reaches the agent as denied; nothing runs without a click
+- [ ] **T3.6 Run logs with redaction** `[claude]` — [[SPEC#Security]]
+  Every session's updates saved as JSONL in the data folder, with secret-like strings
+  (tokens, keys, passwords in URLs) redacted before writing.
+  check: unit tests with planted secrets; nothing secret-like on disk
+- [ ] **T3.7 Free terminal** `[claude]` — [[SPEC#Security]] [[SPEC#Workshop]]
+  The one free shell the spec allows: a node-pty shell in the project folder, typed into by
+  the owner only, over the T3.3 channel.
+  check: e2e types `pwd` and sees the project folder; the terminal is unreachable without a session
+- [ ] **T3.8 Side by side** `[you]`
+  Open one project, chat with Claude and agy at the same time, note what feels wrong.
+  check: the M3 done-when above
+
+## M4–M9 (outline)
+
 - M4 Project chat — [[SPEC#Project chat]]
 - M5 Pipeline and runner — task state machine `[you]` — [[SPEC#Pipeline]] [[SPEC#Task runner]]
 - M6 Review center — [[SPEC#Review]]
