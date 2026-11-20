@@ -37,7 +37,7 @@ implements, and a check. `[you]` = learning mode: the owner writes it.
 - [x] **T1.3 Login** `[claude]` — [[SPEC#Security]]
   One password (argon2 hash), session cookie, CSRF on posts.
   check: e2e test: wrong password rejected, right password lands on Projects
-- [ ] **T1.4 App shell** `[gemini]` — [[SPEC#Projects hub]]
+- [x] **T1.4 App shell** `[gemini]` — [[SPEC#Projects hub]]
   Sidebar and empty screens matching the "Daedalus 1.0 Layout" design.
   check: screenshot vs design
 - [x] **T1.5 Workspace tooling** `[gemini]`
