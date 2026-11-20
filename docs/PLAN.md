@@ -59,7 +59,7 @@ Imports from a URL clone to `~/work/<name>` for Work projects (WSL file system) 
   skip-permissions forbidden on Work, learning mode on Personal) and server-side guards such as
   `assertProviderAllowed(project, provider)`. Not the task state machine (M5, owner).
   check: unit tests, including "a Work project can't be given to Gemini through the API"
-- [ ] **T2.3 Git basics** `[gemini]` — [[SPEC#Projects hub]]
+- [x] **T2.3 Git basics** `[gemini]` — [[SPEC#Projects hub]]
   `packages/git`: init, current branch, create branch, commit given files, detect GitHub/GitLab
   from the remote, clone. Plain `git` via child_process with argument arrays, never a shell.
   check: `pnpm --filter @daedalus/git test` against temp repos
