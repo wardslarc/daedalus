@@ -28,7 +28,7 @@ implements, and a check. `[you]` = learning mode: the owner writes it.
 
 ## M1 — Skeleton
 
-- [ ] **T1.1 Next.js app + custom server** `[claude]` — [[SPEC#Security]]
+- [x] **T1.1 Next.js app + custom server** `[claude]` — [[SPEC#Security]]
   `apps/web`: Next.js App Router, custom Node server bound to 127.0.0.1, `dae` bin.
   check: `pnpm dae` serves on http://127.0.0.1:4317; `curl` from another device fails
 - [ ] **T1.2 SQLite + migrations** `[gemini]` — [[SPEC#Projects hub]]

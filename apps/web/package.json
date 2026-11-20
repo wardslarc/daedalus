@@ -1,0 +1,26 @@
+{
+  "name": "@daedalus/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Daedalus UI and custom Node server (127.0.0.1 only)",
+  "bin": {
+    "dae": "./bin/dae.js"
+  },
+  "scripts": {
+    "dae": "node ./bin/dae.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "16.4.5",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "tsx": "4.23.15"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "typescript": "5.9.3"
+  }
+}

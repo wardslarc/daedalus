@@ -11,6 +11,12 @@ export default defineConfig({
     baseURL: "http://127.0.0.1:4317",
     trace: "on-first-retry",
   },
+  webServer: {
+    command: "pnpm dae",
+    url: "http://127.0.0.1:4317",
+    reuseExistingServer: !process.env.CI,
+    timeout: 120_000,
+  },
   projects: [
     {
       name: "chromium",

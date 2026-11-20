@@ -9,6 +9,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "dae": "pnpm --filter @daedalus/web dae",
     "lint": "eslint .",
     "spike:acp": "pnpm --filter @daedalus/spikes acp",
     "spike:pty": "pnpm --filter @daedalus/spikes pty",
