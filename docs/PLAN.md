@@ -31,7 +31,7 @@ implements, and a check. `[you]` = learning mode: the owner writes it.
 - [x] **T1.1 Next.js app + custom server** `[claude]` — [[SPEC#Security]]
   `apps/web`: Next.js App Router, custom Node server bound to 127.0.0.1, `dae` bin.
   check: `pnpm dae` serves on http://127.0.0.1:4317; `curl` from another device fails
-- [ ] **T1.2 SQLite + migrations** `[gemini]` — [[SPEC#Projects hub]]
+- [x] **T1.2 SQLite + migrations** `[gemini]` — [[SPEC#Projects hub]]
   `packages/db`: better-sqlite3 + Drizzle, tables from the build plan, first migration.
   check: `pnpm --filter @daedalus/db test`
 - [x] **T1.3 Login** `[claude]` — [[SPEC#Security]]
