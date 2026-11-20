@@ -53,7 +53,7 @@ test.describe("projects hub", () => {
     await expect(importDialog).not.toBeVisible();
     await expect(importBtn).toBeFocused();
 
-    // 3. New project dialog 404 handling and keyboard usability
+    // 3. New project dialog: creates a project from the kit (T2.5 is merged), and is keyboard-usable
     const newBtn = page.getByRole("button", { name: "New project" });
     await newBtn.click();
     const newDialog = page.getByRole("dialog", { name: "New project" });
@@ -61,10 +61,13 @@ test.describe("projects hub", () => {
     const newNameInput = page.getByLabel("Name", { exact: true });
     await expect(newNameInput).toBeFocused();
 
-    await newNameInput.fill("Coming Soon");
+    await newNameInput.fill("Kit Started");
     await page.getByRole("button", { name: "Create" }).click();
-    await expect(newDialog.getByRole("alert")).toHaveText("Creating new projects isn't available yet");
+    await expect(newDialog).not.toBeVisible();
+    await expect(page.getByRole("article", { name: "Kit Started" })).toBeVisible();
 
+    await newBtn.click();
+    await expect(newDialog).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(newDialog).not.toBeVisible();
     await expect(newBtn).toBeFocused();
