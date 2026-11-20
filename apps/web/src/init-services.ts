@@ -1,7 +1,9 @@
 /** Server-only: builds the services object (server.ts calls this before serving). */
+import { existsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDb } from "@daedalus/db";
+import { openDb, projects } from "@daedalus/db";
+import { branchExists } from "@daedalus/git";
 import { importProject, realGitOps } from "@daedalus/projects";
 import { SERVICES_KEY, type Services, type ServicesHolder } from "./services.js";
 
@@ -26,6 +28,25 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
         tmpRoot: tmpdir(),
         today: new Date().toISOString().slice(0, 10),
       }),
+    listProjects: async () => {
+      const rows = db.select().from(projects).all();
+      return Promise.all(
+        rows.map(async (p) => {
+          let kitPending = false;
+          if (existsSync(p.localPath)) {
+            try {
+              kitPending = await branchExists(p.localPath, "daedalus/kit");
+            } catch {
+              kitPending = false;
+            }
+          }
+          return {
+            ...p,
+            kitPending,
+          };
+        }),
+      );
+    },
   };
   holder[SERVICES_KEY] = services;
   return services;

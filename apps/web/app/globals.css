@@ -575,3 +575,255 @@ nextjs-portal {
   font-size: 12px;
   color: var(--muted);
 }
+
+/* Project Cards */
+.project-card {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-sizing: border-box;
+  min-height: 160px;
+  transition: border-color 0.15s ease;
+}
+
+.project-card:hover {
+  border-color: var(--border-2);
+}
+
+.project-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.project-card-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 18px;
+  line-height: 1.3;
+  color: var(--ink);
+  word-break: break-word;
+}
+
+.profile-chip {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.profile-chip-work {
+  color: var(--profile-work);
+  background-color: var(--profile-work-bg);
+}
+
+.profile-chip-client {
+  color: var(--profile-client);
+  background-color: var(--profile-client-bg);
+}
+
+.profile-chip-personal {
+  color: var(--profile-personal);
+  background-color: var(--profile-personal-bg);
+}
+
+.project-card-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.project-stage-name {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.project-kit-pending {
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--accent-soft-ink);
+  background-color: var(--accent-soft-bg);
+  border: 1px solid rgba(217, 164, 65, 0.3);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.project-card-agents {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.project-card-footer {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Dialogs */
+dialog.modal-dialog {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px;
+  color: var(--ink);
+  max-width: 480px;
+  width: calc(100% - 32px);
+  box-sizing: border-box;
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.4);
+  margin: auto;
+}
+
+dialog.modal-dialog::backdrop {
+  background-color: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(2px);
+}
+
+.dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.dialog-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 20px;
+  color: var(--ink);
+}
+
+.dialog-close-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 20px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 4px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dialog-close-btn:hover {
+  color: var(--ink);
+}
+
+.dialog-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-label, .form-legend {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.form-fieldset {
+  border: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.form-input {
+  min-height: 40px;
+  width: 100%;
+  background-color: var(--bg);
+  border: 1px solid var(--border-2);
+  border-radius: 10px;
+  padding: 0 12px;
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 14px;
+  box-sizing: border-box;
+  outline: none;
+}
+
+.form-input:focus {
+  border-color: var(--accent);
+}
+
+.radio-group {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.radio-label, .checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.form-error {
+  background-color: rgba(255, 138, 138, 0.12);
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.form-warning {
+  background-color: var(--accent-soft-bg);
+  border: 1px solid rgba(217, 164, 65, 0.4);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--accent-soft-ink);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.form-warning h4 {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.form-warning ul {
+  margin-left: 18px;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
