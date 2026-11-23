@@ -1,11 +1,14 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { postJson } from "../csrf-fetch";
 
 export default function LoginPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // Tests (and impatient clicks) wait for this: before hydration the form would submit as a plain GET.
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => setHydrated(true), []);
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -36,7 +39,7 @@ export default function LoginPage() {
   return (
     <main style={{ maxWidth: 360, margin: "15vh auto", padding: "0 16px", fontFamily: "system-ui, sans-serif" }}>
       <h1>Sign in to Daedalus</h1>
-      <form onSubmit={onSubmit}>
+      <form onSubmit={onSubmit} data-hydrated={hydrated ? "true" : "false"}>
         <label htmlFor="password">Password</label>
         <input
           id="password"

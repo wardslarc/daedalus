@@ -109,7 +109,7 @@ Done when: you can chat with Claude and agy side by side on one project.
   check: tests — no session, foreign Origin or foreign Host are all refused
   Contract: `apps/web/src/ws/protocol.ts` (REST to start/list/stop sessions, `/ws` for live
   events, prompts and permission answers).
-- [ ] **T3.9 App re-theme (Direction C)** `[gemini]` — runs before T3.4
+- [x] **T3.9 App re-theme (Direction C)** `[gemini]` — runs before T3.4
   Apply `docs/design/layout.md` to the running app: new token values in `globals.css`, Plus Jakarta
   Sans instead of Inter, the 96px rail with three items (Projects, Workshop, Usage) and no profile
   switch, project tabs, project screens moved under `/projects/[id]/…` (chat, pipeline, review,

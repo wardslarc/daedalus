@@ -4,27 +4,9 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { LogoutButton } from "./logout-button";
-import { useProfile, type Profile } from "./use-profile";
-
-const NAV_ITEMS = [
-  { name: "Projects", path: "/projects" },
-  { name: "Project chat", path: "/chat" },
-  { name: "Pipeline", path: "/pipeline" },
-  { name: "Workshop", path: "/workshop" },
-  { name: "Review", path: "/review" },
-  { name: "Providers & usage", path: "/providers" },
-] as const;
-
-const PROFILES: { id: Profile; label: string; colorVar: string }[] = [
-  { id: "All", label: "All", colorVar: "var(--accent-soft-ink)" },
-  { id: "Work", label: "Work", colorVar: "var(--profile-work)" },
-  { id: "Client", label: "Client", colorVar: "var(--profile-client)" },
-  { id: "Personal", label: "Personal", colorVar: "var(--profile-personal)" },
-];
 
 export function Sidebar() {
   const pathname = usePathname();
-  const [currentProfile, selectProfile] = useProfile();
   const [host, setHost] = useState("127.0.0.1:4317");
 
   useEffect(() => {
@@ -33,18 +15,22 @@ export function Sidebar() {
     }
   }, []);
 
+  const isProjectsActive = pathname === "/projects" || pathname.startsWith("/projects/");
+  const isWorkshopActive = pathname === "/workshop" || pathname.startsWith("/workshop/");
+  const isUsageActive = pathname === "/providers" || pathname.startsWith("/providers/");
+
   return (
     <nav aria-label="Main" className="sidebar">
-      {/* 1. Wordmark */}
-      <Link href="/projects" className="wordmark">
+      {/* 1. Logo */}
+      <Link href="/projects" className="rail-logo" aria-label="Daedalus home">
         <svg
           aria-hidden="true"
           width="28"
           height="28"
           viewBox="0 0 28 28"
           fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
+          stroke="var(--accent)"
+          strokeWidth="2.4"
           strokeLinecap="round"
           strokeLinejoin="round"
           className="wordmark-logo"
@@ -53,86 +39,138 @@ export function Sidebar() {
           <path d="M8 8h12v12H8v-6" />
           <path d="M13 13h2v2" />
         </svg>
-        <span className="wordmark-title">Daedalus</span>
-        <span className="version-chip">1.0</span>
       </Link>
 
-      {/* 2. Profile switcher */}
-      <div className="profile-switcher">
-        <span className="sidebar-label">Profile</span>
-        <div className="profile-grid">
-          {PROFILES.map((p) => {
-            const isSelected = currentProfile === p.id;
-            return (
-              <button
-                key={p.id}
-                type="button"
-                className={`profile-btn ${isSelected ? "selected" : ""}`}
-                style={{ color: isSelected ? "var(--accent-soft-ink)" : p.colorVar }}
-                aria-pressed={isSelected ? "true" : "false"}
-                onClick={() => selectProfile(p.id)}
-              >
-                {p.label}
-              </button>
-            );
-          })}
+      {/* 2. Three items: Projects, Workshop, Usage */}
+      <div className="rail-items">
+        <Link
+          href="/projects"
+          className={`rail-item ${isProjectsActive ? "active" : ""}`}
+          aria-current={isProjectsActive ? "page" : undefined}
+        >
+          <svg
+            width="22"
+            height="22"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="3" y="3" width="7" height="7" rx="1.5" />
+            <rect x="14" y="3" width="7" height="7" rx="1.5" />
+            <rect x="3" y="14" width="7" height="7" rx="1.5" />
+            <rect x="14" y="14" width="7" height="7" rx="1.5" />
+          </svg>
+          <span className="rail-item-label">Projects</span>
+        </Link>
+
+        <Link
+          href="/workshop"
+          className={`rail-item ${isWorkshopActive ? "active" : ""}`}
+          aria-current={isWorkshopActive ? "page" : undefined}
+        >
+          <svg
+            width="22"
+            height="22"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path d="M7 9l3 3-3 3" />
+            <path d="M12 15h5" />
+          </svg>
+          <span className="rail-item-label">Workshop</span>
+        </Link>
+
+        <Link
+          href="/providers"
+          className={`rail-item ${isUsageActive ? "active" : ""}`}
+          aria-current={isUsageActive ? "page" : undefined}
+        >
+          <svg
+            width="22"
+            height="22"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M4 20V10" />
+            <path d="M10 20V4" />
+            <path d="M16 20v-7" />
+            <path d="M22 20H2" />
+          </svg>
+          <span className="rail-item-label">Usage</span>
+        </Link>
+      </div>
+
+      {/* 3. Spacer */}
+      <div className="rail-spacer" />
+
+      {/* 4. Usage bars */}
+      <div
+        className="rail-usage"
+        role="img"
+        aria-label="Claude —, Antigravity —"
+      >
+        <div className="rail-usage-tracks">
+          <div className="rail-usage-col">
+            <div className="rail-usage-track">
+              <div
+                className="rail-usage-fill"
+                style={{ height: "0%", backgroundColor: "var(--claude-bar)" }}
+              />
+            </div>
+            <span style={{ color: "var(--claude)" }}>C</span>
+          </div>
+          <div className="rail-usage-col">
+            <div className="rail-usage-track">
+              <div
+                className="rail-usage-fill"
+                style={{ height: "0%", backgroundColor: "var(--gemini-bar)" }}
+              />
+            </div>
+            <span style={{ color: "var(--gemini)" }}>A</span>
+          </div>
         </div>
+        <span className="rail-usage-empty">—</span>
       </div>
 
-      {/* 3. Nav */}
-      <div className="nav-list">
-        {NAV_ITEMS.map((item) => {
-          const isActive = pathname === item.path;
-          return (
-            <Link
-              key={item.path}
-              href={item.path}
-              className={`nav-item ${isActive ? "active" : ""}`}
-              aria-current={isActive ? "page" : undefined}
-            >
-              <span>{item.name}</span>
-            </Link>
-          );
-        })}
+      {/* 5. Status */}
+      <div className="rail-status" title={host}>
+        <span>local</span>
+        <span>only</span>
       </div>
 
-      {/* 4. Spacer */}
-      <div className="sidebar-spacer" />
-
-      {/* 5. Usage panel */}
-      <div className="usage-panel">
-        <div className="meter-group">
-          <div className="meter-header">
-            <span style={{ color: "var(--claude)" }}>Claude · this week</span>
-            <span className="meter-val">—</span>
-          </div>
-          <div className="meter-track">
-            <div className="meter-fill" style={{ width: "0%", backgroundColor: "var(--claude-bar)" }} />
-          </div>
-        </div>
-
-        <div className="meter-group">
-          <div className="meter-header">
-            <span style={{ color: "var(--gemini)" }}>Antigravity · weekly</span>
-            <span className="meter-val">—</span>
-          </div>
-          <div className="meter-track">
-            <div className="meter-fill" style={{ width: "0%", backgroundColor: "var(--gemini-bar)" }} />
-          </div>
-          <span className="meter-caption">Resets Mon 08:00</span>
-        </div>
-      </div>
-
-      {/* 6. Status line */}
-      <div className="status-line">
-        <span className="status-dot" />
-        <span className="status-text">{host} · local only</span>
-      </div>
-
-      {/* 7. Sign out */}
-      <div className="sidebar-signout-wrapper">
-        <LogoutButton className="sidebar-signout-btn" />
-      </div>
+      {/* 6. Sign out */}
+      <LogoutButton className="rail-signout-btn" aria-label="Sign out">
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+          <polyline points="16 17 21 12 16 7" />
+          <line x1="21" y1="12" x2="9" y2="12" />
+        </svg>
+      </LogoutButton>
     </nav>
   );
 }

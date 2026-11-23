@@ -10,6 +10,7 @@ test.describe("login", () => {
 
   test("wrong password is rejected and stays on /login", async ({ page }) => {
     await page.goto("/login");
+    await page.locator("form[data-hydrated='true']").waitFor();
     await page.getByLabel("Password").fill("not the password at all");
     await page.getByRole("button", { name: "Sign in" }).click();
     await expect(page.locator("#login-error")).toHaveText("Wrong password.");
@@ -20,6 +21,7 @@ test.describe("login", () => {
 
   test("right password lands on Projects, and sign out ends the session", async ({ page, context }) => {
     await page.goto("/login");
+    await page.locator("form[data-hydrated='true']").waitFor();
     await page.getByLabel("Password").fill(E2E_PASSWORD);
     await page.getByRole("button", { name: "Sign in" }).click();
     await expect(page).toHaveURL(/\/projects$/);

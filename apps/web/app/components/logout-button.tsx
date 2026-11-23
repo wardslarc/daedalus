@@ -3,7 +3,7 @@
 import { useEffect, useState, type ButtonHTMLAttributes } from "react";
 import { postJson } from "../csrf-fetch";
 
-export function LogoutButton({ className, style, ...props }: ButtonHTMLAttributes<HTMLButtonElement>) {
+export function LogoutButton({ className, style, children, ...props }: ButtonHTMLAttributes<HTMLButtonElement>) {
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
@@ -22,7 +22,7 @@ export function LogoutButton({ className, style, ...props }: ButtonHTMLAttribute
       }}
       {...props}
     >
-      Sign out
+      {children ?? "Sign out"}
     </button>
   );
 }
