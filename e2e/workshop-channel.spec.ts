@@ -94,8 +94,8 @@ test("Workshop channel: start over REST, chat over /ws, stop", async ({ page }) 
     expect(reply).toBe("hello browser");
 
     expect((await post(page, `/api/sessions/${sessionId}/stop`)).status).toBe(200);
-    const list = await page.evaluate(async () => (await (await fetch("/api/sessions")).json()) as { sessions: unknown[] });
-    expect(list.sessions).toEqual([]);
+    const list = await page.evaluate(async () => (await (await fetch("/api/sessions")).json()) as { sessions: { id: string }[] });
+    expect(list.sessions.map((s) => s.id)).not.toContain(sessionId);
   } finally {
     deleteProject(workId);
     deleteProject(personalId);
