@@ -116,7 +116,7 @@ Done when: you can chat with Claude and agy side by side on one project.
   release, changes) with their empty states, the hub's phase board and 8-step stage bars.
   check: `pnpm typecheck && pnpm lint && pnpm test && pnpm test:e2e`; shell e2e updated to the new
   navigation (the spec changed, so the old six-route test changes with it); screenshot vs the boards
-- [ ] **T3.4 Workshop screen** `[gemini]` — [[SPEC#Workshop]]
+- [x] **T3.4 Workshop screen** `[gemini]` — [[SPEC#Workshop]]
   Start a session (project + provider), one console per session in xterm.js, an input to
   type into it, stop button, sessions side by side. Matches the Workshop board, exported to
   `docs/design/workshop.md`.

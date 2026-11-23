@@ -20,6 +20,8 @@
     "@daedalus/projects": "workspace:*",
     "@daedalus/providers": "workspace:*",
     "@node-rs/argon2": "2.2.2",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
     "drizzle-orm": "0.45.4",
     "next": "16.4.5",
     "node-pty": "1.1.0",

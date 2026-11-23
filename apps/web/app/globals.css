@@ -1099,3 +1099,349 @@ dialog.modal-dialog::backdrop {
   font-size: 12px;
   color: var(--ok);
 }
+
+/* Workshop Screen (T3.4) */
+.workshop-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sessions-readout {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.workshop-picker-panel {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.picker-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+
+.picker-select {
+  min-width: 260px;
+}
+
+.provider-pills {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.provider-pill {
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  background-color: transparent;
+  border: 1px solid var(--border-2);
+  color: var(--ink-2);
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.provider-pill:hover {
+  border-color: var(--border);
+  color: var(--ink);
+}
+
+.provider-pill.pill-claude.selected {
+  background-color: var(--claude-bg);
+  border-color: var(--claude);
+  color: var(--claude);
+}
+
+.provider-pill.pill-antigravity.selected {
+  background-color: var(--gemini-bg);
+  border-color: var(--gemini);
+  color: var(--gemini);
+}
+
+.picker-policy-note {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.workshop-empty-state {
+  margin-top: 8px;
+}
+
+/* Workshop Consoles */
+.workshop-consoles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  width: 100%;
+}
+
+.workshop-console {
+  flex: 1 1 460px;
+  min-width: 0;
+  max-width: 100%;
+  border-radius: 14px;
+  background-color: var(--surface);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.workshop-console.console-claude {
+  border: 1px solid #3A2A20;
+}
+
+.workshop-console.console-antigravity {
+  border: 1px solid #22314D;
+}
+
+.workshop-console.console-terminal {
+  border: 1px solid var(--border);
+}
+
+.console-header {
+  padding: 12px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--border);
+  background-color: var(--surface);
+}
+
+.console-header-left {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.console-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.console-project-name {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.console-chip-provider {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  line-height: 1;
+}
+
+.console-chip-claude {
+  color: var(--claude);
+  background-color: var(--claude-bg);
+}
+
+.console-chip-antigravity {
+  color: var(--gemini);
+  background-color: var(--gemini-bg);
+}
+
+.console-chip-session {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background-color: var(--track);
+  color: var(--ink-2);
+  line-height: 1;
+}
+
+.console-context {
+  font-family: var(--font-mono);
+  word-spacing: normal;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.run-log-link {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--link);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.run-log-link:hover {
+  color: var(--link-hover);
+}
+
+.btn-danger-outline {
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background-color: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-danger-outline:hover {
+  background-color: var(--danger-bg);
+}
+
+.reconnect-banner {
+  padding: 6px 12px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+}
+
+.banner-reconnecting {
+  background-color: var(--warn-bg);
+  border-bottom: 1px solid var(--warn-border);
+  color: var(--warn);
+}
+
+.banner-reconnected {
+  background-color: var(--ok-bg);
+  border-bottom: 1px solid var(--ok-border);
+  color: var(--ok);
+}
+
+.console-output {
+  min-height: 520px;
+  height: 520px;
+  background-color: #070B16;
+  padding: 10px;
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.console-output .xterm {
+  height: 100%;
+}
+
+.console-output .xterm-viewport {
+  background-color: #070B16 !important;
+}
+
+.permission-panel-slot {
+  /* Spot left for T3.5 permission prompt panel */
+}
+
+.console-input-area {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background-color: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.console-input-label {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.console-input-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+}
+
+.console-input {
+  flex: 1 1 0%;
+  min-height: 40px;
+  background-color: var(--bg);
+  border: 1px solid var(--border-2);
+  border-radius: 10px;
+  padding: 0 12px;
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 14px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.console-input:focus {
+  border-color: var(--accent);
+}
+
+.console-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.session-ended-panel {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.session-ended-text {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
