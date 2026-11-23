@@ -4,6 +4,7 @@
  */
 import { realpath as fsRealpath, stat } from "node:fs/promises";
 import { isAbsolute, normalize, sep } from "node:path";
+import { translatePath } from "./browse.js";
 
 export class ImportError extends Error {
   override name = "ImportError";
@@ -22,13 +23,18 @@ const MAX_SOURCE = 2048;
 const HTTPS_URL = /^https:\/\/[A-Za-z0-9.-]+(:\d+)?\/[^\s]+$/;
 const SCP_URL = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._~/-]+$/;
 
-/** A local absolute path, or an https / git@host:path URL. Nothing else. */
-export function parseSource(raw: string): Source {
+/**
+ * A local absolute path (including WSL UNC paths `\\wsl.localhost\...`, Windows drives `C:\...`,
+ * and `~/...` when `opts.home` is given), or an https / git@host:path URL. Nothing else.
+ */
+export function parseSource(raw: string, opts?: { home?: string }): Source {
   const value = raw.trim();
   if (value === "") throw new ImportError("Give a folder path or a Git URL.");
   if (value.length > MAX_SOURCE) throw new ImportError("That path or URL is too long.");
   if (value.startsWith("-")) throw new ImportError("That isn't a valid path or URL.");
   if (HTTPS_URL.test(value) || SCP_URL.test(value)) return { kind: "url", url: value };
+  const translated = translatePath(value, opts?.home);
+  if (translated) return { kind: "path", path: translated };
   if (/^[a-z][a-z0-9+.-]*:/i.test(value)) {
     throw new ImportError("Only https:// and git@host:path URLs can be imported.");
   }

@@ -130,7 +130,7 @@ export async function importProject(input: ImportInput, deps: ImportDeps) {
   const { db, git } = deps;
   // 1. Rules first: a forbidden request touches nothing.
   const settings = validateProjectSettings(input.profile, { geminiAllowed: input.geminiAllowed });
-  const source = parseSource(input.source);
+  const source = parseSource(input.source, { home: deps.home });
 
   // 2. Where the project lives.
   let dir: string;

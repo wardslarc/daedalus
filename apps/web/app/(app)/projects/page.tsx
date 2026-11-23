@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useProfile, type Profile } from "../../components/use-profile";
 import { postJson } from "../../csrf-fetch";
 import { MergeKitControl } from "./merge-kit-control";
+import { FolderExplorer } from "./folder-explorer";
 
 const PROFILES: Profile[] = ["All", "Work", "Client", "Personal"];
 const STAGES = ["Intake", "Spec", "Mock", "Plan", "Build", "Review", "Verify", "Ship"] as const;
@@ -44,6 +45,7 @@ export default function ProjectsPage() {
 
   // Import form state
   const [importSource, setImportSource] = useState("");
+  const [isBrowseOpen, setIsBrowseOpen] = useState(false);
   const [importProfile, setImportProfile] = useState<"work" | "client" | "personal">("work");
   const [importName, setImportName] = useState("");
   const [importGemini, setImportGemini] = useState(false);
@@ -141,6 +143,7 @@ export default function ProjectsPage() {
     setImportError(null);
     setImportWarnings([]);
     setImportSource("");
+    setIsBrowseOpen(false);
     setImportName("");
     setImportGemini(false);
     if (currentProfile !== "All") {
@@ -151,6 +154,7 @@ export default function ProjectsPage() {
 
   const closeImport = () => {
     setIsImportOpen(false);
+    setIsBrowseOpen(false);
     setImportError(null);
     setImportWarnings([]);
     setTimeout(() => {
@@ -560,16 +564,39 @@ export default function ProjectsPage() {
               <label htmlFor="import-source" className="form-label">
                 Source
               </label>
-              <input
-                id="import-source"
-                ref={sourceInputRef}
-                type="text"
-                required
-                placeholder="/path/to/repo or https://github.com/..."
-                value={importSource}
-                onChange={(e) => setImportSource(e.target.value)}
-                className="form-input"
-              />
+              <div className="source-input-row">
+                <input
+                  id="import-source"
+                  ref={sourceInputRef}
+                  type="text"
+                  required
+                  placeholder="/path/to/repo, \\wsl.localhost\..., or https://github.com/..."
+                  value={importSource}
+                  onChange={(e) => setImportSource(e.target.value)}
+                  className="form-input"
+                />
+                <button
+                  type="button"
+                  className="btn-secondary source-browse-btn"
+                  aria-expanded={isBrowseOpen}
+                  onClick={() => setIsBrowseOpen((v) => !v)}
+                >
+                  {isBrowseOpen ? "Close" : "Browse…"}
+                </button>
+              </div>
+              <span className="source-helper-note">
+                Choose a folder in WSL or Windows drives, or paste a path / Git URL.
+              </span>
+              {isBrowseOpen && (
+                <FolderExplorer
+                  initialPath={importSource}
+                  onSelectFolder={(selectedPath) => {
+                    setImportSource(selectedPath);
+                    setIsBrowseOpen(false);
+                  }}
+                  onClose={() => setIsBrowseOpen(false)}
+                />
+              )}
             </div>
 
             <fieldset className="form-fieldset">

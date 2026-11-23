@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { openDb, projects } from "@daedalus/db";
 import { branchExists } from "@daedalus/git";
 import { assertProviderAllowed, ProfileRuleError, validateProjectSettings } from "@daedalus/core/profiles";
-import { createProject, ImportError, importProject, mergeKit, realGitOps } from "@daedalus/projects";
+import { createProject, ImportError, importProject, listFolders, mergeKit, realGitOps } from "@daedalus/projects";
 import { loadProviders, repoProvidersFile, SessionManager, syncProviders } from "@daedalus/providers";
 import { SERVICES_KEY, type Services, type ServicesHolder } from "./services.js";
 import { toSessionInfo } from "./ws/channel.js";
@@ -95,6 +95,12 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
       if (!project) throw new ImportError("No such project.", 404);
       return mergeKit(project, { tmpRoot: tmpdir() });
     },
+    browseFolders: (opts) =>
+      listFolders({
+        path: opts?.path,
+        home,
+        showHidden: opts?.showHidden,
+      }),
     updateProjectSettings: async (id, input) => {
       const project = db.select().from(projects).where(eq(projects.id, id)).get();
       if (!project) throw new ImportError("No such project.", 404);

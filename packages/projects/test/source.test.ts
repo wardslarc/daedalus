@@ -19,14 +19,21 @@ const ctx = (over: Partial<Parameters<typeof validateLocalPath>[1]> = {}) => ({
 });
 
 describe("parseSource", () => {
-  it("recognises absolute paths, https and scp-style URLs", () => {
+  it("recognises absolute paths, WSL UNC paths, Windows drive paths, https and scp-style URLs", () => {
     expect(parseSource("/home/me/projects/app")).toEqual({ kind: "path", path: "/home/me/projects/app" });
+    expect(parseSource("\\\\wsl.localhost\\Ubuntu\\home\\me\\work\\app")).toEqual({
+      kind: "path",
+      path: "/home/me/work/app",
+    });
+    expect(parseSource("\\\\wsl$\\Ubuntu\\home\\me\\app")).toEqual({ kind: "path", path: "/home/me/app" });
+    expect(parseSource("C:\\Users\\me\\app")).toEqual({ kind: "path", path: "/mnt/c/Users/me/app" });
+    expect(parseSource("~/work/app", { home: "/home/me" })).toEqual({ kind: "path", path: "/home/me/work/app" });
     expect(parseSource(" https://github.com/me/app.git ")).toEqual({ kind: "url", url: "https://github.com/me/app.git" });
     expect(parseSource("git@gitlab.com:team/app.git")).toEqual({ kind: "url", url: "git@gitlab.com:team/app.git" });
   });
 
-  it("rejects relative paths, ~, empty input and other schemes", () => {
-    for (const bad of ["", "   ", "app", "./app", "../app", "~/app", "file:///etc", "ext::sh -c x", "-oProxyCommand=x", "C:\\Users\\me\\app"]) {
+  it("rejects relative paths, ~ without home, empty input and other schemes", () => {
+    for (const bad of ["", "   ", "app", "./app", "../app", "~/app", "file:///etc", "ext::sh -c x", "-oProxyCommand=x"]) {
       expect(() => parseSource(bad), bad).toThrow(ImportError);
     }
   });

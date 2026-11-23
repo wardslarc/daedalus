@@ -6,7 +6,7 @@
  * survives Next's dev reloads).
  */
 import type { DaedalusDb, projects } from "@daedalus/db";
-import type { CreateInput, createProject, ImportInput, importProject, mergeKit } from "@daedalus/projects";
+import type { BrowseResult, CreateInput, createProject, ImportInput, importProject, mergeKit } from "@daedalus/projects";
 import type { ProviderEntry, SessionManager } from "@daedalus/providers";
 import type { SessionInfo, TerminalInfo } from "./ws/protocol.js";
 import type { TerminalManager } from "./terminal.js";
@@ -31,6 +31,8 @@ export type Services = SessionServices & {
   importProject(input: ImportInput): ReturnType<typeof importProject>;
   createProject(input: CreateInput): ReturnType<typeof createProject>;
   listProjects(): Promise<ProjectWithKit[]>;
+  /** Browse folders on the server (WSL filesystem and /mnt/* drives) for the Import dialog. */
+  browseFolders(opts?: { path?: string; showHidden?: boolean }): BrowseResult;
   /** Merge daedalus/kit into the project's default branch (T2.9). 404 if no such project. */
   mergeKit(projectId: number): ReturnType<typeof mergeKit>;
   /** Update project settings (T2.7). 404 if no such project. Stops agents the new settings forbid. */
