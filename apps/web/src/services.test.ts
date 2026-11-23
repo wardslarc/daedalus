@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { projects } from "@daedalus/db";
 import { closeServices, initServices } from "./init-services.js";
 import { getServices } from "./services.js";
@@ -70,6 +71,118 @@ describe("services", () => {
     expect(p1?.kitPending).toBe(true);
     expect(p2?.kitPending).toBe(false);
     expect(p3?.kitPending).toBe(false);
+  });
+
+  describe("updateProjectSettings", () => {
+    it("saves a Client opt-in", async () => {
+      const dataDir = mkdtempSync(join(tmpdir(), "svc-data-"));
+      const s = initServices({ dataDir, repoRoot: "/srv/daedalus" });
+      const [inserted] = s.db
+        .insert(projects)
+        .values({
+          name: "Client Proj",
+          localPath: "/tmp/client-proj",
+          profile: "client",
+          geminiAllowed: false,
+        })
+        .returning()
+        .all();
+
+      const result = await s.updateProjectSettings(inserted!.id, {
+        profile: "client",
+        geminiAllowed: true,
+      });
+
+      expect(result.project.profile).toBe("client");
+      expect(result.project.geminiAllowed).toBe(true);
+
+      const row = s.db.select().from(projects).where(eq(projects.id, inserted!.id)).get();
+      expect(row?.profile).toBe("client");
+      expect(row?.geminiAllowed).toBe(true);
+    });
+
+    it("Work + geminiAllowed true throws ProfileRuleError and the row is unchanged", async () => {
+      const dataDir = mkdtempSync(join(tmpdir(), "svc-data-"));
+      const s = initServices({ dataDir, repoRoot: "/srv/daedalus" });
+      const [inserted] = s.db
+        .insert(projects)
+        .values({
+          name: "Work Proj",
+          localPath: "/tmp/work-proj",
+          profile: "work",
+          geminiAllowed: false,
+        })
+        .returning()
+        .all();
+
+      await expect(
+        s.updateProjectSettings(inserted!.id, {
+          profile: "work",
+          geminiAllowed: true,
+        }),
+      ).rejects.toThrow(/can't allow Gemini/);
+
+      const row = s.db.select().from(projects).where(eq(projects.id, inserted!.id)).get();
+      expect(row?.profile).toBe("work");
+      expect(row?.geminiAllowed).toBe(false);
+    });
+
+    it("unknown id throws 404-status error", async () => {
+      const dataDir = mkdtempSync(join(tmpdir(), "svc-data-"));
+      const s = initServices({ dataDir, repoRoot: "/srv/daedalus" });
+
+      try {
+        await s.updateProjectSettings(999999, {
+          profile: "work",
+          geminiAllowed: false,
+        });
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        expect((err as { status?: number }).status).toBe(404);
+      }
+    });
+
+    it("stops a running agent the new settings no longer allow, and only that one", async () => {
+      const s = initServices({ dataDir: mkdtempSync(join(tmpdir(), "svc-data-")), repoRoot: "/srv/daedalus" });
+      const [p] = s.db.insert(projects).values({ name: "C", localPath: "/tmp/c", profile: "client", geminiAllowed: true }).returning().all();
+      const fakeSession = (id: string, projectId: number, providerId: string) => ({ id, project: { id: projectId }, providerId, stop: vi.fn(async () => undefined) });
+      const agy = fakeSession("s1", p!.id, "antigravity");
+      const claude = fakeSession("s2", p!.id, "claude");
+      const otherAgy = fakeSession("s3", p!.id + 1, "antigravity");
+      vi.spyOn(s.sessions, "list").mockReturnValue([agy, claude, otherAgy] as never);
+
+      const result = await s.updateProjectSettings(p!.id, { profile: "client", geminiAllowed: false });
+
+      expect(agy.stop).toHaveBeenCalledOnce();
+      expect(claude.stop).not.toHaveBeenCalled();
+      expect(otherAgy.stop).not.toHaveBeenCalled();
+      expect(result.stoppedSessions).toEqual(["s1"]);
+    });
+
+    it("switching a Client project with Gemini on to Work is refused (not silently turned off)", async () => {
+      const dataDir = mkdtempSync(join(tmpdir(), "svc-data-"));
+      const s = initServices({ dataDir, repoRoot: "/srv/daedalus" });
+      const [inserted] = s.db
+        .insert(projects)
+        .values({
+          name: "Client With Gemini",
+          localPath: "/tmp/client-gemini",
+          profile: "client",
+          geminiAllowed: true,
+        })
+        .returning()
+        .all();
+
+      await expect(
+        s.updateProjectSettings(inserted!.id, {
+          profile: "work",
+        }),
+      ).rejects.toThrow(/can't allow Gemini/);
+
+      const row = s.db.select().from(projects).where(eq(projects.id, inserted!.id)).get();
+      expect(row?.profile).toBe("client");
+      expect(row?.geminiAllowed).toBe(true);
+    });
   });
 });
 

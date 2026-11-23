@@ -76,7 +76,7 @@ Imports from a URL clone to `~/work/<name>` for Work projects (WSL file system) 
   Cards from the DB (name, profile, stage, running agents, items waiting), profile filter,
   search, Import and New dialogs, "Merge kit" button. Matches `docs/design/layout.md`.
   check: screenshot vs design with three fixture projects
-- [ ] **T2.7 Profile settings** `[gemini]` — [[SPEC#Profiles]]
+- [x] **T2.7 Profile settings** `[gemini]` — [[SPEC#Profiles]]
   Per-project profile and overrides (e.g. Gemini allowed for one client) saved through the API,
   always validated by T2.2's rules on the server.
   check: e2e — a Work project's "Gemini allowed" can't be turned on, even by a direct POST

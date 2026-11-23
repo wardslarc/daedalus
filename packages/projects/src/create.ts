@@ -120,6 +120,7 @@ export async function createProject(input: CreateInput, deps: CreateDeps) {
         gitHost: null,
         defaultBranch: "main",
         geminiAllowed: settings.geminiAllowed,
+        origin: "created",
       })
       .returning()
       .get();

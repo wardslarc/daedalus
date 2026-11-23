@@ -13,6 +13,11 @@ export type ProjectWithKit = typeof projects.$inferSelect & {
   kitPending: boolean;
 };
 
+export type UpdateSettingsInput = {
+  profile: string;
+  geminiAllowed?: unknown;
+};
+
 export type Services = {
   db: DaedalusDb;
   dataDir: string;
@@ -26,6 +31,11 @@ export type Services = {
   listProjects(): Promise<ProjectWithKit[]>;
   /** Merge daedalus/kit into the project's default branch (T2.9). 404 if no such project. */
   mergeKit(projectId: number): ReturnType<typeof mergeKit>;
+  /** Update project settings (T2.7). 404 if no such project. Stops agents the new settings forbid. */
+  updateProjectSettings(
+    id: number,
+    input: UpdateSettingsInput,
+  ): Promise<{ project: typeof projects.$inferSelect; stoppedSessions: string[] }>;
 };
 
 export const SERVICES_KEY = Symbol.for("daedalus.services");

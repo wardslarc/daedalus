@@ -1,0 +1,1 @@
+ALTER TABLE `projects` ADD `origin` text DEFAULT 'imported' NOT NULL;

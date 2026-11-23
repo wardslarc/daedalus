@@ -18,6 +18,9 @@ export const projects = sqliteTable("projects", {
   geminiAllowed: integer("gemini_allowed", { mode: "boolean" })
     .notNull()
     .default(false),
+  origin: text("origin", { enum: ["imported", "created"] })
+    .notNull()
+    .default("imported"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`(CURRENT_TIMESTAMP)`),
