@@ -73,6 +73,25 @@ Sections are linkable as `[[SPEC#<Heading>]]`.
 - Optional security test by agents, started by the owner ([[SPEC#Security test]]). Its findings are advice; they never pass or fail the gate on their own.
 - Saved security tests (fixed findings, see below) run on every release, with no model, and must pass.
 - The owner accepts the release; nothing ships without that click.
+- Findings never disappear: each becomes a fix task in the same milestone, a change request, or a recorded decision ([[SPEC#Gate findings]]).
+
+## Gate findings
+- UAT item fails: doesn't match the approved spec or mock → bug → fix task. Works as specced but the owner wants it different → change request.
+- Visual difference: intended → accept, the reference screenshot is updated; not intended → fix task.
+- Secret found or a saved script fails: always blocks Ship → fix task. A found secret is removed from the release branch history and the owner rotates the key.
+- Dependency issue: high or critical → fix task, blocks Ship; moderate or low → fix, or accept / defer with a written reason.
+- Security test finding: confirmed high or critical → `[claude]` fix task whose proof is saved first as a failing security test; confirmed medium or low → fix, or accept / defer with a reason, listed in the release notes; plausible → dismiss with a reason, retest, or treat as confirmed.
+- Every fix task goes through Build and Review into the same release branch. Verify then re-runs all automatic checks, the failed UAT items, and each fixed finding's saved proof (no model).
+- Ship unlocks when nothing blocking is open, every UAT item passed, and every accept / defer carries a written reason.
+
+## Change requests
+- Once a milestone starts Build, its spec sections, mock and tasks are frozen (git tag `baseline/<version>`). Agents can't edit SPEC.md during Build; only an accepted change request changes scope. All profiles (Client projects also record the client's approval).
+- Bug or change: something that doesn't match the approved spec or mock is a bug (fix task, no CR); anything different from what was approved is a change, however small.
+- A CR is captured from Project chat or the inbox as `docs/changes/CR-<n>.md` (who asked, what, why, date) and shown in the CR log.
+- Impact: Claude lists the spec sections, tasks (done, running, not started), mock screens and shipped work it touches, and a rough number of new tasks.
+- Owner decides: next milestone (default; the current release is untouched), reject (reason kept), or into the current milestone (explicit override, refused once Verify has started; affected tasks go back to Build, the mock is re-approved if the UI changed, Verify restarts).
+- Applying a CR: the spec interview updates only the affected sections (owner approves the diff), the mock is re-approved if needed, Plan adds or changes tasks tagged with the CR id. Release notes list the CRs each version includes; the docs graph flags tasks whose spec section changed after them.
+- A release can't ship with an open CR aimed at it.
 
 ## Security test
 - Tests only the project's own app: a throwaway instance Daedalus starts on 127.0.0.1 (random port, copy of the data). A Daedalus proxy refuses every other host; agents have no other network access and no free shell.
