@@ -1,11 +1,13 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import Link from "next/link";
 import { useProfile, type Profile } from "../../components/use-profile";
 import { postJson } from "../../csrf-fetch";
 import { MergeKitControl } from "./merge-kit-control";
 
 const PROFILES: Profile[] = ["All", "Work", "Client", "Personal"];
+const STAGES = ["Intake", "Spec", "Mock", "Plan", "Build", "Review", "Verify", "Ship"] as const;
 
 type ProjectData = {
   id: number;
@@ -310,10 +312,34 @@ export default function ProjectsPage() {
     return true;
   });
 
-  const headerSummary =
-    projects.length === 0
-      ? "No projects yet"
-      : `${projects.length} ${projects.length === 1 ? "project" : "projects"}`;
+  const headerSummary = `${projects.length} ${projects.length === 1 ? "project" : "projects"} by phase · 0 tasks running · Claude —% · Antigravity —% this week`;
+
+  const phaseColumns = [
+    {
+      id: "shaping",
+      title: "Shaping",
+      subtitle: "Intake → Plan",
+      items: filteredProjects.filter((p) => !p.kitPending),
+    },
+    {
+      id: "building",
+      title: "Building",
+      subtitle: "Build · Review",
+      items: [] as ProjectData[],
+    },
+    {
+      id: "verify",
+      title: "Verify",
+      subtitle: "Release gate",
+      items: [] as ProjectData[],
+    },
+    {
+      id: "setup",
+      title: "Setup",
+      subtitle: "kit to merge",
+      items: filteredProjects.filter((p) => p.kitPending),
+    },
+  ];
 
   return (
     <>
@@ -323,13 +349,43 @@ export default function ProjectsPage() {
           <p className="header-summary">{headerSummary}</p>
         </div>
         <div className="header-actions">
+          <div className="profile-pills" role="radiogroup" aria-label="Profile filter">
+            {PROFILES.map((p) => {
+              const isSelected = currentProfile === p;
+              return (
+                <button
+                  key={p}
+                  type="button"
+                  role="radio"
+                  aria-checked={isSelected}
+                  className={`profile-pill ${isSelected ? "selected" : ""}`}
+                  onClick={() => selectProfile(p)}
+                >
+                  {p} · {counts[p]}
+                </button>
+              );
+            })}
+          </div>
+          <label htmlFor="projects-search" className="search-group">
+            <span className="search-label">Search</span>
+            <input
+              id="projects-search"
+              type="search"
+              placeholder="Search…"
+              className="search-input"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              suppressHydrationWarning
+            />
+          </label>
           <button
             ref={importBtnRef}
             type="button"
             className="btn-secondary"
             onClick={openImport}
+            aria-label="Import project"
           >
-            Import project
+            Import
           </button>
           <button
             ref={newBtnRef}
@@ -342,112 +398,127 @@ export default function ProjectsPage() {
         </div>
       </header>
 
-      <section className="filter-row" aria-label="Filters">
-        <div className="profile-pills" role="radiogroup" aria-label="Profile filter">
-          {PROFILES.map((p) => {
-            const isSelected = currentProfile === p;
-            return (
-              <button
-                key={p}
-                type="button"
-                role="radio"
-                aria-checked={isSelected}
-                className={`profile-pill ${isSelected ? "selected" : ""}`}
-                onClick={() => selectProfile(p)}
-              >
-                {p} · {counts[p]}
-              </button>
-            );
-          })}
-        </div>
-        <label htmlFor="projects-search" className="search-group">
-          <span className="search-label">Search</span>
-          <input
-            id="projects-search"
-            type="search"
-            placeholder="Search…"
-            className="search-input"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-        </label>
-      </section>
-
       <div className="projects-body">
         <section className="projects-grid-area" aria-label="Projects list">
-          <div className="projects-grid">
-            {projects.length === 0 ? (
-              <div className="empty-project-card">
-                <span className="empty-project-title">No projects yet</span>
-                <p className="empty-project-desc">
-                  Import a folder or a Git URL, or start a new project.
-                </p>
-              </div>
-            ) : filteredProjects.length === 0 ? (
-              <div className="empty-project-card">
-                <span className="empty-project-title">No matching projects</span>
-                <p className="empty-project-desc">
-                  Try clearing the search or choosing a different profile filter.
-                </p>
-              </div>
-            ) : (
-              filteredProjects.map((p) => (
-                <article key={p.id} className="project-card" aria-label={p.name}>
-                  <div className="project-card-header">
-                    <h2 className="project-card-title">{p.name}</h2>
-                    <span className={`profile-chip profile-chip-${p.profile.toLowerCase()}`}>
-                      {p.profile.charAt(0).toUpperCase() + p.profile.slice(1)}
-                    </span>
-                  </div>
-                  <div className="project-card-stage">
-                    <span className="project-stage-name">
-                      {p.origin === "created" ? "Created" : "Imported"}
-                    </span>
-                    {p.kitPending && (
-                      <>
-                        <p className="project-kit-pending">
-                          Kit ready on daedalus/kit — review and merge it in your repo
-                        </p>
-                        <MergeKitControl
-                          projectId={p.id}
-                          localPath={p.localPath}
-                          defaultBranch={p.defaultBranch}
-                          onMerged={async () => {
-                            setMergedIds((prev) => new Set(prev).add(p.id));
-                            await loadProjects();
-                          }}
-                        />
-                      </>
+          {projects.length === 0 ? (
+            <div className="empty-project-card">
+              <span className="empty-project-title">No projects yet</span>
+              <p className="empty-project-desc">
+                Import a folder or a Git URL, or start a new project.
+              </p>
+            </div>
+          ) : filteredProjects.length === 0 ? (
+            <div className="empty-project-card">
+              <span className="empty-project-title">No matching projects</span>
+              <p className="empty-project-desc">
+                Try clearing the search or choosing a different profile filter.
+              </p>
+            </div>
+          ) : (
+            <div className="phase-board-container">
+              <div className="phase-board">
+                {phaseColumns.map((col) => (
+                  <div key={col.id} className="phase-column">
+                    <div className="phase-column-header">
+                      <h2 className="phase-column-title">{col.title} · {col.items.length}</h2>
+                      <span className="phase-column-sub">{col.subtitle}</span>
+                    </div>
+                    {col.items.length === 0 ? (
+                      <div className="phase-empty">None</div>
+                    ) : (
+                      <div className="phase-column-cards">
+                        {col.items.map((p) => (
+                          <article key={p.id} className="project-card" aria-label={p.name}>
+                            <div className="project-card-header">
+                              <h3 className="project-card-title">
+                                <Link href={`/projects/${p.id}/pipeline`}>{p.name}</Link>
+                              </h3>
+                              <span className={`profile-chip profile-chip-${p.profile.toLowerCase()}`}>
+                                {p.profile.charAt(0).toUpperCase() + p.profile.slice(1)}
+                              </span>
+                            </div>
+
+                            <div
+                              className="stage-bar"
+                              role="img"
+                              aria-label="Stage 1 of 8: Intake"
+                            >
+                              {STAGES.map((sName, sIdx) => {
+                                const statusClass = sIdx === 0 ? "current" : "todo";
+                                return (
+                                  <div
+                                    key={sName}
+                                    className={`stage-segment ${statusClass}`}
+                                    title={`Stage ${sIdx + 1}: ${sName}`}
+                                  />
+                                );
+                              })}
+                            </div>
+
+                            <div className="project-card-stage">
+                              {p.kitPending ? (
+                                <>
+                                  <p className="project-kit-pending">
+                                    Kit ready on daedalus/kit — review and merge it in your repo
+                                  </p>
+                                  <MergeKitControl
+                                    projectId={p.id}
+                                    localPath={p.localPath}
+                                    defaultBranch={p.defaultBranch}
+                                    onMerged={async () => {
+                                      setMergedIds((prev) => new Set(prev).add(p.id));
+                                      await loadProjects();
+                                    }}
+                                  />
+                                </>
+                              ) : mergedIds.has(p.id) ? (
+                                <p className="merge-kit-done">Kit merged into {p.defaultBranch}.</p>
+                              ) : (
+                                <p className="project-status-line">Setup complete · {p.defaultBranch}</p>
+                              )}
+                            </div>
+
+                            <div className="project-card-agents">No agents running</div>
+
+                            <footer className="project-card-footer">
+                              <span className="project-git-meta">
+                                {formatGitHost(p.gitHost)} · {p.defaultBranch}
+                              </span>
+                              <div className="project-card-actions">
+                                <button
+                                  type="button"
+                                  className="btn-secondary-sm"
+                                  onClick={(e) => openSettings(p, e.currentTarget)}
+                                >
+                                  Settings
+                                </button>
+                                {!p.kitPending && (
+                                  <Link
+                                    href={`/projects/${p.id}/pipeline`}
+                                    className="btn-primary-sm"
+                                  >
+                                    Open pipeline
+                                  </Link>
+                                )}
+                              </div>
+                            </footer>
+                          </article>
+                        ))}
+                      </div>
                     )}
-                    {!p.kitPending && mergedIds.has(p.id) && (
-                      <p className="merge-kit-done">Kit merged into {p.defaultBranch}.</p>
-                    )}
                   </div>
-                  <div className="project-card-agents">No agents running</div>
-                  <footer className="project-card-footer">
-                    <span className="project-git-meta">
-                      {formatGitHost(p.gitHost)} · {p.defaultBranch}
-                    </span>
-                    <button
-                      type="button"
-                      className="btn-secondary-sm"
-                      onClick={(e) => openSettings(p, e.currentTarget)}
-                    >
-                      Settings
-                    </button>
-                  </footer>
-                </article>
-              ))
-            )}
-          </div>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
 
-        <aside id="inbox" className="inbox-panel" aria-label="Waiting on you">
-          <div className="inbox-header">
-            <h2 className="inbox-title">Waiting on you</h2>
+        <aside id="inbox" className="needs-you-panel inbox-panel" aria-label="Waiting on you">
+          <div className="needs-you-header">
+            <h2 className="needs-you-title">Needs you</h2>
             <span className="inbox-badge">0</span>
           </div>
-          <p className="inbox-empty">Nothing is waiting on you.</p>
+          <p className="needs-you-empty">Nothing needs you.</p>
         </aside>
       </div>
 
