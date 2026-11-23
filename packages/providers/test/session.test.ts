@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { ProfileRuleError } from "@daedalus/core/profiles";
 import type { ProviderEntry } from "../src/registry.js";
-import { SessionError, SessionManager, type AgentEvent, type AgentSession, type SessionProject } from "../src/session.js";
+import { scrubEnv, SessionError, SessionManager, type AgentEvent, type AgentSession, type SessionProject } from "../src/session.js";
 
 const tsxCli = createRequire(import.meta.url).resolve("tsx/cli");
 const fakeAgent = fileURLToPath(new URL("./fixtures/fake-agent.ts", import.meta.url));
@@ -209,4 +209,27 @@ describe.skipIf(process.env.DAE_REAL_AGENTS !== "1")("real Claude (DAE_REAL_AGEN
     await s.prompt("Reply with exactly the word: pong. Do not use any tools.");
     expect(text(await done).toLowerCase()).toContain("pong");
   }, 150000);
+});
+
+describe("scrubEnv", () => {
+  it("drops Daedalus settings, secret-named variables, auth sockets and URLs with credentials", () => {
+    const out = scrubEnv({
+      HOME: "/home/me",
+      PATH: "/usr/bin",
+      LANG: "C.UTF-8",
+      DAE_PORT: "3000",
+      GITHUB_TOKEN: "t",
+      GH_PAT: "p",
+      OPENAI_API_KEY: "k",
+      AWS_SECRET_ACCESS_KEY: "s",
+      DB_PASSWORD: "p",
+      SSH_AUTH_SOCK: "/tmp/ssh-agent.sock",
+      NPM_AUTH: "a",
+      BROWSER_COOKIE: "c",
+      DATABASE_URL: "postgres://admin:hunter2@db.local/app",
+      PROXY: "http://user:pw@proxy:8080",
+      PUBLIC_URL: "https://example.com/app",
+    });
+    expect(Object.keys(out).sort()).toEqual(["HOME", "LANG", "PATH", "PUBLIC_URL"]);
+  });
 });
