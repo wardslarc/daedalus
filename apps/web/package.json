@@ -9,6 +9,7 @@
   },
   "scripts": {
     "dae": "node ./bin/dae.js",
+    "build": "next build",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
