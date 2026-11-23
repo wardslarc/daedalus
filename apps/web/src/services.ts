@@ -7,6 +7,7 @@
  */
 import type { DaedalusDb, projects } from "@daedalus/db";
 import type { CreateInput, createProject, ImportInput, importProject, mergeKit } from "@daedalus/projects";
+import type { ProviderEntry, SessionManager } from "@daedalus/providers";
 
 export type ProjectWithKit = typeof projects.$inferSelect & {
   kitPending: boolean;
@@ -21,16 +22,20 @@ export type Services = {
   db: DaedalusDb;
   dataDir: string;
   repoRoot: string;
+  /** Validated providers.json: the only agents Daedalus may launch (T3.1). */
+  providers: readonly ProviderEntry[];
+  /** Running agent sessions (T3.2); stopped by closeServices on shutdown. */
+  sessions: SessionManager;
   importProject(input: ImportInput): ReturnType<typeof importProject>;
   createProject(input: CreateInput): ReturnType<typeof createProject>;
   listProjects(): Promise<ProjectWithKit[]>;
   /** Merge daedalus/kit into the project's default branch (T2.9). 404 if no such project. */
   mergeKit(projectId: number): ReturnType<typeof mergeKit>;
-  /** Update project settings (T2.7). 404 if no such project. */
+  /** Update project settings (T2.7). 404 if no such project. Stops agents the new settings forbid. */
   updateProjectSettings(
     id: number,
     input: UpdateSettingsInput,
-  ): Promise<{ project: typeof projects.$inferSelect }>;
+  ): Promise<{ project: typeof projects.$inferSelect; stoppedSessions: string[] }>;
 };
 
 export const SERVICES_KEY = Symbol.for("daedalus.services");

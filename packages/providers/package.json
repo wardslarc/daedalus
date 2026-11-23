@@ -1,0 +1,29 @@
+{
+  "name": "@daedalus/providers",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Provider registry (providers.json) and ACP agent sessions",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vitest": "5.1.1"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "2.8.0",
+    "@daedalus/core": "workspace:*",
+    "@daedalus/db": "workspace:*",
+    "drizzle-orm": "0.45.4"
+  }
+}

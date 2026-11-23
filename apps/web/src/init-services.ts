@@ -5,8 +5,9 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { openDb, projects } from "@daedalus/db";
 import { branchExists } from "@daedalus/git";
-import { validateProjectSettings } from "@daedalus/core/profiles";
+import { assertProviderAllowed, ProfileRuleError, validateProjectSettings } from "@daedalus/core/profiles";
 import { createProject, ImportError, importProject, mergeKit, realGitOps } from "@daedalus/projects";
+import { loadProviders, repoProvidersFile, SessionManager, syncProviders } from "@daedalus/providers";
 import { SERVICES_KEY, type Services, type ServicesHolder } from "./services.js";
 
 export type ServicesOptions = { dataDir: string; repoRoot: string };
@@ -16,12 +17,18 @@ const holder = globalThis as ServicesHolder;
 export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
   const existing = holder[SERVICES_KEY];
   if (existing) return existing;
+  // The providers file is the list of programs Daedalus may launch (T3.1). Validate it
+  // before anything else: a broken file stops the server instead of half-loading.
+  const providers = loadProviders(process.env.DAE_PROVIDERS_FILE || repoProvidersFile());
   const db = openDb(join(dataDir, "daedalus.db"));
+  syncProviders(db, providers);
   const home = process.env.DAE_PROJECTS_HOME || homedir();
   const services: Services = {
     db,
     dataDir,
     repoRoot,
+    providers,
+    sessions: new SessionManager({ providers }),
     importProject: (input) =>
       importProject(input, {
         db,
@@ -76,15 +83,33 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
         .where(eq(projects.id, id))
         .returning()
         .get();
-      return { project: updated };
+      // An agent already running on this project must not outlive a setting that forbids it.
+      const stoppedSessions: string[] = [];
+      for (const session of services.sessions.list()) {
+        if (session.project.id !== id) continue;
+        try {
+          assertProviderAllowed(updated, session.providerId);
+        } catch (err) {
+          if (!(err instanceof ProfileRuleError)) throw err;
+          await session.stop();
+          stoppedSessions.push(session.id);
+        }
+      }
+      return { project: updated, stoppedSessions };
     },
   };
   holder[SERVICES_KEY] = services;
   return services;
 }
 
-/** Close the database and forget the instance (shutdown and tests). */
-export function closeServices(): void {
-  holder[SERVICES_KEY]?.db.$client.close();
+/** Stop every agent, close the database and forget the instance (shutdown and tests). */
+export async function closeServices(): Promise<void> {
+  const services = holder[SERVICES_KEY];
   delete holder[SERVICES_KEY];
+  if (!services) return;
+  try {
+    await services.sessions.stopAll();
+  } finally {
+    services.db.$client.close();
+  }
 }

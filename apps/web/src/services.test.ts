@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { projects } from "@daedalus/db";
 import { closeServices, initServices } from "./init-services.js";
@@ -142,6 +142,23 @@ describe("services", () => {
       }
     });
 
+    it("stops a running agent the new settings no longer allow, and only that one", async () => {
+      const s = initServices({ dataDir: mkdtempSync(join(tmpdir(), "svc-data-")), repoRoot: "/srv/daedalus" });
+      const [p] = s.db.insert(projects).values({ name: "C", localPath: "/tmp/c", profile: "client", geminiAllowed: true }).returning().all();
+      const fakeSession = (id: string, projectId: number, providerId: string) => ({ id, project: { id: projectId }, providerId, stop: vi.fn(async () => undefined) });
+      const agy = fakeSession("s1", p!.id, "antigravity");
+      const claude = fakeSession("s2", p!.id, "claude");
+      const otherAgy = fakeSession("s3", p!.id + 1, "antigravity");
+      vi.spyOn(s.sessions, "list").mockReturnValue([agy, claude, otherAgy] as never);
+
+      const result = await s.updateProjectSettings(p!.id, { profile: "client", geminiAllowed: false });
+
+      expect(agy.stop).toHaveBeenCalledOnce();
+      expect(claude.stop).not.toHaveBeenCalled();
+      expect(otherAgy.stop).not.toHaveBeenCalled();
+      expect(result.stoppedSessions).toEqual(["s1"]);
+    });
+
     it("switching a Client project with Gemini on to Work is refused (not silently turned off)", async () => {
       const dataDir = mkdtempSync(join(tmpdir(), "svc-data-"));
       const s = initServices({ dataDir, repoRoot: "/srv/daedalus" });
@@ -166,5 +183,41 @@ describe("services", () => {
       expect(row?.profile).toBe("client");
       expect(row?.geminiAllowed).toBe(true);
     });
+  });
+});
+
+describe("services: provider registry", () => {
+  afterEach(() => {
+    closeServices();
+    delete process.env.DAE_PROVIDERS_FILE;
+  });
+
+  it("loads providers.json at startup and mirrors it into the providers table", () => {
+    const s = initServices({ dataDir: mkdtempSync(join(tmpdir(), "svc-prov-")), repoRoot: "/srv/daedalus" });
+    expect(s.providers.map((p) => p.id).sort()).toEqual(["antigravity", "claude"]);
+    const rows = s.db.$client.prepare("SELECT name, enabled FROM providers ORDER BY name").all();
+    expect(rows).toEqual([
+      { name: "antigravity", enabled: 1 },
+      { name: "claude", enabled: 1 },
+    ]);
+  });
+
+  it("refuses to start with a broken providers file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "svc-prov-"));
+    writeFileSync(join(dir, "providers.json"), JSON.stringify({ providers: [{ id: "claude", kind: "acp" }] }));
+    process.env.DAE_PROVIDERS_FILE = join(dir, "providers.json");
+    expect(() => initServices({ dataDir: dir, repoRoot: "/srv/daedalus" })).toThrow(/providers\.json/);
+  });
+});
+
+describe("services: agent sessions", () => {
+  afterEach(() => closeServices());
+
+  it("closeServices stops every agent session before closing the database", async () => {
+    const s = initServices({ dataDir: mkdtempSync(join(tmpdir(), "svc-sess-")), repoRoot: "/srv/daedalus" });
+    const stopAll = vi.spyOn(s.sessions, "stopAll");
+    await closeServices();
+    expect(stopAll).toHaveBeenCalledOnce();
+    expect(() => getServices()).toThrow(/not initialised/);
   });
 });

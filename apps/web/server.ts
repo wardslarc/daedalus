@@ -60,11 +60,11 @@ async function main(): Promise<void> {
   console.log(`Daedalus ready on http://${HOST}:${port}${dev ? " (dev)" : ""}`);
 
   const stop = (): void => {
+    // Agents get SIGTERM, then SIGKILL after 3 s: leave time for that before giving up.
     server.close(() => {
-      closeServices();
-      process.exit(0);
+      void closeServices().finally(() => process.exit(0));
     });
-    setTimeout(() => process.exit(0), 3000).unref();
+    setTimeout(() => process.exit(0), 5000).unref();
   };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
