@@ -59,10 +59,18 @@ html, body {
   background-color: var(--bg);
   color: var(--ink);
   font-family: var(--font-body);
+  /* Plus Jakarta Sans ships a word space of 0.143em, about half the usual; without this, words run
+     together at 13–14px. Headings and code use their own fonts and reset it below. */
+  word-spacing: 0.12em;
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
+}
+
+/* Browsers reset word-spacing on form controls; let them follow the body text. */
+button, input, select, textarea {
+  word-spacing: inherit;
 }
 
 a {
@@ -232,6 +240,7 @@ button, input, select, textarea {
 /* Status Line */
 .rail-status {
   font-family: var(--font-mono);
+  word-spacing: normal;
   font-size: 10px;
   line-height: 1.2;
   color: var(--muted);
@@ -298,6 +307,7 @@ nextjs-portal {
 
 .header-title-group h1 {
   font-family: var(--font-display);
+  word-spacing: normal;
   font-weight: 700;
   font-size: 30px;
   line-height: 1.2;
@@ -584,9 +594,11 @@ nextjs-portal {
 
 .phase-board {
   display: grid;
-  grid-template-columns: repeat(4, minmax(230px, 1fr));
+  /* 200px columns fit all four beside the inbox at 1440px; narrower screens scroll inside the box. */
+  grid-template-columns: repeat(4, minmax(200px, 1fr));
+  align-items: start;
   gap: 14px;
-  min-width: calc(230px * 4 + 14px * 3);
+  min-width: calc(200px * 4 + 14px * 3);
 }
 
 .phase-column {
@@ -611,6 +623,7 @@ nextjs-portal {
 
 .phase-column-title {
   font-family: var(--font-display);
+  word-spacing: normal;
   font-weight: 600;
   font-size: 14px;
   color: var(--ink);
@@ -662,6 +675,7 @@ nextjs-portal {
 
 .project-card-title {
   font-family: var(--font-display);
+  word-spacing: normal;
   font-weight: 600;
   font-size: 16px;
   line-height: 1.3;
@@ -776,6 +790,7 @@ nextjs-portal {
 
 .project-git-meta {
   font-family: var(--font-mono);
+  word-spacing: normal;
   font-size: 11px;
   color: var(--muted);
 }
@@ -800,6 +815,7 @@ nextjs-portal {
 
 .empty-project-title {
   font-family: var(--font-display);
+  word-spacing: normal;
   font-weight: 600;
   font-size: 16px;
   color: var(--ink);
@@ -837,6 +853,7 @@ nextjs-portal {
 .needs-you-title,
 .inbox-title {
   font-family: var(--font-display);
+  word-spacing: normal;
   font-weight: 600;
   font-size: 16px;
   color: var(--ink);
@@ -878,6 +895,7 @@ nextjs-portal {
 
 .empty-state-milestone {
   font-family: var(--font-mono);
+  word-spacing: normal;
   font-size: 12px;
   color: var(--muted);
 }
@@ -910,6 +928,7 @@ dialog.modal-dialog::backdrop {
 
 .dialog-title {
   font-family: var(--font-display);
+  word-spacing: normal;
   font-weight: 600;
   font-size: 20px;
   color: var(--ink);

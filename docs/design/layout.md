@@ -75,6 +75,9 @@ ids, branches, versions and the local-only line.
 - Page title (h1): Space Grotesk 700, 30px, letter-spacing -0.02em
 - Card / panel title: Space Grotesk 600, 14–18px
 - Body/UI: Plus Jakarta Sans 14px; captions 12–13px; rail labels 11px 600
+- **Word spacing:** Plus Jakarta Sans has a word space of 0.143em, about half the usual, so body text
+  gets `word-spacing: 0.12em` (form controls inherit it); Space Grotesk and JetBrains Mono reset it
+  to `normal`. Without it, words run together at 13–14px (found in T3.9 screenshots).
 
 Radii: buttons/inputs 10px, cards 14px, phase columns 16px, rail items 12px, tabs 9px, pills 999px,
 stage segments 3px. Controls: primary/secondary buttons min-height 40–44px; nothing under 36px.
