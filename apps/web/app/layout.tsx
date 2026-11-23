@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { Space_Grotesk, Plus_Jakarta_Sans, JetBrains_Mono } from "next/font/google";
+import "@xterm/xterm/css/xterm.css";
 import "./globals.css";
 
 const spaceGrotesk = Space_Grotesk({
