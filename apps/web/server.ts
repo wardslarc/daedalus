@@ -81,6 +81,7 @@ async function main(): Promise<void> {
     isSession: auth.isSession,
     onRevoke: auth.onRevoke,
     sessions: services.sessions,
+    terminals: services.terminals,
     ...(dev ? { nextUpgrade: nextHmrUpgrade(app) } : {}),
   });
   console.log(`Daedalus ready on http://${HOST}:${port}${dev ? " (dev)" : ""}`);

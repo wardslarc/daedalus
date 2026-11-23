@@ -37,3 +37,26 @@ describe("parseClientMessage", () => {
     expect(() => parseClientMessage(j({ id: "1", type: "prompt", sessionId: "s", text }))).toThrow(/too large/);
   });
 });
+
+describe("parseClientMessage: terminal messages", () => {
+  it("accepts attach, input, resize and detach", () => {
+    expect(parseClientMessage(j({ id: "1", type: "terminal_attach", terminalId: "t" }))).toEqual({ id: "1", type: "terminal_attach", terminalId: "t" });
+    expect(parseClientMessage(j({ id: "2", type: "terminal_attach", terminalId: "t", since: 120 }))).toMatchObject({ since: 120 });
+    expect(parseClientMessage(j({ id: "3", type: "terminal_input", terminalId: "t", data: "pwd\r" }))).toMatchObject({ data: "pwd\r" });
+    expect(parseClientMessage(j({ id: "4", type: "terminal_resize", terminalId: "t", cols: 120, rows: 40 }))).toMatchObject({ cols: 120, rows: 40 });
+    expect(parseClientMessage(j({ id: "5", type: "terminal_detach", terminalId: "t" }))).toMatchObject({ type: "terminal_detach" });
+  });
+
+  it.each([
+    ["no terminalId", j({ id: "1", type: "terminal_input", data: "x" })],
+    ["a sessionId instead", j({ id: "1", type: "terminal_input", sessionId: "s", data: "x" })],
+    ["input that isn't a string", j({ id: "1", type: "terminal_input", terminalId: "t", data: 5 })],
+    ["empty input", j({ id: "1", type: "terminal_input", terminalId: "t", data: "" })],
+    ["a fractional size", j({ id: "1", type: "terminal_resize", terminalId: "t", cols: 80.5, rows: 24 })],
+    ["a missing row count", j({ id: "1", type: "terminal_resize", terminalId: "t", cols: 80 })],
+    ["a terminalId on a session message", j({ id: "1", type: "cancel", sessionId: "s", terminalId: "t" })],
+    ["a prototype key as the type", j({ id: "1", type: "constructor", sessionId: "s" })],
+  ])("refuses %s", (_, raw) => {
+    expect(() => parseClientMessage(raw)).toThrow(ProtocolError);
+  });
+});

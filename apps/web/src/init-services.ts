@@ -10,6 +10,7 @@ import { createProject, ImportError, importProject, mergeKit, realGitOps } from 
 import { loadProviders, repoProvidersFile, SessionManager, syncProviders } from "@daedalus/providers";
 import { SERVICES_KEY, type Services, type ServicesHolder } from "./services.js";
 import { toSessionInfo } from "./ws/channel.js";
+import { TerminalManager } from "./terminal.js";
 
 export type ServicesOptions = { dataDir: string; repoRoot: string };
 
@@ -26,6 +27,7 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
   const home = process.env.DAE_PROJECTS_HOME || homedir();
   // Run logs (T3.6) live with the database, outside the repo; folders 0700, files 0600.
   const sessions = new SessionManager({ providers, runLogDir: join(dataDir, "runs") });
+  const terminals = new TerminalManager();
   const services: Services = {
     db,
     dataDir,
@@ -44,6 +46,15 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
       if (!s) throw new ImportError("That session isn't running.", 404);
       await s.stop();
     },
+    terminals,
+    openTerminal: async (projectId) => {
+      // The folder comes from the database, never from the browser.
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return terminals.open(project);
+    },
+    listTerminals: () => terminals.list(),
+    closeTerminal: (id) => terminals.close(id),
     importProject: (input) =>
       importProject(input, {
         db,
@@ -123,7 +134,7 @@ export async function closeServices(): Promise<void> {
   delete holder[SERVICES_KEY];
   if (!services) return;
   try {
-    await services.sessions.stopAll();
+    await Promise.all([services.sessions.stopAll(), services.terminals.closeAll()]);
   } finally {
     services.db.$client.close();
   }
