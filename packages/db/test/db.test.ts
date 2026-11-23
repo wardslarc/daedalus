@@ -15,6 +15,7 @@ import {
   inbox,
   docNodes,
   docLinks,
+  shapingState,
 } from "../src/index.js";
 
 describe("@daedalus/db", () => {
@@ -22,7 +23,7 @@ describe("@daedalus/db", () => {
     const db = openDb(":memory:");
     expect(db).toBeDefined();
 
-    // Verify all 9 application tables exist in sqlite_master
+    // Verify all 10 application tables exist in sqlite_master
     const tables = db.$client
       .prepare(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != '__drizzle_migrations' ORDER BY name",
@@ -38,12 +39,13 @@ describe("@daedalus/db", () => {
       "providers",
       "reviews",
       "runs",
+      "shaping_state",
       "tasks",
       "usage",
     ]);
   });
 
-  it("performs insert and select for each of the 9 tables", () => {
+  it("performs insert and select for each of the tables", () => {
     const db = openDb(":memory:");
 
     // 1. projects
@@ -273,6 +275,34 @@ describe("@daedalus/db", () => {
       .where(eq(docLinks.id, docLink!.id))
       .get();
     expect(fetchedDocLink).toEqual(docLink);
+
+    // 10. shaping_state
+    const [shaping] = db
+      .insert(shapingState)
+      .values({
+        projectId: project!.id,
+        intakeCompletedAt: "2026-11-23T10:00:00.000Z",
+        specApprovedAt: "2026-11-23T11:00:00.000Z",
+        mockArtifactUrl: "https://mock.com",
+        mockApprovedBy: "Alice",
+        mockApprovedAt: "2026-11-23T12:00:00.000Z",
+        planApprovedAt: "2026-11-23T13:00:00.000Z",
+        activeMilestoneVersion: "v1.0",
+        activeMilestoneBranch: "daedalus/release-v1.0",
+        activeMilestoneStartedAt: "2026-11-23T14:00:00.000Z",
+        activeMilestoneFrozen: true,
+      })
+      .returning()
+      .all();
+    expect(shaping).toBeDefined();
+    expect(shaping?.activeMilestoneFrozen).toBe(true);
+
+    const fetchedShaping = db
+      .select()
+      .from(shapingState)
+      .where(eq(shapingState.projectId, project!.id))
+      .get();
+    expect(fetchedShaping).toEqual(shaping);
   });
 
   it("enforces foreign keys on insertion", () => {

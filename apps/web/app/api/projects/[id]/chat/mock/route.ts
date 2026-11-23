@@ -25,7 +25,6 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     const approved = await getServices().approveMock(projectId, {
       artifactUrl: typeof body.artifactUrl === "string" ? body.artifactUrl : undefined,
       approvedBy: typeof body.approvedBy === "string" ? body.approvedBy : undefined,
-      approvedAt: typeof body.approvedAt === "string" ? body.approvedAt : undefined,
     });
     return jsonResponse(200, approved);
   } catch (err) {

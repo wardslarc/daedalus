@@ -192,3 +192,27 @@ export const docLinks = sqliteTable("doc_links", {
     .notNull()
     .default(sql`(CURRENT_TIMESTAMP)`),
 });
+
+export const shapingState = sqliteTable("shaping_state", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  projectId: integer("project_id")
+    .notNull()
+    .unique()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  intakeCompletedAt: text("intake_completed_at"),
+  specApprovedAt: text("spec_approved_at"),
+  mockProviderId: text("mock_provider_id"),
+  mockArtifactUrl: text("mock_artifact_url"),
+  mockApprovedBy: text("mock_approved_by"),
+  mockApprovedAt: text("mock_approved_at"),
+  planApprovedAt: text("plan_approved_at"),
+  activeMilestoneVersion: text("active_milestone_version"),
+  activeMilestoneCode: text("active_milestone_code"),
+  activeMilestoneBranch: text("active_milestone_branch"),
+  activeMilestoneStartedAt: text("active_milestone_started_at"),
+  activeMilestoneFrozen: integer("active_milestone_frozen", { mode: "boolean" }),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`(CURRENT_TIMESTAMP)`),
+});
+

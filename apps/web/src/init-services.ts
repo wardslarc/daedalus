@@ -134,7 +134,7 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
       if (!project) throw new ImportError("No such project.", 404);
       const rules = rulesFor(project.profile);
       const effectiveGemini = effectiveGeminiAllowed(project);
-      const state = getShapingState(project.localPath, project);
+      const state = getShapingState(db, projectId, project.localPath, project);
       return {
         ...state,
         project,
@@ -144,12 +144,12 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
     saveIntake: async (projectId, input) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      return saveIntakeDoc(project.localPath, input, project);
+      return saveIntakeDoc(db, projectId, project.localPath, input, project);
     },
     startSpecInterview: async (projectId) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      const { prompt, state } = beginSpecInterview(project.localPath, project);
+      const { prompt, state } = beginSpecInterview(db, projectId, project.localPath, project);
       let session = sessions.list().find((s) => s.project.id === projectId && s.providerId === "claude");
       if (!session) {
         session = await sessions.start(project, "claude");
@@ -163,7 +163,7 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
     approveSpec: async (projectId, input) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      const result = approveSpecDoc(project.localPath, input, project);
+      const result = approveSpecDoc(db, projectId, project.localPath, input, project);
       // Stop any running spec interview session on this project to free the session slot for Mock.
       for (const s of sessions.list()) {
         if (s.project.id === projectId && s.providerId === "claude") {
@@ -175,7 +175,7 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
     startMockSession: async (projectId, providerId) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      const { prompt, state } = beginMockSession(project.localPath, providerId, project);
+      const { prompt, state } = beginMockSession(db, projectId, project.localPath, providerId, project);
       for (const s of sessions.list()) {
         if (s.project.id === projectId && s.providerId !== providerId) {
           await s.stop();
@@ -194,7 +194,7 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
     approveMock: async (projectId, input) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      const result = approveMockDoc(project.localPath, input, project);
+      const result = approveMockDoc(db, projectId, project.localPath, input, project);
       // Stop any running mock session on this project to free the session slot for Step 4 (Plan).
       for (const s of sessions.list()) {
         if (s.project.id === projectId) {
@@ -206,7 +206,7 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
     startPlanSession: async (projectId) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      const { prompt, state } = beginPlanSession(project.localPath, project);
+      const { prompt, state } = beginPlanSession(db, projectId, project.localPath, project);
       for (const s of sessions.list()) {
         if (s.project.id === projectId && s.providerId !== "claude") {
           await s.stop();
@@ -225,7 +225,7 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
     approvePlan: async (projectId, input) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      const result = approvePlanDoc(project.localPath, input, project);
+      const result = approvePlanDoc(db, projectId, project.localPath, input, project);
       syncPlanTasksToDb(db, projectId, project.localPath);
       for (const s of sessions.list()) {
         if (s.project.id === projectId) {
@@ -238,6 +238,8 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
       const result = await startMilestoneRelease(
+        db,
+        projectId,
         project.localPath,
         {
           version: input?.version,
@@ -253,7 +255,7 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
       if (!project) throw new ImportError("No such project.", 404);
       const rules = rulesFor(project.profile);
       const effectiveGemini = effectiveGeminiAllowed(project);
-      const shaping = getShapingState(project.localPath, project);
+      const shaping = getShapingState(db, projectId, project.localPath, project);
       const { milestones, tasks } = syncPlanTasksToDb(db, projectId, project.localPath);
 
       let stage: PipelineStage;

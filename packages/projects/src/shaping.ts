@@ -1,5 +1,8 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync, type Stats } from "node:fs";
 import { join, sep } from "node:path";
+import { eq } from "drizzle-orm";
+import type { DaedalusDb } from "@daedalus/db";
+import { shapingState } from "@daedalus/db";
 import { assertProviderAllowed, effectiveGeminiAllowed, rulesFor, type ProjectLike } from "@daedalus/core/profiles";
 import { branchExists as gitBranchExists, createBranch as gitCreateBranch } from "@daedalus/git";
 
@@ -102,7 +105,6 @@ export type ApproveSpecInput = {
 export type ApproveMockInput = {
   artifactUrl?: string;
   approvedBy?: string;
-  approvedAt?: string;
 };
 
 export type ApprovePlanInput = {
@@ -112,6 +114,7 @@ export type ApprovePlanInput = {
 export type StartMilestoneInput = {
   version?: string;
   defaultBranch?: string;
+  milestoneCode?: string;
 };
 
 export const SHAPING_DOCS = {
@@ -119,7 +122,6 @@ export const SHAPING_DOCS = {
   spec: "docs/SPEC.md",
   mock: "docs/mock.html",
   plan: "docs/PLAN.md",
-  meta: "docs/.shaping.json",
 } as const;
 
 function splitDocsRelPath(relPath: string): string[] {
@@ -387,45 +389,67 @@ export function buildSpecInterviewPrompt(projectName: string, intakeContent: str
   ].join("\n");
 }
 
-function readShapingMeta(localPath: string): ShapingMeta | null {
-  const doc = readShapingDoc(localPath, SHAPING_DOCS.meta);
-  if (!doc.exists || !doc.content) return null;
-  try {
-    const parsed = JSON.parse(doc.content);
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-      return parsed as ShapingMeta;
-    }
-  } catch {
-    // ignore malformed meta and treat as absent
-  }
-  return null;
+function readShapingStateRow(db: DaedalusDb, projectId: number) {
+  return db.select().from(shapingState).where(eq(shapingState.projectId, projectId)).get() ?? null;
 }
 
-function writeShapingMeta(localPath: string, patch: Partial<ShapingMeta>): ShapingMeta {
-  const existing = readShapingMeta(localPath) ?? {};
-  const next: ShapingMeta = { ...existing, ...patch };
-  writeShapingDoc(localPath, SHAPING_DOCS.meta, JSON.stringify(next, null, 2) + "\n");
-  return next;
+function writeShapingStateRow(
+  db: DaedalusDb,
+  projectId: number,
+  patch: Partial<typeof shapingState.$inferInsert>,
+) {
+  const existing = readShapingStateRow(db, projectId);
+  if (existing) {
+    db.update(shapingState).set(patch).where(eq(shapingState.projectId, projectId)).run();
+  } else {
+    db.insert(shapingState).values({ projectId, ...patch }).run();
+  }
 }
 
 /**
  * Inspect the shaping state for a project.
  */
-export function getShapingState(localPath: string, project: ProjectLike): ShapingState {
+export function getShapingState(
+  db: DaedalusDb,
+  projectId: number,
+  localPath: string,
+  project: ProjectLike,
+): ShapingState {
   const intakeDoc = readShapingDoc(localPath, SHAPING_DOCS.intake);
   const specDoc = readShapingDoc(localPath, SHAPING_DOCS.spec);
   const mockDoc = readShapingDoc(localPath, SHAPING_DOCS.mock);
   const planDoc = readShapingDoc(localPath, SHAPING_DOCS.plan);
-  const meta = readShapingMeta(localPath);
+  const row = readShapingStateRow(db, projectId);
 
   const intakeReady = intakeDoc.exists && !isKitTemplateDoc(SHAPING_DOCS.intake, intakeDoc.content);
   const specExists = specDoc.exists && !isKitTemplateDoc(SHAPING_DOCS.spec, specDoc.content);
   const specHasVerify = hasVerifySection(specDoc.content);
-  const specApproved = meta !== null ? Boolean(meta.specApprovedAt) && specExists : specExists;
-  const mockApproved = meta !== null ? Boolean(meta.mockApproval) && mockDoc.exists : mockDoc.exists;
+  const specApproved = Boolean(row?.specApprovedAt) && specExists;
+  const mockApproved = Boolean(row?.mockApprovedAt && row?.mockArtifactUrl) && mockDoc.exists;
   const planExists = planDoc.exists && !isKitTemplateDoc(SHAPING_DOCS.plan, planDoc.content);
   const planValid = isValidPlanMarkdown(planDoc.content);
-  const planApproved = meta !== null ? Boolean(meta.planApprovedAt) && planExists : planExists;
+  const planApproved = Boolean(row?.planApprovedAt) && planExists;
+
+  let mockApproval: MockApproval | null = null;
+  if (row?.mockArtifactUrl && row?.mockApprovedBy && row?.mockApprovedAt) {
+    mockApproval = {
+      artifactUrl: row.mockArtifactUrl,
+      approvedBy: row.mockApprovedBy,
+      approvedAt: row.mockApprovedAt,
+      ...(row.mockProviderId ? { providerId: row.mockProviderId as "claude" | "antigravity" } : {}),
+    };
+  }
+
+  let activeMilestone: MilestoneState | null = null;
+  if (row?.activeMilestoneVersion && row?.activeMilestoneBranch && row?.activeMilestoneStartedAt) {
+    activeMilestone = {
+      version: row.activeMilestoneVersion,
+      ...(row.activeMilestoneCode ? { milestoneCode: row.activeMilestoneCode } : {}),
+      branch: row.activeMilestoneBranch,
+      startedAt: row.activeMilestoneStartedAt,
+      frozen: true,
+    };
+  }
 
   let currentStep: ShapingStepId;
   if (!intakeReady) {
@@ -494,13 +518,13 @@ export function getShapingState(localPath: string, project: ProjectLike): Shapin
       content: specExists ? specDoc.content : null,
       hasVerify: specHasVerify,
       approved: specApproved,
-      approvedAt: meta?.specApprovedAt ?? null,
+      approvedAt: row?.specApprovedAt ?? null,
     },
     mock: {
       exists: mockDoc.exists,
       content: mockDoc.exists ? mockDoc.content : null,
       approved: mockApproved,
-      approval: meta?.mockApproval ?? null,
+      approval: mockApproval,
       allowedProviders,
     },
     plan: {
@@ -508,8 +532,8 @@ export function getShapingState(localPath: string, project: ProjectLike): Shapin
       content: planExists ? planDoc.content : null,
       valid: planValid,
       approved: planApproved,
-      approvedAt: meta?.planApprovedAt ?? null,
-      activeMilestone: meta?.activeMilestone ?? null,
+      approvedAt: row?.planApprovedAt ?? null,
+      activeMilestone,
     },
   };
 }
@@ -518,6 +542,8 @@ export function getShapingState(localPath: string, project: ProjectLike): Shapin
  * Save INTAKE.md safely into project docs folder and return the new shaping state.
  */
 export function saveIntakeDoc(
+  db: DaedalusDb,
+  projectId: number,
   localPath: string,
   input: SaveIntakeInput,
   project: ProjectLike,
@@ -533,12 +559,12 @@ export function saveIntakeDoc(
   }
 
   writeShapingDoc(localPath, SHAPING_DOCS.intake, content);
-  const existingMeta = readShapingMeta(localPath);
-  writeShapingMeta(localPath, {
+  const existingRow = readShapingStateRow(db, projectId);
+  writeShapingStateRow(db, projectId, {
     intakeCompletedAt: new Date().toISOString(),
-    specApprovedAt: existingMeta?.specApprovedAt ?? null,
+    specApprovedAt: existingRow?.specApprovedAt ?? null,
   });
-  const state = getShapingState(localPath, project);
+  const state = getShapingState(db, projectId, localPath, project);
   return {
     ...state,
     ok: true,
@@ -548,10 +574,12 @@ export function saveIntakeDoc(
 
 /**
  * Prepare a project for the guided Claude Spec interview (T4.2).
- * Verifies docs/INTAKE.md is completed, marks spec as unapproved draft in docs/.shaping.json,
+ * Verifies docs/INTAKE.md is completed, marks spec as unapproved draft in shaping_state,
  * and returns the kickoff prompt built from docs/INTAKE.md.
  */
 export function beginSpecInterview(
+  db: DaedalusDb,
+  projectId: number,
   localPath: string,
   project: ProjectLike,
 ): { prompt: string; state: ShapingState } {
@@ -559,14 +587,14 @@ export function beginSpecInterview(
   if (!intakeDoc.exists || !intakeDoc.content || isKitTemplateDoc(SHAPING_DOCS.intake, intakeDoc.content)) {
     throw new ShapingError("Complete and save the Intake form before starting the Spec interview.", 400);
   }
-  const existingMeta = readShapingMeta(localPath);
-  writeShapingMeta(localPath, {
-    intakeCompletedAt: existingMeta?.intakeCompletedAt ?? new Date().toISOString(),
+  const existingRow = readShapingStateRow(db, projectId);
+  writeShapingStateRow(db, projectId, {
+    intakeCompletedAt: existingRow?.intakeCompletedAt ?? new Date().toISOString(),
     specApprovedAt: null,
   });
   return {
     prompt: buildSpecInterviewPrompt(project.name, intakeDoc.content),
-    state: getShapingState(localPath, project),
+    state: getShapingState(db, projectId, localPath, project),
   };
 }
 
@@ -576,6 +604,8 @@ export function beginSpecInterview(
  * Advances the shaping step from Spec to Mock.
  */
 export function approveSpecDoc(
+  db: DaedalusDb,
+  projectId: number,
   localPath: string,
   input: ApproveSpecInput | undefined,
   project: ProjectLike,
@@ -598,13 +628,13 @@ export function approveSpecDoc(
     throw new ShapingError("docs/SPEC.md must include a ## Verify section before it can be approved.", 400);
   }
 
-  const existingMeta = readShapingMeta(localPath);
-  writeShapingMeta(localPath, {
-    intakeCompletedAt: existingMeta?.intakeCompletedAt ?? new Date().toISOString(),
+  const existingRow = readShapingStateRow(db, projectId);
+  writeShapingStateRow(db, projectId, {
+    intakeCompletedAt: existingRow?.intakeCompletedAt ?? new Date().toISOString(),
     specApprovedAt: new Date().toISOString(),
   });
 
-  const state = getShapingState(localPath, project);
+  const state = getShapingState(db, projectId, localPath, project);
   return {
     ...state,
     ok: true,
@@ -631,10 +661,12 @@ export function buildMockPrompt(projectName: string, specContent: string): strin
 /**
  * Prepare a project for the mock building session (T4.3).
  * Enforces profile rules on the server via assertProviderAllowed(project, providerId).
- * Verifies docs/SPEC.md exists and is approved, records unapproved mock state in docs/.shaping.json,
+ * Verifies docs/SPEC.md exists and is approved, records unapproved mock state in shaping_state,
  * and returns the kickoff prompt and updated shaping state.
  */
 export function beginMockSession(
+  db: DaedalusDb,
+  projectId: number,
   localPath: string,
   providerId: string,
   project: ProjectLike,
@@ -645,25 +677,24 @@ export function beginMockSession(
   assertProviderAllowed(project, providerId);
 
   const specDoc = readShapingDoc(localPath, SHAPING_DOCS.spec);
-  const meta = readShapingMeta(localPath);
-  const specApproved =
-    meta !== null
-      ? Boolean(meta.specApprovedAt) && specDoc.exists
-      : specDoc.exists && !isKitTemplateDoc(SHAPING_DOCS.spec, specDoc.content) && hasVerifySection(specDoc.content);
+  const row = readShapingStateRow(db, projectId);
+  const specApproved = Boolean(row?.specApprovedAt) && specDoc.exists && hasVerifySection(specDoc.content);
 
   if (!specApproved || !specDoc.content) {
     throw new ShapingError("docs/SPEC.md must exist and be approved before starting the mock session.", 400);
   }
 
-  writeShapingMeta(localPath, {
-    mockApproval: null,
+  writeShapingStateRow(db, projectId, {
+    mockArtifactUrl: null,
+    mockApprovedBy: null,
+    mockApprovedAt: null,
     mockProviderId: providerId,
   });
 
   return {
     providerId,
     prompt: buildMockPrompt(project.name, specDoc.content),
-    state: getShapingState(localPath, project),
+    state: getShapingState(db, projectId, localPath, project),
   };
 }
 
@@ -673,6 +704,8 @@ export function beginMockSession(
  * Advances the shaping step from Mock to Plan.
  */
 export function approveMockDoc(
+  db: DaedalusDb,
+  projectId: number,
   localPath: string,
   input: ApproveMockInput,
   project: ProjectLike,
@@ -701,20 +734,22 @@ export function approveMockDoc(
     throw new ShapingError("approvedBy is required to approve the mock.", 400);
   }
 
-  const approvedAt = input.approvedAt?.trim() || new Date().toISOString();
-  const meta = readShapingMeta(localPath);
+  const approvedAt = new Date().toISOString();
+  const row = readShapingStateRow(db, projectId);
   const approval: MockApproval = {
     artifactUrl: rawUrl,
     approvedBy,
     approvedAt,
-    ...(meta?.mockProviderId ? { providerId: meta.mockProviderId } : {}),
+    ...(row?.mockProviderId ? { providerId: row.mockProviderId as "claude" | "antigravity" } : {}),
   };
 
-  writeShapingMeta(localPath, {
-    mockApproval: approval,
+  writeShapingStateRow(db, projectId, {
+    mockArtifactUrl: rawUrl,
+    mockApprovedBy: approvedBy,
+    mockApprovedAt: approvedAt,
   });
 
-  const state = getShapingState(localPath, project);
+  const state = getShapingState(db, projectId, localPath, project);
   return {
     ...state,
     ok: true,
@@ -767,15 +802,17 @@ export function buildPlanPrompt(
  * Requires mock approval to be recorded first and refuses if a milestone scope is already frozen.
  */
 export function beginPlanSession(
+  db: DaedalusDb,
+  projectId: number,
   localPath: string,
   project: ProjectLike,
 ): { prompt: string; state: ShapingState } {
-  const meta = readShapingMeta(localPath);
-  if (meta?.activeMilestone?.frozen) {
+  const row = readShapingStateRow(db, projectId);
+  if (row?.activeMilestoneFrozen) {
     throw new ShapingError("Milestone scope is frozen. Submit a change request to modify the plan.", 409);
   }
 
-  const stateBefore = getShapingState(localPath, project);
+  const stateBefore = getShapingState(db, projectId, localPath, project);
   if (!stateBefore.mock.approved) {
     throw new ShapingError("Approve the mock before starting plan generation.", 400);
   }
@@ -783,13 +820,13 @@ export function beginPlanSession(
     throw new ShapingError("docs/SPEC.md is required before starting plan generation.", 400);
   }
 
-  writeShapingMeta(localPath, {
+  writeShapingStateRow(db, projectId, {
     planApprovedAt: null,
   });
 
   return {
     prompt: buildPlanPrompt(project.name, stateBefore.spec.content, stateBefore.mock.approval),
-    state: getShapingState(localPath, project),
+    state: getShapingState(db, projectId, localPath, project),
   };
 }
 
@@ -798,16 +835,18 @@ export function beginPlanSession(
  * Approving the plan only saves it; Start milestone creates the release branch and freezes scope.
  */
 export function approvePlanDoc(
+  db: DaedalusDb,
+  projectId: number,
   localPath: string,
   input: ApprovePlanInput | undefined,
   project: ProjectLike,
 ): ShapingState & { ok: true; content: string } {
-  const meta = readShapingMeta(localPath);
-  if (meta?.activeMilestone?.frozen) {
+  const row = readShapingStateRow(db, projectId);
+  if (row?.activeMilestoneFrozen) {
     throw new ShapingError("Milestone scope is frozen. Submit a change request to modify the plan.", 409);
   }
 
-  const stateBefore = getShapingState(localPath, project);
+  const stateBefore = getShapingState(db, projectId, localPath, project);
   if (!stateBefore.mock.approved) {
     throw new ShapingError("Approve the mock before approving the plan.", 400);
   }
@@ -828,13 +867,12 @@ export function approvePlanDoc(
     );
   }
 
-  // Re-save via writeShapingDoc so approving always persists the validated file cleanly on disk.
   writeShapingDoc(localPath, SHAPING_DOCS.plan, planDoc.content);
-  writeShapingMeta(localPath, {
+  writeShapingStateRow(db, projectId, {
     planApprovedAt: new Date().toISOString(),
   });
 
-  const state = getShapingState(localPath, project);
+  const state = getShapingState(db, projectId, localPath, project);
   return {
     ...state,
     ok: true,
@@ -861,6 +899,8 @@ export function normalizeReleaseVersion(raw?: string): string {
  * project's default branch in git and freezes that milestone's scope.
  */
 export async function startMilestoneRelease(
+  db: DaedalusDb,
+  projectId: number,
   localPath: string,
   input: StartMilestoneInput | undefined,
   project: ProjectLike,
@@ -869,7 +909,7 @@ export async function startMilestoneRelease(
     createBranch: (dir: string, name: string, opts?: { from?: string }) => Promise<void>;
   } = { branchExists: gitBranchExists, createBranch: gitCreateBranch },
 ): Promise<ShapingState & { ok: true; milestone: MilestoneState }> {
-  const stateBefore = getShapingState(localPath, project);
+  const stateBefore = getShapingState(db, projectId, localPath, project);
   if (!stateBefore.plan.approved || !stateBefore.plan.exists) {
     throw new ShapingError("Approve docs/PLAN.md before starting a milestone.", 400);
   }
@@ -891,11 +931,15 @@ export async function startMilestoneRelease(
     frozen: true,
   };
 
-  writeShapingMeta(localPath, {
-    activeMilestone: milestone,
+  writeShapingStateRow(db, projectId, {
+    activeMilestoneVersion: version,
+    activeMilestoneCode: input?.milestoneCode ?? null,
+    activeMilestoneBranch: branch,
+    activeMilestoneStartedAt: milestone.startedAt,
+    activeMilestoneFrozen: true,
   });
 
-  const state = getShapingState(localPath, project);
+  const state = getShapingState(db, projectId, localPath, project);
   return {
     ...state,
     ok: true,

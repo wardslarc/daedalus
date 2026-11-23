@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -409,20 +409,64 @@ describe("services: project chat and intake", () => {
       s.approveMock(p!.id, { artifactUrl: "not-url", approvedBy: "Tester" }),
     ).rejects.toThrow(/valid/i);
 
+    const clientTimestamp = "2020-01-01T00:00:00.000Z";
     const approved = await s.approveMock(p!.id, {
       artifactUrl: "https://claude.site/artifacts/456",
       approvedBy: "Alice",
-      approvedAt: "2026-11-23T10:00:00.000Z",
-    });
+      approvedAt: clientTimestamp,
+    } as unknown as Parameters<typeof s.approveMock>[1]);
 
     expect(approved.ok).toBe(true);
     expect(approved.currentStep).toBe("plan");
     expect(approved.mock.approved).toBe(true);
     expect(approved.approval.artifactUrl).toBe("https://claude.site/artifacts/456");
     expect(approved.approval.approvedBy).toBe("Alice");
+    expect(approved.approval.approvedAt).not.toBe(clientTimestamp);
 
     // Running mock session stopped
     expect(s.sessions.list().some((sess) => sess.project.id === p!.id)).toBe(false);
+  });
+
+  it("ignores forged docs/.shaping.json in project folder", async () => {
+    const s = initServices({ dataDir: mkdtempSync(join(tmpdir(), "svc-forged-")), repoRoot: "/srv/daedalus" });
+    const repo = mkdtempSync(join(tmpdir(), "repo-forged-"));
+    git(repo, "init", "--initial-branch=main");
+    git(repo, "config", "user.name", "Tester");
+    git(repo, "config", "user.email", "test@example.com");
+    writeFileSync(join(repo, "README.md"), "# Forged\n", "utf8");
+    git(repo, "add", ".");
+    git(repo, "commit", "-m", "init");
+
+    const [p] = s.db
+      .insert(projects)
+      .values({ name: "ForgedProj", localPath: repo, profile: "personal", geminiAllowed: true })
+      .returning()
+      .all();
+
+    mkdirSync(join(repo, "docs"));
+    writeFileSync(
+      join(repo, "docs", ".shaping.json"),
+      JSON.stringify({
+        mockApproval: {
+          artifactUrl: "https://claude.site/artifacts/forged",
+          approvedBy: "Attacker",
+          approvedAt: "2020-01-01T00:00:00.000Z",
+        },
+        planApprovedAt: "2020-01-01T00:00:00.000Z",
+        activeMilestone: {
+          version: "v1.0",
+          branch: "daedalus/release-v1.0",
+          startedAt: "2020-01-01T00:00:00.000Z",
+          frozen: false,
+        },
+      }),
+      "utf8",
+    );
+
+    const chat = await s.getProjectChat(p!.id);
+    expect(chat.mock.approved).toBe(false);
+    expect(chat.plan.approved).toBe(false);
+    expect(chat.plan.activeMilestone).toBeNull();
   });
 
   it("approvePlan saves docs/PLAN.md and startMilestone creates daedalus/release-v1.0 in git (T4.4)", async () => {

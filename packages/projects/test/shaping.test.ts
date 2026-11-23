@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { openDb, projects, type DaedalusDb } from "@daedalus/db";
 import {
   approveMockDoc,
   approvePlanDoc,
@@ -28,12 +29,22 @@ import { ProfileRuleError } from "@daedalus/core/profiles";
 
 describe("shaping service", () => {
   let rootDir: string;
+  let db: DaedalusDb;
+  let projectId: number;
 
   beforeEach(() => {
     rootDir = mkdtempSync(join(tmpdir(), "daedalus-shaping-test-"));
+    db = openDb(":memory:");
+    const [p] = db
+      .insert(projects)
+      .values({ name: "TestProj", localPath: rootDir, profile: "personal", geminiAllowed: true })
+      .returning()
+      .all();
+    projectId = p!.id;
   });
 
   afterEach(() => {
+    db.$client.close();
     rmSync(rootDir, { recursive: true, force: true });
   });
 
@@ -181,12 +192,39 @@ describe("shaping service", () => {
 
   describe("getShapingState", () => {
     it("reports step 1 Intake as current when no files exist", () => {
-      const state = getShapingState(rootDir, { name: "Test", profile: "work", geminiAllowed: false });
+      const state = getShapingState(db, projectId, rootDir, { name: "Test", profile: "work", geminiAllowed: false });
       expect(state.currentStep).toBe("intake");
       expect(state.steps[0]).toMatchObject({ id: "intake", status: "current", exists: false });
       expect(state.steps[1]).toMatchObject({ id: "spec", status: "locked", exists: false });
       expect(state.steps[2]).toMatchObject({ id: "mock", status: "locked", exists: false });
       expect(state.steps[3]).toMatchObject({ id: "plan", status: "locked", exists: false });
+    });
+
+    it("ignores forged docs/.shaping.json in project folder", () => {
+      mkdirSync(join(rootDir, "docs"));
+      writeFileSync(
+        join(rootDir, "docs", ".shaping.json"),
+        JSON.stringify({
+          mockApproval: {
+            artifactUrl: "https://claude.site/artifacts/forged",
+            approvedBy: "Attacker",
+            approvedAt: "2020-01-01T00:00:00.000Z",
+          },
+          planApprovedAt: "2020-01-01T00:00:00.000Z",
+          activeMilestone: {
+            version: "v1.0",
+            branch: "daedalus/release-v1.0",
+            startedAt: "2020-01-01T00:00:00.000Z",
+            frozen: false,
+          },
+        }),
+        "utf8",
+      );
+
+      const state = getShapingState(db, projectId, rootDir, { name: "Test", profile: "personal", geminiAllowed: true });
+      expect(state.mock.approved).toBe(false);
+      expect(state.plan.approved).toBe(false);
+      expect(state.plan.activeMilestone).toBeNull();
     });
 
     it("treats unedited kit scaffold docs as not yet completed", () => {
@@ -207,7 +245,7 @@ describe("shaping service", () => {
         "utf8",
       );
 
-      const state = getShapingState(rootDir, { name: "Test", profile: "personal", geminiAllowed: true });
+      const state = getShapingState(db, projectId, rootDir, { name: "Test", profile: "personal", geminiAllowed: true });
       expect(state.currentStep).toBe("intake");
       expect(state.intake.exists).toBe(false);
       expect(state.intake.fields).toEqual({});
@@ -218,9 +256,9 @@ describe("shaping service", () => {
 
     it("advances to step 2 Spec when docs/INTAKE.md exists", () => {
       mkdirSync(join(rootDir, "docs"));
-      writeFileSync(join(rootDir, "docs", "INTAKE.md"), "# Intake\n", "utf8");
+      writeFileSync(join(rootDir, "docs", "INTAKE.md"), "# Intake\n- **Problem:** Real problem\n", "utf8");
 
-      const state = getShapingState(rootDir, { name: "Test", profile: "work", geminiAllowed: false });
+      const state = getShapingState(db, projectId, rootDir, { name: "Test", profile: "work", geminiAllowed: false });
       expect(state.currentStep).toBe("spec");
       expect(state.steps[0]).toMatchObject({ id: "intake", status: "completed", exists: true });
       expect(state.steps[1]).toMatchObject({ id: "spec", status: "current", exists: false });
@@ -228,63 +266,39 @@ describe("shaping service", () => {
       expect(state.steps[3]).toMatchObject({ id: "plan", status: "locked", exists: false });
     });
 
-    it("advances to step 3 Mock when docs/SPEC.md exists", () => {
+    it("keeps currentStep at spec when docs exist without db approval records", () => {
       mkdirSync(join(rootDir, "docs"));
-      writeFileSync(join(rootDir, "docs", "INTAKE.md"), "# Intake\n", "utf8");
-      writeFileSync(join(rootDir, "docs", "SPEC.md"), "# Spec\n", "utf8");
-
-      const state = getShapingState(rootDir, { name: "Test", profile: "work", geminiAllowed: false });
-      expect(state.currentStep).toBe("mock");
-      expect(state.steps[0]!.status).toBe("completed");
-      expect(state.steps[1]!.status).toBe("completed");
-      expect(state.steps[2]!.status).toBe("current");
-      expect(state.steps[3]!.status).toBe("locked");
-    });
-
-    it("advances to step 4 Plan when docs/mock.html exists", () => {
-      mkdirSync(join(rootDir, "docs"));
-      writeFileSync(join(rootDir, "docs", "INTAKE.md"), "# Intake\n", "utf8");
-      writeFileSync(join(rootDir, "docs", "SPEC.md"), "# Spec\n", "utf8");
-      writeFileSync(join(rootDir, "docs", "mock.html"), "<html></html>", "utf8");
-
-      const state = getShapingState(rootDir, { name: "Test", profile: "work", geminiAllowed: false });
-      expect(state.currentStep).toBe("plan");
-      expect(state.steps[0]!.status).toBe("completed");
-      expect(state.steps[1]!.status).toBe("completed");
-      expect(state.steps[2]!.status).toBe("completed");
-      expect(state.steps[3]!.status).toBe("current");
-    });
-
-    it("marks all completed when docs/PLAN.md also exists", () => {
-      mkdirSync(join(rootDir, "docs"));
-      writeFileSync(join(rootDir, "docs", "INTAKE.md"), "# Intake\n", "utf8");
-      writeFileSync(join(rootDir, "docs", "SPEC.md"), "# Spec\n", "utf8");
+      writeFileSync(join(rootDir, "docs", "INTAKE.md"), "# Intake\n- **Problem:** Real problem\n", "utf8");
+      writeFileSync(join(rootDir, "docs", "SPEC.md"), "# Spec\n## Overview\n- Real\n## Verify\n- Passes\n", "utf8");
       writeFileSync(join(rootDir, "docs", "mock.html"), "<html></html>", "utf8");
       writeFileSync(join(rootDir, "docs", "PLAN.md"), "# Plan\n", "utf8");
 
-      const state = getShapingState(rootDir, { name: "Test", profile: "work", geminiAllowed: false });
-      expect(state.currentStep).toBe("plan");
+      const state = getShapingState(db, projectId, rootDir, { name: "Test", profile: "work", geminiAllowed: false });
+      expect(state.currentStep).toBe("spec");
       expect(state.steps[0]!.status).toBe("completed");
-      expect(state.steps[1]!.status).toBe("completed");
-      expect(state.steps[2]!.status).toBe("completed");
-      expect(state.steps[3]!.status).toBe("completed");
+      expect(state.steps[1]!.status).toBe("current");
+      expect(state.steps[2]!.status).toBe("locked");
+      expect(state.steps[3]!.status).toBe("locked");
+      expect(state.spec.approved).toBe(false);
+      expect(state.mock.approved).toBe(false);
+      expect(state.plan.approved).toBe(false);
     });
 
     it("assigns provider badges according to profile rules", () => {
       // Work: Claude only for mock
-      const workState = getShapingState(rootDir, { name: "Test", profile: "work", geminiAllowed: false });
+      const workState = getShapingState(db, projectId, rootDir, { name: "Test", profile: "work", geminiAllowed: false });
       expect(workState.steps.find((s) => s.id === "mock")?.provider).toBe("Claude");
 
       // Client with geminiAllowed=false: Claude only
-      const clientFalse = getShapingState(rootDir, { name: "Test", profile: "client", geminiAllowed: false });
+      const clientFalse = getShapingState(db, projectId, rootDir, { name: "Test", profile: "client", geminiAllowed: false });
       expect(clientFalse.steps.find((s) => s.id === "mock")?.provider).toBe("Claude");
 
       // Client with geminiAllowed=true: Claude / Antigravity
-      const clientTrue = getShapingState(rootDir, { name: "Test", profile: "client", geminiAllowed: true });
+      const clientTrue = getShapingState(db, projectId, rootDir, { name: "Test", profile: "client", geminiAllowed: true });
       expect(clientTrue.steps.find((s) => s.id === "mock")?.provider).toBe("Claude / Antigravity");
 
       // Personal: Claude / Antigravity
-      const personal = getShapingState(rootDir, { name: "Test", profile: "personal", geminiAllowed: false });
+      const personal = getShapingState(db, projectId, rootDir, { name: "Test", profile: "personal", geminiAllowed: false });
       expect(personal.steps.find((s) => s.id === "mock")?.provider).toBe("Claude / Antigravity");
 
       // Spec and Plan always Claude
@@ -296,6 +310,8 @@ describe("shaping service", () => {
   describe("saveIntakeDoc", () => {
     it("saves structured fields into docs/INTAKE.md", () => {
       const result = saveIntakeDoc(
+        db,
+        projectId,
         rootDir,
         {
           fields: {
@@ -320,6 +336,8 @@ describe("shaping service", () => {
     it("saves raw markdown content directly", () => {
       const raw = "# Custom Intake\n\n- **Problem:** Custom problem\n";
       const result = saveIntakeDoc(
+        db,
+        projectId,
         rootDir,
         { content: raw },
         { name: "My Project", profile: "personal", geminiAllowed: true },
@@ -358,6 +376,8 @@ describe("shaping service", () => {
 
     it("keeps currentStep on spec when docs/SPEC.md is updated live before approval", () => {
       saveIntakeDoc(
+        db,
+        projectId,
         rootDir,
         {
           fields: {
@@ -369,7 +389,7 @@ describe("shaping service", () => {
         proj,
       );
 
-      const started = beginSpecInterview(rootDir, proj);
+      const started = beginSpecInterview(db, projectId, rootDir, proj);
       expect(started.prompt).toContain("Fragmented workflow");
       expect(started.state.currentStep).toBe("spec");
 
@@ -380,7 +400,7 @@ describe("shaping service", () => {
         "utf8",
       );
 
-      const draftState = getShapingState(rootDir, proj);
+      const draftState = getShapingState(db, projectId, rootDir, proj);
       expect(draftState.currentStep).toBe("spec");
       expect(draftState.spec.exists).toBe(true);
       expect(draftState.spec.hasVerify).toBe(false);
@@ -389,8 +409,8 @@ describe("shaping service", () => {
       expect(draftState.steps.find((s) => s.id === "mock")?.status).toBe("locked");
 
       // Approving without ## Verify is refused
-      expect(() => approveSpecDoc(rootDir, undefined, proj)).toThrow(ShapingError);
-      expect(() => approveSpecDoc(rootDir, undefined, proj)).toThrow(/## Verify/i);
+      expect(() => approveSpecDoc(db, projectId, rootDir, undefined, proj)).toThrow(ShapingError);
+      expect(() => approveSpecDoc(db, projectId, rootDir, undefined, proj)).toThrow(/## Verify/i);
 
       // Agent updates docs/SPEC.md live with ## Verify
       writeFileSync(
@@ -399,13 +419,13 @@ describe("shaping service", () => {
         "utf8",
       );
 
-      const readyState = getShapingState(rootDir, proj);
+      const readyState = getShapingState(db, projectId, rootDir, proj);
       expect(readyState.currentStep).toBe("spec");
       expect(readyState.spec.hasVerify).toBe(true);
       expect(readyState.spec.approved).toBe(false);
 
       // Owner clicks Approve spec -> advances to mock
-      const approved = approveSpecDoc(rootDir, undefined, proj);
+      const approved = approveSpecDoc(db, projectId, rootDir, undefined, proj);
       expect(approved.ok).toBe(true);
       expect(approved.currentStep).toBe("mock");
       expect(approved.spec.approved).toBe(true);
@@ -415,14 +435,16 @@ describe("shaping service", () => {
     });
 
     it("refuses approveSpecDoc when Intake or SPEC.md is missing", () => {
-      expect(() => approveSpecDoc(rootDir, undefined, proj)).toThrow(/Intake/i);
+      expect(() => approveSpecDoc(db, projectId, rootDir, undefined, proj)).toThrow(/Intake/i);
 
       saveIntakeDoc(
+        db,
+        projectId,
         rootDir,
         { fields: { problem: "P", users: "U", constraints: "C" } },
         proj,
       );
-      expect(() => approveSpecDoc(rootDir, undefined, proj)).toThrow(/SPEC\.md does not exist/i);
+      expect(() => approveSpecDoc(db, projectId, rootDir, undefined, proj)).toThrow(/SPEC\.md does not exist/i);
     });
   });
 
@@ -433,17 +455,19 @@ describe("shaping service", () => {
 
     function setupApprovedSpec(dir: string, proj = personalProj) {
       saveIntakeDoc(
+        db,
+        projectId,
         dir,
         { fields: { problem: "Need clickable mock", users: "Dev", constraints: "Web" } },
         proj,
       );
-      beginSpecInterview(dir, proj);
+      beginSpecInterview(db, projectId, dir, proj);
       writeFileSync(
         join(dir, "docs", "SPEC.md"),
         "# Spec\n\n## Overview\n- Ready\n\n## Verify\n- Passes e2e\n",
         "utf8",
       );
-      approveSpecDoc(dir, undefined, proj);
+      approveSpecDoc(db, projectId, dir, undefined, proj);
     }
 
     it("buildMockPrompt includes project name and SPEC.md content", () => {
@@ -454,19 +478,19 @@ describe("shaping service", () => {
     });
 
     it("refuses beginMockSession when spec is not approved", () => {
-      expect(() => beginMockSession(rootDir, "claude", personalProj)).toThrow(ShapingError);
-      expect(() => beginMockSession(rootDir, "claude", personalProj)).toThrow(/SPEC\.md/i);
+      expect(() => beginMockSession(db, projectId, rootDir, "claude", personalProj)).toThrow(ShapingError);
+      expect(() => beginMockSession(db, projectId, rootDir, "claude", personalProj)).toThrow(/SPEC\.md/i);
     });
 
     it("enforces profile rules: refuses antigravity on Work project or Client without Gemini", () => {
       setupApprovedSpec(rootDir, workProj);
-      expect(() => beginMockSession(rootDir, "antigravity", workProj)).toThrow(ProfileRuleError);
-      expect(() => beginMockSession(rootDir, "antigravity", workProj)).toThrow(/Gemini/i);
+      expect(() => beginMockSession(db, projectId, rootDir, "antigravity", workProj)).toThrow(ProfileRuleError);
+      expect(() => beginMockSession(db, projectId, rootDir, "antigravity", workProj)).toThrow(/Gemini/i);
 
-      expect(() => beginMockSession(rootDir, "antigravity", clientNoGemini)).toThrow(ProfileRuleError);
+      expect(() => beginMockSession(db, projectId, rootDir, "antigravity", clientNoGemini)).toThrow(ProfileRuleError);
 
       // Claude is allowed on Work project
-      const session = beginMockSession(rootDir, "claude", workProj);
+      const session = beginMockSession(db, projectId, rootDir, "claude", workProj);
       expect(session.providerId).toBe("claude");
       expect(session.prompt).toContain("[Mock build]");
     });
@@ -474,20 +498,20 @@ describe("shaping service", () => {
     it("allows both claude and antigravity on Personal project", () => {
       setupApprovedSpec(rootDir, personalProj);
 
-      const claudeSession = beginMockSession(rootDir, "claude", personalProj);
+      const claudeSession = beginMockSession(db, projectId, rootDir, "claude", personalProj);
       expect(claudeSession.providerId).toBe("claude");
 
-      const agySession = beginMockSession(rootDir, "antigravity", personalProj);
+      const agySession = beginMockSession(db, projectId, rootDir, "antigravity", personalProj);
       expect(agySession.providerId).toBe("antigravity");
       expect(agySession.state.mock.allowedProviders).toEqual(["claude", "antigravity"]);
     });
 
     it("keeps currentStep as mock while docs/mock.html is revised live until approveMockDoc is called", () => {
       setupApprovedSpec(rootDir, personalProj);
-      beginMockSession(rootDir, "claude", personalProj);
+      beginMockSession(db, projectId, rootDir, "claude", personalProj);
 
       // Initial state: currentStep is mock, Step 4 Plan is locked
-      let state = getShapingState(rootDir, personalProj);
+      let state = getShapingState(db, projectId, rootDir, personalProj);
       expect(state.currentStep).toBe("mock");
       expect(state.steps.find((s) => s.id === "mock")?.status).toBe("current");
       expect(state.steps.find((s) => s.id === "plan")?.status).toBe("locked");
@@ -498,7 +522,7 @@ describe("shaping service", () => {
       writeFileSync(join(rootDir, "docs", "mock.html"), "<html><body>Initial mock</body></html>", "utf8");
 
       // Even with mock.html on disk, currentStep stays mock until approval!
-      state = getShapingState(rootDir, personalProj);
+      state = getShapingState(db, projectId, rootDir, personalProj);
       expect(state.currentStep).toBe("mock");
       expect(state.steps.find((s) => s.id === "mock")?.status).toBe("current");
       expect(state.steps.find((s) => s.id === "plan")?.status).toBe("locked");
@@ -507,36 +531,39 @@ describe("shaping service", () => {
 
       // Revisions in chat update docs/mock.html
       writeFileSync(join(rootDir, "docs", "mock.html"), "<html><body>Revised mock</body></html>", "utf8");
-      state = getShapingState(rootDir, personalProj);
+      state = getShapingState(db, projectId, rootDir, personalProj);
       expect(state.currentStep).toBe("mock");
       expect(state.mock.approved).toBe(false);
     });
 
     it("approveMockDoc validates inputs and records approval metadata", () => {
       setupApprovedSpec(rootDir, personalProj);
-      beginMockSession(rootDir, "claude", personalProj);
+      beginMockSession(db, projectId, rootDir, "claude", personalProj);
 
       // Fails when mock.html is missing
-      expect(() => approveMockDoc(rootDir, { artifactUrl: "https://claude.site/artifacts/123", approvedBy: "Carls" }, personalProj)).toThrow(/docs\/mock\.html/i);
+      expect(() => approveMockDoc(db, projectId, rootDir, { artifactUrl: "https://claude.site/artifacts/123", approvedBy: "Carls" }, personalProj)).toThrow(/docs\/mock\.html/i);
 
       writeFileSync(join(rootDir, "docs", "mock.html"), "<html><body>Clickable mock</body></html>", "utf8");
 
       // Fails when artifactUrl is missing or invalid
-      expect(() => approveMockDoc(rootDir, { approvedBy: "Carls" }, personalProj)).toThrow(/artifactUrl/i);
-      expect(() => approveMockDoc(rootDir, { artifactUrl: "not-a-url", approvedBy: "Carls" }, personalProj)).toThrow(/valid/i);
-      expect(() => approveMockDoc(rootDir, { artifactUrl: "javascript:alert(1)", approvedBy: "Carls" }, personalProj)).toThrow(/valid/i);
+      expect(() => approveMockDoc(db, projectId, rootDir, { approvedBy: "Carls" }, personalProj)).toThrow(/artifactUrl/i);
+      expect(() => approveMockDoc(db, projectId, rootDir, { artifactUrl: "not-a-url", approvedBy: "Carls" }, personalProj)).toThrow(/valid/i);
+      expect(() => approveMockDoc(db, projectId, rootDir, { artifactUrl: "javascript:alert(1)", approvedBy: "Carls" }, personalProj)).toThrow(/valid/i);
 
       // Fails when approvedBy is missing or whitespace
-      expect(() => approveMockDoc(rootDir, { artifactUrl: "https://claude.site/artifacts/123", approvedBy: "   " }, personalProj)).toThrow(/approvedBy/i);
+      expect(() => approveMockDoc(db, projectId, rootDir, { artifactUrl: "https://claude.site/artifacts/123", approvedBy: "   " }, personalProj)).toThrow(/approvedBy/i);
 
-      // Valid approval succeeds
+      // Valid approval succeeds and uses server time (ignores client approvedAt)
+      const clientTimestamp = "2020-01-01T00:00:00.000Z";
       const result = approveMockDoc(
+        db,
+        projectId,
         rootDir,
         {
           artifactUrl: "https://claude.site/artifacts/abc-123",
           approvedBy: "Carls",
-          approvedAt: "2026-11-23T12:00:00.000Z",
-        },
+          approvedAt: clientTimestamp,
+        } as unknown as Parameters<typeof approveMockDoc>[3],
         personalProj,
       );
 
@@ -546,9 +573,10 @@ describe("shaping service", () => {
       expect(result.mock.approval).toEqual({
         artifactUrl: "https://claude.site/artifacts/abc-123",
         approvedBy: "Carls",
-        approvedAt: "2026-11-23T12:00:00.000Z",
+        approvedAt: expect.any(String),
         providerId: "claude",
       });
+      expect(result.mock.approval?.approvedAt).not.toBe(clientTimestamp);
       expect(result.steps.find((s) => s.id === "mock")?.status).toBe("completed");
       expect(result.steps.find((s) => s.id === "plan")?.status).toBe("current");
     });
@@ -574,20 +602,24 @@ describe("shaping service", () => {
 
     function setupApprovedMock(dir: string) {
       saveIntakeDoc(
+        db,
+        projectId,
         dir,
         { fields: { problem: "Need plan & release branch", users: "Dev", constraints: "Local" } },
         proj,
       );
-      beginSpecInterview(dir, proj);
+      beginSpecInterview(db, projectId, dir, proj);
       writeFileSync(
         join(dir, "docs", "SPEC.md"),
         "# Spec\n\n## Overview\n- Core\n\n## Verify\n- E2E passes\n",
         "utf8",
       );
-      approveSpecDoc(dir, undefined, proj);
-      beginMockSession(dir, "claude", proj);
+      approveSpecDoc(db, projectId, dir, undefined, proj);
+      beginMockSession(db, projectId, dir, "claude", proj);
       writeFileSync(join(dir, "docs", "mock.html"), "<html><body>Mock</body></html>", "utf8");
       approveMockDoc(
+        db,
+        projectId,
         dir,
         { artifactUrl: "https://claude.site/artifacts/mock-1", approvedBy: "Carls" },
         proj,
@@ -626,21 +658,21 @@ describe("shaping service", () => {
 
     it("keeps plan unapproved during live edits until approvePlanDoc saves docs/PLAN.md", () => {
       setupApprovedMock(rootDir);
-      const started = beginPlanSession(rootDir, proj);
+      const started = beginPlanSession(db, projectId, rootDir, proj);
       expect(started.prompt).toContain("[Plan generation]");
       expect(started.state.currentStep).toBe("plan");
       expect(started.state.plan.approved).toBe(false);
 
       // Agent writes docs/PLAN.md live
       writeFileSync(join(rootDir, "docs", "PLAN.md"), samplePlan, "utf8");
-      const draftState = getShapingState(rootDir, proj);
+      const draftState = getShapingState(db, projectId, rootDir, proj);
       expect(draftState.plan.exists).toBe(true);
       expect(draftState.plan.valid).toBe(true);
       expect(draftState.plan.approved).toBe(false);
       expect(draftState.steps.find((s) => s.id === "plan")?.status).toBe("current");
 
       // Approving saves docs/PLAN.md and marks plan completed
-      const approved = approvePlanDoc(rootDir, undefined, proj);
+      const approved = approvePlanDoc(db, projectId, rootDir, undefined, proj);
       expect(approved.ok).toBe(true);
       expect(approved.plan.approved).toBe(true);
       expect(approved.plan.approvedAt).toBeTruthy();
@@ -659,18 +691,20 @@ describe("shaping service", () => {
       git(rootDir, "commit", "-m", "initial");
 
       setupApprovedMock(rootDir);
-      beginPlanSession(rootDir, proj);
+      beginPlanSession(db, projectId, rootDir, proj);
       writeFileSync(join(rootDir, "docs", "PLAN.md"), samplePlan, "utf8");
 
       // Cannot start milestone before approving plan
-      await expect(startMilestoneRelease(rootDir, { version: "v1.0" }, proj)).rejects.toThrow(
+      await expect(startMilestoneRelease(db, projectId, rootDir, { version: "v1.0" }, proj)).rejects.toThrow(
         /Approve docs\/PLAN\.md/i,
       );
 
-      approvePlanDoc(rootDir, undefined, proj);
+      approvePlanDoc(db, projectId, rootDir, undefined, proj);
 
       // Start milestone creates daedalus/release-v1.0 in git
       const started = await startMilestoneRelease(
+        db,
+        projectId,
         rootDir,
         { version: "v1.0", defaultBranch: "main" },
         proj,
@@ -686,12 +720,12 @@ describe("shaping service", () => {
 
       // Starting the same milestone again answers 409
       await expect(
-        startMilestoneRelease(rootDir, { version: "v1.0", defaultBranch: "main" }, proj),
+        startMilestoneRelease(db, projectId, rootDir, { version: "v1.0", defaultBranch: "main" }, proj),
       ).rejects.toMatchObject({ status: 409 });
 
       // Scope is frozen: approvePlanDoc and beginPlanSession are refused with 409
-      expect(() => beginPlanSession(rootDir, proj)).toThrow(/frozen/i);
-      expect(() => approvePlanDoc(rootDir, { content: samplePlan }, proj)).toThrow(/frozen/i);
+      expect(() => beginPlanSession(db, projectId, rootDir, proj)).toThrow(/frozen/i);
+      expect(() => approvePlanDoc(db, projectId, rootDir, { content: samplePlan }, proj)).toThrow(/frozen/i);
     });
   });
 });
