@@ -19,8 +19,13 @@ export type CsrfInput = {
   port: number;
 };
 
+/** Our own loopback origin, exactly. Used by CSRF and by the WebSocket upgrade. */
+export function isAllowedOrigin(origin: string | undefined, port: number): boolean {
+  return !!origin && ALLOWED_HOSTNAMES.some((name) => origin === `http://${name}:${port}`);
+}
+
 export function checkCsrf({ origin, header, cookie, port }: CsrfInput): boolean {
-  if (!origin || !ALLOWED_HOSTNAMES.some((name) => origin === `http://${name}:${port}`)) return false;
+  if (!isAllowedOrigin(origin, port)) return false;
   if (!header || !cookie) return false;
   const a = Buffer.from(header);
   const b = Buffer.from(cookie);

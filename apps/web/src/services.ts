@@ -8,6 +8,7 @@
 import type { DaedalusDb, projects } from "@daedalus/db";
 import type { CreateInput, createProject, ImportInput, importProject, mergeKit } from "@daedalus/projects";
 import type { ProviderEntry, SessionManager } from "@daedalus/providers";
+import type { SessionInfo } from "./ws/protocol.js";
 
 export type ProjectWithKit = typeof projects.$inferSelect & {
   kitPending: boolean;
@@ -18,7 +19,7 @@ export type UpdateSettingsInput = {
   geminiAllowed?: unknown;
 };
 
-export type Services = {
+export type Services = SessionServices & {
   db: DaedalusDb;
   dataDir: string;
   repoRoot: string;
@@ -36,6 +37,14 @@ export type Services = {
     id: number,
     input: UpdateSettingsInput,
   ): Promise<{ project: typeof projects.$inferSelect; stoppedSessions: string[] }>;
+};
+
+export type SessionServices = {
+  /** Start an agent on a project from the database (T3.3). 404 no project; 403 profile rules; 409 full. */
+  startSession(projectId: number, providerId: string): Promise<SessionInfo>;
+  listSessions(): SessionInfo[];
+  /** 404 if no such session. */
+  stopSession(id: string): Promise<void>;
 };
 
 export const SERVICES_KEY = Symbol.for("daedalus.services");

@@ -75,6 +75,11 @@ export type AuthOptions = { port: number; dataDir: string };
 export function withAuth({ port, dataDir }: AuthOptions, next: Handler) {
   const sessions = new SessionStore();
   let limiter = new LoginLimiter();
+  const revokeListeners = new Set<(token: string) => void>();
+  const revoke = (token: string | undefined): void => {
+    sessions.revoke(token);
+    if (token) for (const l of revokeListeners) l(token);
+  };
 
   async function handleLogin(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const wait = limiter.lockedForMs();
@@ -97,7 +102,7 @@ export function withAuth({ port, dataDir }: AuthOptions, next: Handler) {
     }
     limiter.recordSuccess();
     const old = parseCookies(req.headers.cookie)[SESSION_COOKIE];
-    sessions.revoke(old);
+    revoke(old);
     return send(res, 200, { ok: true, redirect: HOME }, [sessionCookie(sessions.create())]);
   }
 
@@ -139,7 +144,7 @@ export function withAuth({ port, dataDir }: AuthOptions, next: Handler) {
       case "allow":
         if (method === "POST" && url.pathname === LOGIN_API) return handleLogin(req, res);
         if (method === "POST" && url.pathname === LOGOUT_API) {
-          sessions.revoke(session);
+          revoke(session);
           return send(res, 200, { ok: true }, [clearedSessionCookie]);
         }
         return next(req, res);
@@ -148,6 +153,13 @@ export function withAuth({ port, dataDir }: AuthOptions, next: Handler) {
 
   return {
     handler,
+    /** Whether a session cookie value is a live session (the WebSocket upgrade uses this). */
+    isSession: (token: string | undefined): boolean => sessions.isValid(token),
+    /** Called with the token whenever a session is revoked (logout, or a new login). */
+    onRevoke: (listener: (token: string) => void): (() => void) => {
+      revokeListeners.add(listener);
+      return () => revokeListeners.delete(listener);
+    },
     /** For tests only. */
     resetLimiter: () => {
       limiter = new LoginLimiter();

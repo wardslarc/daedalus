@@ -9,6 +9,7 @@ import { assertProviderAllowed, ProfileRuleError, validateProjectSettings } from
 import { createProject, ImportError, importProject, mergeKit, realGitOps } from "@daedalus/projects";
 import { loadProviders, repoProvidersFile, SessionManager, syncProviders } from "@daedalus/providers";
 import { SERVICES_KEY, type Services, type ServicesHolder } from "./services.js";
+import { toSessionInfo } from "./ws/channel.js";
 
 export type ServicesOptions = { dataDir: string; repoRoot: string };
 
@@ -23,12 +24,25 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
   const db = openDb(join(dataDir, "daedalus.db"));
   syncProviders(db, providers);
   const home = process.env.DAE_PROJECTS_HOME || homedir();
+  const sessions = new SessionManager({ providers });
   const services: Services = {
     db,
     dataDir,
     repoRoot,
     providers,
-    sessions: new SessionManager({ providers }),
+    sessions,
+    startSession: async (projectId, providerId) => {
+      // The folder and profile come from the database, never from the browser.
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return toSessionInfo(await sessions.start(project, providerId));
+    },
+    listSessions: () => sessions.list().map(toSessionInfo),
+    stopSession: async (id) => {
+      const s = sessions.get(id);
+      if (!s) throw new ImportError("That session isn't running.", 404);
+      await s.stop();
+    },
     importProject: (input) =>
       importProject(input, {
         db,

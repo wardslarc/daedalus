@@ -221,3 +221,16 @@ describe("services: agent sessions", () => {
     expect(() => getServices()).toThrow(/not initialised/);
   });
 });
+
+describe("services: session REST helpers", () => {
+  afterEach(() => closeServices());
+
+  it("startSession loads the project from the database and applies the profile rules", async () => {
+    const s = initServices({ dataDir: mkdtempSync(join(tmpdir(), "svc-rest-")), repoRoot: "/srv/daedalus" });
+    const [work] = s.db.insert(projects).values({ name: "W", localPath: mkdtempSync(join(tmpdir(), "w-")), profile: "work", geminiAllowed: false }).returning().all();
+    await expect(s.startSession(work!.id, "antigravity")).rejects.toMatchObject({ name: "ProfileRuleError" });
+    await expect(s.startSession(999999, "claude")).rejects.toMatchObject({ status: 404 });
+    expect(s.listSessions()).toEqual([]);
+    await expect(s.stopSession("nope")).rejects.toMatchObject({ status: 404 });
+  });
+});

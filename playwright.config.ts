@@ -1,5 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
-import { E2E_DATA_DIR, E2E_PASSWORD, E2E_PORT, E2E_PROJECTS_HOME } from "./e2e/env.js";
+import { E2E_DATA_DIR, E2E_PASSWORD, E2E_PORT, E2E_PROJECTS_HOME, E2E_PROVIDERS_FILE } from "./e2e/env.js";
 
 const baseURL = `http://127.0.0.1:${E2E_PORT}`;
 
@@ -25,6 +25,7 @@ export default defineConfig({
       DAE_DATA_DIR: E2E_DATA_DIR,
       DAE_PROJECTS_HOME: E2E_PROJECTS_HOME,
       DAE_E2E_PASSWORD: E2E_PASSWORD,
+      DAE_PROVIDERS_FILE: E2E_PROVIDERS_FILE,
     },
   },
   projects: [

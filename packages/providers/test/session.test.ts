@@ -99,6 +99,21 @@ describe("SessionManager.start refusals (nothing is started)", () => {
   });
 });
 
+describe("SessionManager.onChange", () => {
+  it("fires when a session starts and when it ends", async () => {
+    make();
+    let calls = 0;
+    const off = manager.onChange(() => calls++);
+    const s = await manager.start(project(), "claude");
+    expect(calls).toBe(1);
+    await s.stop();
+    expect(calls).toBe(2);
+    off();
+    await (await manager.start(project(), "claude")).stop();
+    expect(calls).toBe(2);
+  });
+});
+
 describe("AgentSession", () => {
   it("streams the reply and ends the turn", async () => {
     const s = await make().start(project(), "claude");
