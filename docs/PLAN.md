@@ -134,13 +134,41 @@ Done when: you can chat with Claude and agy side by side on one project.
   The one free shell the spec allows: a node-pty shell in the project folder, typed into by
   the owner only, over the T3.3 channel.
   check: e2e types `pwd` and sees the project folder; the terminal is unreachable without a session
-- [ ] **T3.8 Side by side** `[you]`
+- [x] **T3.8 Side by side** `[you]`
   Open one project, chat with Claude and agy at the same time, note what feels wrong.
   check: the M3 done-when above
 
-## M4–M9 (outline)
+## M4 — Project chat
 
-- M4 Project chat — [[SPEC#Project chat]]
+Done when: a project can go from Intake → Spec → Mock (with recorded approval) → Plan → Start milestone on `/projects/[id]/chat`.
+
+- [ ] **T4.1 Shaping state and Intake form** `[gemini]` — [[SPEC#Project chat]]
+  Read and write `docs/INTAKE.md` in the project folder safely (no symlinks). Replace the empty state on
+  `/projects/[id]/chat` with the 4-step shaping stepper (**Intake**, **Spec**, **Mock**, **Plan**),
+  showing which provider each AI step will use and allowing finished steps to be reopened read-only.
+  Saving the Intake form writes `docs/INTAKE.md` and unlocks **Spec**.
+  check: unit tests for safe doc read/write; e2e fills the Intake form, saves `docs/INTAKE.md` in the repo, and reopens it read-only
+- [ ] **T4.2 Spec interview** `[claude]` — [[SPEC#Project chat]]
+  Guided Claude session on `/projects/[id]/chat` that interviews the owner from `docs/INTAKE.md`,
+  updates `docs/SPEC.md` live in the project folder, and requires a `## Verify` section before the
+  owner can click **Approve spec** to advance to **Mock**.
+  check: unit + e2e tests with the fake agent writing `docs/SPEC.md` (with `## Verify`) and approving it
+- [ ] **T4.3 Clickable HTML mock and approval gate** `[gemini]` — [[SPEC#Project chat]] [[SPEC#Profiles]]
+  Agent builds a clickable HTML mock (`docs/mock.html`) from `docs/SPEC.md`; provider choice respects
+  profile rules (Work: Claude only; Client/Personal: Claude or Antigravity when allowed). Revisions in
+  the same chat are free until approval. Approval form records the published Claude artifact link,
+  who approved it, and when. Build stays locked until mock approval is recorded.
+  check: unit + e2e tests — Work project only offers Claude; mock approval saves link, approver, and timestamp
+- [ ] **T4.4 Plan generation and Start milestone** `[claude]` — [[SPEC#Project chat]] [[SPEC#Pipeline]]
+  Claude writes `docs/PLAN.md` grouped into milestones (one milestone = one release), each with
+  "Done when" UAT items and tasks (`[claude]`, `[gemini]`, or `[you]`, `check:`, `[[SPEC#...]]`).
+  Owner can ask for changes in chat before clicking **Approve plan** (saves `docs/PLAN.md`).
+  **Start milestone** creates the release branch `daedalus/release-<version>` from the default branch
+  and freezes that milestone's scope.
+  check: unit + e2e tests — Approve plan saves `docs/PLAN.md`; Start milestone creates `daedalus/release-v1.0` in git
+
+## M5–M9 (outline)
+
 - M5 Pipeline and runner — task state machine `[you]` — [[SPEC#Pipeline]] [[SPEC#Task runner]]
 - M6 Review center and release gate (UAT checklist, recorded scripts, visual diff, security scans, security test) — [[SPEC#Review]] [[SPEC#Release gate]] [[SPEC#Security test]]
 - M7 Docs — wikilink parser `[you]`, prompt builder `[you]` — [[SPEC#Docs]]
