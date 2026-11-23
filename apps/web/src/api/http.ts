@@ -24,12 +24,12 @@ export function jsonResponse(status: number, body: unknown): Response {
 }
 
 /** Parse a small JSON object body, or throw an HttpError. */
-export async function readJsonBody(req: Request): Promise<Record<string, unknown>> {
+export async function readJsonBody(req: Request, maxBytes: number = MAX_JSON_BYTES): Promise<Record<string, unknown>> {
   if (!(req.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json")) {
     throw new HttpError(415, "Send JSON (content-type: application/json).");
   }
   const text = await req.text();
-  if (Buffer.byteLength(text) > MAX_JSON_BYTES) throw new HttpError(413, "Request body is too large.");
+  if (Buffer.byteLength(text) > maxBytes) throw new HttpError(413, "Request body is too large.");
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -48,7 +48,14 @@ type Named = { name?: unknown; message?: unknown; status?: unknown };
 export function toErrorResponse(err: unknown): Response {
   const e = (typeof err === "object" && err !== null ? err : {}) as Named;
   const message = typeof e.message === "string" ? e.message : "";
-  if ((e.name === "HttpError" || e.name === "ImportError" || e.name === "SessionError" || e.name === "TerminalError") && typeof e.status === "number") {
+  if (
+    (e.name === "HttpError" ||
+      e.name === "ImportError" ||
+      e.name === "SessionError" ||
+      e.name === "TerminalError" ||
+      e.name === "ShapingError") &&
+    typeof e.status === "number"
+  ) {
     return jsonResponse(e.status, { error: message });
   }
   if (e.name === "ProfileRuleError") return jsonResponse(403, { error: message });

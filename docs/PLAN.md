@@ -142,24 +142,24 @@ Done when: you can chat with Claude and agy side by side on one project.
 
 Done when: a project can go from Intake → Spec → Mock (with recorded approval) → Plan → Start milestone on `/projects/[id]/chat`.
 
-- [ ] **T4.1 Shaping state and Intake form** `[gemini]` — [[SPEC#Project chat]]
+- [x] **T4.1 Shaping state and Intake form** `[gemini]` — [[SPEC#Project chat]]
   Read and write `docs/INTAKE.md` in the project folder safely (no symlinks). Replace the empty state on
   `/projects/[id]/chat` with the 4-step shaping stepper (**Intake**, **Spec**, **Mock**, **Plan**),
   showing which provider each AI step will use and allowing finished steps to be reopened read-only.
   Saving the Intake form writes `docs/INTAKE.md` and unlocks **Spec**.
   check: unit tests for safe doc read/write; e2e fills the Intake form, saves `docs/INTAKE.md` in the repo, and reopens it read-only
-- [ ] **T4.2 Spec interview** `[claude]` — [[SPEC#Project chat]]
+- [x] **T4.2 Spec interview** `[claude]` — [[SPEC#Project chat]]
   Guided Claude session on `/projects/[id]/chat` that interviews the owner from `docs/INTAKE.md`,
   updates `docs/SPEC.md` live in the project folder, and requires a `## Verify` section before the
   owner can click **Approve spec** to advance to **Mock**.
   check: unit + e2e tests with the fake agent writing `docs/SPEC.md` (with `## Verify`) and approving it
-- [ ] **T4.3 Clickable HTML mock and approval gate** `[gemini]` — [[SPEC#Project chat]] [[SPEC#Profiles]]
+- [x] **T4.3 Clickable HTML mock and approval gate** `[gemini]` — [[SPEC#Project chat]] [[SPEC#Profiles]]
   Agent builds a clickable HTML mock (`docs/mock.html`) from `docs/SPEC.md`; provider choice respects
   profile rules (Work: Claude only; Client/Personal: Claude or Antigravity when allowed). Revisions in
   the same chat are free until approval. Approval form records the published Claude artifact link,
   who approved it, and when. Build stays locked until mock approval is recorded.
   check: unit + e2e tests — Work project only offers Claude; mock approval saves link, approver, and timestamp
-- [ ] **T4.4 Plan generation and Start milestone** `[claude]` — [[SPEC#Project chat]] [[SPEC#Pipeline]]
+- [x] **T4.4 Plan generation and Start milestone** `[claude]` — [[SPEC#Project chat]] [[SPEC#Pipeline]]
   Claude writes `docs/PLAN.md` grouped into milestones (one milestone = one release), each with
   "Done when" UAT items and tasks (`[claude]`, `[gemini]`, or `[you]`, `check:`, `[[SPEC#...]]`).
   Owner can ask for changes in chat before clicking **Approve plan** (saves `docs/PLAN.md`).
@@ -167,9 +167,30 @@ Done when: a project can go from Intake → Spec → Mock (with recorded approva
   and freezes that milestone's scope.
   check: unit + e2e tests — Approve plan saves `docs/PLAN.md`; Start milestone creates `daedalus/release-v1.0` in git
 
-## M5–M9 (outline)
+## M5 — Pipeline and runner
 
-- M5 Pipeline and runner — task state machine `[you]` — [[SPEC#Pipeline]] [[SPEC#Task runner]]
+Done when: `docs/PLAN.md` tasks appear on `/projects/[id]/pipeline`, the task state machine drives status transitions, and the runner executes tasks in isolated git worktrees (`daedalus/<task>`) from the active release branch with server-run checks, one auto-retry, and inbox notification on failure.
+
+- [x] **T5.1 PLAN.md parser, task sync, and Pipeline board** `[gemini]` — [[SPEC#Pipeline]]
+  Parse `docs/PLAN.md` milestones ("Done when" items and tasks: code, title, tag `[claude]`/`[gemini]`/`[you]`,
+  description, `check:`, and `[[SPEC#...]]` links) and sync them into the `tasks` table in SQLite.
+  Replace the empty state on `/projects/[id]/pipeline` with the 5-column Pipeline board
+  (**Queued**, **Running**, **Check failed**, **In review**, **Done**), milestone header, and task cards.
+  check: unit tests for PLAN.md parsing and DB sync; e2e loads `/projects/[id]/pipeline` and renders synced task cards by status
+- [ ] **T5.2 Task state machine** `[you]` — [[SPEC#Pipeline]] [[SPEC#Task runner]]
+  Pure task state machine in `packages/core` (`queued`, `running`, `check-failed`, `in-review`, `done`,
+  retry count, and inbox trigger on second check failure). Owner implements the state machine (learning mode);
+  types and unit test suite may be scaffolded when requested.
+  check: `pnpm --filter @daedalus/core test`
+- [ ] **T5.3 Worktree task runner and check executor** `[claude]` — [[SPEC#Task runner]] [[SPEC#Profiles]]
+  Run at most 2 tasks at once, each in its own git worktree outside the repo folder on branch
+  `daedalus/<task>` made from the current release branch `daedalus/release-<version>`, with a fresh
+  agent session per task. Server runs the task's `check:` command itself: pass → commit and move to
+  `in-review`; fail → one retry, then move to `check-failed` and create a `failed_check` inbox item.
+  check: unit + e2e tests — passing task commits in worktree and moves to `in-review`; failing task retries once then lands in `check-failed` with an inbox item
+
+## M6–M9 (outline)
+
 - M6 Review center and release gate (UAT checklist, recorded scripts, visual diff, security scans, security test) — [[SPEC#Review]] [[SPEC#Release gate]] [[SPEC#Security test]]
 - M7 Docs — wikilink parser `[you]`, prompt builder `[you]` — [[SPEC#Docs]]
 - M8 Usage, inbox, providers screen — [[SPEC#Usage and quota]] [[SPEC#Inbox]]

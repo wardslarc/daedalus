@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { projects } from "@daedalus/db";
+import { projects, tasks } from "@daedalus/db";
 import { closeServices, initServices } from "./init-services.js";
 import { getServices } from "./services.js";
 
@@ -234,3 +234,329 @@ describe("services: session REST helpers", () => {
     await expect(s.stopSession("nope")).rejects.toMatchObject({ status: 404 });
   });
 });
+
+describe("services: project chat and intake", () => {
+  afterEach(() => closeServices());
+
+  it("getProjectChat returns 404 for unknown project", async () => {
+    const s = initServices({ dataDir: mkdtempSync(join(tmpdir(), "svc-chat-")), repoRoot: "/srv/daedalus" });
+    await expect(s.getProjectChat(999999)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("getProjectChat returns shaping state, project info, and rules", async () => {
+    const s = initServices({ dataDir: mkdtempSync(join(tmpdir(), "svc-chat-")), repoRoot: "/srv/daedalus" });
+    const repo = mkdtempSync(join(tmpdir(), "repo-chat-"));
+    const [p] = s.db
+      .insert(projects)
+      .values({ name: "ChatProj", localPath: repo, profile: "client", geminiAllowed: true })
+      .returning()
+      .all();
+
+    const chat = await s.getProjectChat(p!.id);
+    expect(chat.project.id).toBe(p!.id);
+    expect(chat.currentStep).toBe("intake");
+    expect(chat.rules.effectiveGemini).toBe(true);
+    expect(chat.steps.find((st) => st.id === "mock")?.provider).toBe("Claude / Antigravity");
+  });
+
+  it("saveIntake saves docs/INTAKE.md and advances step to spec", async () => {
+    const s = initServices({ dataDir: mkdtempSync(join(tmpdir(), "svc-chat-")), repoRoot: "/srv/daedalus" });
+    const repo = mkdtempSync(join(tmpdir(), "repo-chat-"));
+    const [p] = s.db
+      .insert(projects)
+      .values({ name: "ChatProj", localPath: repo, profile: "personal", geminiAllowed: true })
+      .returning()
+      .all();
+
+    const saved = await s.saveIntake(p!.id, {
+      fields: {
+        problem: "Goal is great",
+        users: "Me",
+        constraints: "None",
+      },
+    });
+
+    expect(saved.ok).toBe(true);
+    expect(saved.currentStep).toBe("spec");
+    expect(saved.steps[0]!.status).toBe("completed");
+
+    const chat = await s.getProjectChat(p!.id);
+    expect(chat.currentStep).toBe("spec");
+    expect(chat.intake.exists).toBe(true);
+    expect(chat.intake.fields.problem).toBe("Goal is great");
+  });
+
+  it("approveSpec enforces ## Verify section and advances step to mock (T4.2)", async () => {
+    const s = initServices({ dataDir: mkdtempSync(join(tmpdir(), "svc-chat-")), repoRoot: "/srv/daedalus" });
+    const repo = mkdtempSync(join(tmpdir(), "repo-chat-"));
+    const [p] = s.db
+      .insert(projects)
+      .values({ name: "SpecProj", localPath: repo, profile: "work", geminiAllowed: false })
+      .returning()
+      .all();
+
+    await s.saveIntake(p!.id, {
+      fields: {
+        problem: "Fragmented workflow",
+        users: "Solo dev",
+        constraints: "Local only",
+      },
+    });
+
+    // Write SPEC.md without ## Verify -> approveSpec rejects
+    writeFileSync(join(repo, "docs", "SPEC.md"), "# Spec\n\n## Overview\n- Feature\n", "utf8");
+    await expect(s.approveSpec(p!.id)).rejects.toThrow(/## Verify/i);
+
+    // Update SPEC.md with ## Verify -> approveSpec succeeds and advances to mock
+    writeFileSync(
+      join(repo, "docs", "SPEC.md"),
+      "# Spec\n\n## Overview\n- Feature\n\n## Verify\n- End-to-end check passes\n",
+      "utf8",
+    );
+    const approved = await s.approveSpec(p!.id);
+    expect(approved.ok).toBe(true);
+    expect(approved.currentStep).toBe("mock");
+    expect(approved.spec.approved).toBe(true);
+  });
+
+  it("startMockSession enforces profile rules (refuses antigravity on Work, allows on Personal)", async () => {
+    const s = initServices({ dataDir: mkdtempSync(join(tmpdir(), "svc-mock-")), repoRoot: "/srv/daedalus" });
+    const repo = mkdtempSync(join(tmpdir(), "repo-mock-"));
+    const [workP] = s.db
+      .insert(projects)
+      .values({ name: "WorkMock", localPath: repo, profile: "work", geminiAllowed: false })
+      .returning()
+      .all();
+
+    await s.saveIntake(workP!.id, {
+      fields: { problem: "P", users: "U", constraints: "C" },
+    });
+    writeFileSync(
+      join(repo, "docs", "SPEC.md"),
+      "# Spec\n\n## Overview\n- F\n\n## Verify\n- Passes\n",
+      "utf8",
+    );
+    await s.approveSpec(workP!.id);
+
+    // Antigravity refused on Work
+    await expect(s.startMockSession(workP!.id, "antigravity")).rejects.toThrow(/Gemini/i);
+
+    // Personal project allows antigravity
+    const persRepo = mkdtempSync(join(tmpdir(), "repo-pers-mock-"));
+    const [persP] = s.db
+      .insert(projects)
+      .values({ name: "PersMock", localPath: persRepo, profile: "personal", geminiAllowed: true })
+      .returning()
+      .all();
+
+    await s.saveIntake(persP!.id, {
+      fields: { problem: "P", users: "U", constraints: "C" },
+    });
+    writeFileSync(
+      join(persRepo, "docs", "SPEC.md"),
+      "# Spec\n\n## Overview\n- F\n\n## Verify\n- Passes\n",
+      "utf8",
+    );
+    await s.approveSpec(persP!.id);
+
+    vi.spyOn(s.sessions, "start").mockResolvedValueOnce({
+      id: "fake-mock-session",
+      project: persP!,
+      providerId: "antigravity",
+      startedAt: new Date().toISOString(),
+      isBusy: false,
+      backlog: () => [],
+      prompt: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    const started = await s.startMockSession(persP!.id, "antigravity");
+    expect(started.session.providerId).toBe("antigravity");
+    expect(started.prompt).toContain("[Mock build]");
+  });
+
+  it("approveMock validates and advances to plan, stopping running mock session", async () => {
+    const s = initServices({ dataDir: mkdtempSync(join(tmpdir(), "svc-mock-app-")), repoRoot: "/srv/daedalus" });
+    const repo = mkdtempSync(join(tmpdir(), "repo-mock-app-"));
+    const [p] = s.db
+      .insert(projects)
+      .values({ name: "AppMock", localPath: repo, profile: "personal", geminiAllowed: true })
+      .returning()
+      .all();
+
+    await s.saveIntake(p!.id, {
+      fields: { problem: "P", users: "U", constraints: "C" },
+    });
+    writeFileSync(
+      join(repo, "docs", "SPEC.md"),
+      "# Spec\n\n## Overview\n- F\n\n## Verify\n- Passes\n",
+      "utf8",
+    );
+    await s.approveSpec(p!.id);
+    await s.startMockSession(p!.id, "claude");
+
+    // Session is running
+    expect(s.sessions.list().some((sess) => sess.project.id === p!.id)).toBe(true);
+
+    // Rejects if mock.html missing
+    await expect(
+      s.approveMock(p!.id, { artifactUrl: "https://claude.site/artifacts/123", approvedBy: "Tester" }),
+    ).rejects.toThrow(/mock\.html/i);
+
+    writeFileSync(join(repo, "docs", "mock.html"), "<html><body>Mock UI</body></html>", "utf8");
+
+    // Rejects invalid URL
+    await expect(
+      s.approveMock(p!.id, { artifactUrl: "not-url", approvedBy: "Tester" }),
+    ).rejects.toThrow(/valid/i);
+
+    const approved = await s.approveMock(p!.id, {
+      artifactUrl: "https://claude.site/artifacts/456",
+      approvedBy: "Alice",
+      approvedAt: "2026-11-23T10:00:00.000Z",
+    });
+
+    expect(approved.ok).toBe(true);
+    expect(approved.currentStep).toBe("plan");
+    expect(approved.mock.approved).toBe(true);
+    expect(approved.approval.artifactUrl).toBe("https://claude.site/artifacts/456");
+    expect(approved.approval.approvedBy).toBe("Alice");
+
+    // Running mock session stopped
+    expect(s.sessions.list().some((sess) => sess.project.id === p!.id)).toBe(false);
+  });
+
+  it("approvePlan saves docs/PLAN.md and startMilestone creates daedalus/release-v1.0 in git (T4.4)", async () => {
+    const s = initServices({ dataDir: mkdtempSync(join(tmpdir(), "svc-plan-")), repoRoot: "/srv/daedalus" });
+    const repo = mkdtempSync(join(tmpdir(), "repo-plan-"));
+    git(repo, "init", "--initial-branch=main");
+    git(repo, "config", "user.name", "Tester");
+    git(repo, "config", "user.email", "test@example.com");
+    writeFileSync(join(repo, "README.md"), "# PlanRepo\n", "utf8");
+    git(repo, "add", ".");
+    git(repo, "commit", "-m", "init");
+
+    const [p] = s.db
+      .insert(projects)
+      .values({ name: "PlanProj", localPath: repo, profile: "personal", geminiAllowed: true, defaultBranch: "main" })
+      .returning()
+      .all();
+
+    await s.saveIntake(p!.id, { fields: { problem: "P", users: "U", constraints: "C" } });
+    writeFileSync(join(repo, "docs", "SPEC.md"), "# Spec\n\n## Overview\n- F\n\n## Verify\n- Passes\n", "utf8");
+    await s.approveSpec(p!.id);
+    writeFileSync(join(repo, "docs", "mock.html"), "<html><body>Mock</body></html>", "utf8");
+    await s.approveMock(p!.id, {
+      artifactUrl: "https://claude.site/artifacts/789",
+      approvedBy: "Carls",
+    });
+
+    const planMd = [
+      "# Plan — PlanProj",
+      "",
+      "## M1 — v1.0 Initial Release",
+      "",
+      "Done when: end-to-end tests pass.",
+      "",
+      "- [ ] **T1.1 First task** `[claude]` — [[SPEC#Overview]]",
+      "  Implement feature.",
+      "  check: `pnpm test`",
+      "",
+    ].join("\n");
+
+    const approvedPlan = await s.approvePlan(p!.id, { content: planMd });
+    expect(approvedPlan.ok).toBe(true);
+    expect(approvedPlan.plan.approved).toBe(true);
+
+    // Syncing into DB on approvePlan
+    const dbTasks = s.db.select().from(tasks).where(eq(tasks.projectId, p!.id)).all();
+    expect(dbTasks).toHaveLength(1);
+    expect(dbTasks[0]?.code).toBe("T1.1");
+    expect(dbTasks[0]?.status).toBe("queued");
+
+    const started = await s.startMilestone(p!.id, { version: "v1.0" });
+    expect(started.ok).toBe(true);
+    expect(started.milestone.branch).toBe("daedalus/release-v1.0");
+    expect(started.milestone.frozen).toBe(true);
+
+    const branchOut = git(repo, "branch", "--list", "daedalus/release-v1.0");
+    expect(branchOut).toContain("daedalus/release-v1.0");
+  });
+
+  describe("getProjectPipeline", () => {
+    it("throws 404 if project does not exist", async () => {
+      const dataDir = mkdtempSync(join(tmpdir(), "svc-data-"));
+      const s = initServices({ dataDir, repoRoot: "/srv/daedalus" });
+      await expect(s.getProjectPipeline(99999)).rejects.toThrow(/No such project/);
+    });
+
+    it("returns shaping stage during shaping, then Build/Review/Verify during milestone execution", async () => {
+      const dataDir = mkdtempSync(join(tmpdir(), "svc-data-"));
+      const s = initServices({ dataDir, repoRoot: "/srv/daedalus" });
+
+      const repo = mkdtempSync(join(tmpdir(), "repo-pipe-"));
+      git(repo, "init", "--initial-branch=main");
+      git(repo, "config", "user.name", "Tester");
+      git(repo, "config", "user.email", "test@example.com");
+      writeFileSync(join(repo, "README.md"), "# PipeRepo\n", "utf8");
+      git(repo, "add", ".");
+      git(repo, "commit", "-m", "init");
+
+      const [p] = s.db
+        .insert(projects)
+        .values({ name: "PipeProj", localPath: repo, profile: "personal", defaultBranch: "main" })
+        .returning()
+        .all();
+
+      // Stage during shaping (Intake)
+      let pipe = await s.getProjectPipeline(p!.id);
+      expect(pipe.stage).toBe("Intake");
+      expect(pipe.tasks).toHaveLength(0);
+
+      // Move to Spec
+      await s.saveIntake(p!.id, { fields: { problem: "P", users: "U", constraints: "C" } });
+      pipe = await s.getProjectPipeline(p!.id);
+      expect(pipe.stage).toBe("Spec");
+
+      // Move to Mock
+      writeFileSync(join(repo, "docs", "SPEC.md"), "# Spec\n\n## Overview\n- F\n\n## Verify\n- Passes\n", "utf8");
+      await s.approveSpec(p!.id);
+      pipe = await s.getProjectPipeline(p!.id);
+      expect(pipe.stage).toBe("Mock");
+
+      // Move to Plan
+      writeFileSync(join(repo, "docs", "mock.html"), "<html><body>Mock</body></html>", "utf8");
+      await s.approveMock(p!.id, { artifactUrl: "https://mock.com", approvedBy: "Carls" });
+      pipe = await s.getProjectPipeline(p!.id);
+      expect(pipe.stage).toBe("Plan");
+
+      // Approve plan and start milestone -> Build stage
+      const planMd = [
+        "## M1 — v1.0",
+        "Done when: all tasks pass.",
+        "- [ ] **T1.1 Task One** `[claude]` — [[SPEC#Overview]]",
+        "  check: pnpm test:1",
+        "- [ ] **T1.2 Task Two** `[gemini]` — [[SPEC#Overview]]",
+        "  check: pnpm test:2",
+      ].join("\n");
+      await s.approvePlan(p!.id, { content: planMd });
+      await s.startMilestone(p!.id, { version: "v1.0" });
+
+      pipe = await s.getProjectPipeline(p!.id);
+      expect(pipe.stage).toBe("Build");
+      expect(pipe.tasks).toHaveLength(2);
+      expect(pipe.activeMilestone?.branch).toBe("daedalus/release-v1.0");
+
+      // When a task is in-review -> Review stage
+      s.db.update(tasks).set({ status: "in-review" }).where(eq(tasks.code, "T1.1")).run();
+      pipe = await s.getProjectPipeline(p!.id);
+      expect(pipe.stage).toBe("Review");
+
+      // When all tasks are done -> Verify stage
+      s.db.update(tasks).set({ status: "done" }).where(eq(tasks.code, "T1.1")).run();
+      s.db.update(tasks).set({ status: "done" }).where(eq(tasks.code, "T1.2")).run();
+      pipe = await s.getProjectPipeline(p!.id);
+      expect(pipe.stage).toBe("Verify");
+    });
+  });
+});
+

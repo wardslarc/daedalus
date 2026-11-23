@@ -36,14 +36,14 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      testIgnore: /workshop-.*\.spec\.ts$/,
+      testIgnore: /(?:workshop-.*|project-chat-.*)\.spec\.ts$/,
       use: { ...devices["Desktop Chrome"] },
     },
     {
       // Agent sessions and terminals are server-wide (at most 2 sessions, one list for all), so
-      // the Workshop specs would see each other's sessions if they ran at the same time.
-      name: "workshop",
-      testMatch: /workshop-.*\.spec\.ts$/,
+      // the Workshop and Chat specs would see each other's sessions if they ran at the same time.
+      name: "sessions",
+      testMatch: /(?:workshop-.*|project-chat-.*)\.spec\.ts$/,
       workers: 1,
       use: { ...devices["Desktop Chrome"] },
     },
