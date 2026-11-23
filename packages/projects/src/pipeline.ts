@@ -112,7 +112,14 @@ export function parsePlanMarkdown(content: string): ParsedPlan {
       continue;
     }
 
-    // 2. Task item: ^-\s+\[([ x~X])\]\s+\*\*(T\d+(?:\.\d+)?)\s+([^*]+)\*\*(.*)$
+    // 2. Any other heading ends the current task and ends open Done when
+    if (/^#{1,6}\s/.test(line)) {
+      flushTask();
+      inDoneWhen = false;
+      continue;
+    }
+
+    // 3. Task item: ^-\s+\[([ x~X])\]\s+\*\*(T\d+(?:\.\d+)?)\s+([^*]+)\*\*(.*)$
     const taskMatch = line.match(/^-\s+\[([ x~X])\]\s+\*\*(T\d+(?:\.\d+)?)\s+([^*]+)\*\*(.*)$/);
     if (taskMatch) {
       flushTask();
@@ -147,23 +154,32 @@ export function parsePlanMarkdown(content: string): ParsedPlan {
       continue;
     }
 
-    // 3. If we are currently under a task, process continuation lines
+    // 4. If we are currently under a task, process continuation lines
     if (currentTask) {
-      const checkMatch = line.match(/^\s*check:\s*(.+)$/i);
-      if (checkMatch) {
-        currentTask.checkCommand = cleanCheckCommand(checkMatch[1]!);
-        extractSpecLinks(line, currentTask.linkedSpecSections);
-      } else {
-        extractSpecLinks(line, currentTask.linkedSpecSections);
-        const trimmed = line.trim();
-        if (trimmed.length > 0 || currentTaskDescLines.length > 0) {
-          currentTaskDescLines.push(trimmed);
+      if (line.trim().length === 0) {
+        if (currentTaskDescLines.length > 0) {
+          currentTaskDescLines.push("");
         }
+        continue;
       }
-      continue;
+
+      if (/^\s/.test(line)) {
+        const checkMatch = line.match(/^\s*check:\s*(.+)$/i);
+        if (checkMatch) {
+          currentTask.checkCommand = cleanCheckCommand(checkMatch[1]!);
+          extractSpecLinks(line, currentTask.linkedSpecSections);
+        } else {
+          extractSpecLinks(line, currentTask.linkedSpecSections);
+          currentTaskDescLines.push(line.trim());
+        }
+        continue;
+      }
+
+      // First non-blank line that isn't indented ends the task
+      flushTask();
     }
 
-    // 4. Milestone "Done when:" section
+    // 5. Milestone "Done when:" section
     const doneWhenMatch = line.match(/^\s*Done when\s*:\s*(.*)$/i);
     if (doneWhenMatch) {
       inDoneWhen = true;

@@ -110,6 +110,51 @@ Done when: Multi-agent coordination is fully verified.
       expect(t.milestoneCode).toBeNull();
       expect(t.milestoneTitle).toBeNull();
     });
+
+    it("does not pick up unindented text, non-milestone headings, or plain paragraphs into task descriptions", () => {
+      // 1. Task followed by ## Notes and random text
+      const input1 = `- [ ] **T1.1 A** \`[claude]\` — [[SPEC#X]]
+  do a
+  check: \`pnpm test\`
+
+## Notes
+Random notes here.
+`;
+      const parsed1 = parsePlanMarkdown(input1);
+      expect(parsed1.tasks[0]?.description).toBe("do a");
+
+      // 2. Task followed by a non-milestone ## heading
+      const input2 = `- [ ] **T1.1 A** \`[claude]\` — [[SPEC#X]]
+  do a
+  check: \`pnpm test\`
+
+## Documentation
+`;
+      const parsed2 = parsePlanMarkdown(input2);
+      expect(parsed2.tasks[0]?.description).toBe("do a");
+
+      // 3. Task followed by a plain paragraph
+      const input3 = `- [ ] **T1.1 A** \`[claude]\` — [[SPEC#X]]
+  do a
+  check: \`pnpm test\`
+
+Plain paragraph text here.
+`;
+      const parsed3 = parsePlanMarkdown(input3);
+      expect(parsed3.tasks[0]?.description).toBe("do a");
+    });
+
+    it("ends open Done when list upon encountering a non-milestone heading", () => {
+      const input = `## M1 — v1.0
+Done when:
+- Item 1
+
+## Notes
+- Not a done when item!
+`;
+      const parsed = parsePlanMarkdown(input);
+      expect(parsed.milestones[0]?.doneWhen).toEqual(["Item 1"]);
+    });
   });
 
   describe("syncPlanTasksToDb", () => {
