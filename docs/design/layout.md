@@ -126,7 +126,7 @@ border, radius 14px, padding 24px) saying what will appear there and which miles
 - Providers & usage — "Claude and Antigravity: status, roles and weekly usage." (M8)
 
 ## Design changes, 2026-11-23 (canvas updated)
-- Pipeline stage bar has 8 stages: Intake, Mock approved, Spec, Plan, Build, Review, **Verify**, Ship
+- Pipeline stage bar has 8 stages: Intake, Spec, Mock approved, Plan, Build, Review, **Verify**, Ship
   (Ship shown as locked until Verify passes). [[SPEC#Pipeline]]
 - New board **Release gate** (`ReleaseGate.dc.html`, sidebar item "Release gate"): UAT checklist
   from the spec's `## Verify` items with Pass / Fail-with-note and an "Open app in recorded

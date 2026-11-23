@@ -16,12 +16,14 @@ Sections are linkable as `[[SPEC#<Heading>]]`.
 ## Project chat
 - Intake form saves `docs/INTAKE.md`.
 - Spec interview: Claude asks questions; `docs/SPEC.md` fills in live; ends with a Verify section.
-- Mock: an agent builds a clickable HTML mock; change requests in the same chat.
-- Approval: user publishes the mock as a Claude artifact, stores the link, marks approved. Build is locked until then.
-- Plan: Claude writes `docs/PLAN.md` tasks, each with a check, tag `[claude]` or `[gemini]`, and `[[SPEC#...]]` links.
+- Mock: an agent builds a clickable HTML mock from the spec; the provider is picked within the profile rules (Work: Claude only). Revisions in the same chat are free until approval.
+- Approval: user publishes the mock as a Claude artifact, stores the link, and records who approved it and when. Build is locked until then; after approval, mock changes go through a change request.
+- Plan: Claude writes `docs/PLAN.md` grouped into milestones (one milestone = one release), each with "Done when" items that become its UAT checklist; tasks each have a check, a tag `[claude]` or `[gemini]`, and `[[SPEC#...]]` links. The owner can ask Claude to change the plan before approving it.
+- Approving the plan only saves it. "Start milestone" creates the release branch and freezes that milestone's scope.
+- Every AI step shows which provider it will use; finished steps can be reopened read-only.
 
 ## Pipeline
-- Stages: Intake, Mock, Spec, Plan, Build, Review, Verify, Ship.
+- Stages: Intake, Spec, Mock, Plan, Build, Review, Verify, Ship (the mock is built from the spec).
 - Task cards come from PLAN.md. Statuses: queued, running, check-failed, in-review, done.
 - Levels: a project has milestones; one milestone = one release (`v1.0`, `v1.1`…); a milestone's features are spec sections; its tasks are PLAN.md items, each with a check.
 - Each release has a branch `daedalus/release-<version>`, made from `main` when the milestone starts. `main` only ever holds shipped releases.
