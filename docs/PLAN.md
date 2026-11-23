@@ -4,7 +4,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 Each task has a tag (`[claude]` / `[gemini]` / `[you]`), the spec sections it
 implements, and a check. `[you]` = learning mode: the owner writes it.
 
-## M0 — Spikes (current)
+## M0 — Spikes
 
 - [x] **T0.1 ACP client spike** `[claude]` — [[SPEC#Providers]]
   Start an agent over ACP in a folder, stream its updates, auto-answer
@@ -16,12 +16,12 @@ implements, and a check. `[you]` = learning mode: the owner writes it.
   check: `pnpm spike:acp -- antigravity <test-folder>` prints a reply and exits 0
 - [x] **T0.3 agy headless in node-pty** `[claude]` — [[SPEC#Providers]]
   check: `pnpm spike:pty -- <test-folder>` prints agy's answer and exits without hanging
-- [ ] **T0.4 Usage readings** `[you]` — [[SPEC#Usage and quota]]
+- [x] **T0.4 Usage readings** `[you]` — [[SPEC#Usage and quota]]
   Run both spikes and note whether `usage_update` events arrive and what they contain
   (saved to `spikes/out/*.jsonl`). Decide: read usage from ACP, estimate, or manual entry.
   Record the decision as ADR 0005.
   check: ADR 0005 exists
-- [ ] **T0.5 WSL check** `[you]` — [[SPEC#Task runner]]
+- [x] **T0.5 WSL check** `[you]` — [[SPEC#Task runner]]
   In WSL: clone a repo to `~/work`, run both spikes there, create and remove a
   git worktree, open a WSL folder from the Antigravity IDE (note yes/no).
   check: notes added to ADR 0002
