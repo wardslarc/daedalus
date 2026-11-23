@@ -62,13 +62,17 @@ export type SessionManagerOptions = {
   startTimeoutMs?: number;
 };
 
-const SECRET_NAME = /TOKEN|SECRET|PASSW|CREDENTIAL|(^|_)(API_?)?KEY($|_)|APIKEY|PRIVATE/i;
+// A blocklist, not an allowlist (ADR 0010): agents need PATH, nvm, XDG and WSL variables we
+// can't list ahead of time. AUTH also covers SSH_AUTH_SOCK: agents don't push, Daedalus does.
+const SECRET_NAME = /TOKEN|SECRET|PASSW|CREDENTIAL|AUTH|COOKIE|(^|_)(API_?)?KEY($|_)|APIKEY|PRIVATE|(^|_)PAT($|_)/i;
+/** Credentials inside a URL value, e.g. postgres://user:pass@host. */
+const URL_USERINFO = /[a-z][a-z0-9+.-]*:\/\/[^/\s@]+@/i;
 
-/** The agent's environment: ours minus Daedalus's settings and anything named like a secret. */
+/** The agent's environment: ours minus Daedalus's settings and anything that looks like a secret. */
 export function scrubEnv(env: Record<string, string | undefined>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) {
-    if (value === undefined || name.startsWith("DAE_") || SECRET_NAME.test(name)) continue;
+    if (value === undefined || name.startsWith("DAE_") || SECRET_NAME.test(name) || URL_USERINFO.test(value)) continue;
     out[name] = value;
   }
   return out;
