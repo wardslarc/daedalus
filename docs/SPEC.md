@@ -68,8 +68,18 @@ Sections are linkable as `[[SPEC#<Heading>]]`.
 - Recorded scripts: when the owner accepts an item, the recording (Playwright codegen, no model) is saved as a UAT script. Every later release replays all saved scripts before the owner starts, so only new or changed items are tested by hand.
 - Visual diff: each screen is compared with the approved mock's screenshots; the owner accepts or rejects every difference.
 - Security, always on, no model: secret scan of the release diff and the branch history, dependency audit, and the profile's ship checklist (Work: Kollab handoff).
-- Optional security review by a model over the whole release diff, started by the owner. Its findings are advice; they never pass or fail the gate on their own.
+- Optional security test by agents, started by the owner ([[SPEC#Security test]]). Its findings are advice; they never pass or fail the gate on their own.
+- Saved security tests (fixed findings, see below) run on every release, with no model, and must pass.
 - The owner accepts the release; nothing ships without that click.
+
+## Security test
+- Tests only the project's own app: a throwaway instance Daedalus starts on 127.0.0.1 (random port, copy of the data). A Daedalus proxy refuses every other host; agents have no other network access and no free shell.
+- A planner agent (Claude) reads the spec, routes, WebSocket contract and release diff, and writes a shared checklist of what to probe.
+- Worker agents each own one area: auth and sessions; CSRF, Origin and WebSocket; injection and path traversal; secrets and data exposure; dependencies; profile-rule bypass. They use only Daedalus's fixed, non-destructive tools (HTTP through the proxy, Playwright, static scanners). Profile rules decide the providers (Work: Claude only).
+- A finding counts only with proof: the request and response, or a test, that reproduces it.
+- The provider that didn't find it replays the proof; unconfirmed findings are shown as "plausible".
+- Once fixed, a finding's proof is saved in the project as a security test, so the gate re-runs it on every release without a model.
+- Time and request budgets per run; the owner starts every run and sees usage before it starts.
 
 ## Learning mode
 - Personal profile: before merge, the user writes a short explanation of the change.

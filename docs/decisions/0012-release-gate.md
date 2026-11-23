@@ -21,4 +21,4 @@
 - **Consequences:** a release costs no usage unless the owner asks for the optional review. UAT
   takes the owner's time, shrinking as recorded scripts accumulate. Visual diffs need the
   approved mock's screenshots kept with the project. How the optional review is structured
-  (which agents, how findings are triaged) is still open.
+  is decided in ADR 0013.

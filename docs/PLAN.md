@@ -134,7 +134,7 @@ Done when: you can chat with Claude and agy side by side on one project.
 
 - M4 Project chat — [[SPEC#Project chat]]
 - M5 Pipeline and runner — task state machine `[you]` — [[SPEC#Pipeline]] [[SPEC#Task runner]]
-- M6 Review center and release gate (UAT checklist, recorded scripts, visual diff, security scans) — [[SPEC#Review]] [[SPEC#Release gate]]
+- M6 Review center and release gate (UAT checklist, recorded scripts, visual diff, security scans, security test) — [[SPEC#Review]] [[SPEC#Release gate]] [[SPEC#Security test]]
 - M7 Docs — wikilink parser `[you]`, prompt builder `[you]` — [[SPEC#Docs]]
 - M8 Usage, inbox, providers screen — [[SPEC#Usage and quota]] [[SPEC#Inbox]]
 - M9 Dogfood, including one release through the gate — [[SPEC#Verify]] [[SPEC#Release gate]]
