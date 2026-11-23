@@ -43,10 +43,12 @@ export default function PipelinePage() {
       setError(null);
       const res = await fetch(`/api/projects/${id}/pipeline`, { cache: "no-store" });
       if (!res.ok) {
-        throw new Error(`Failed to load pipeline: ${res.statusText}`);
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(body?.error || `Failed to load pipeline: ${res.statusText}`);
       }
       const json: ProjectPipelineInfo = await res.json();
       setData(json);
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error loading pipeline");
     } finally {
@@ -66,9 +68,13 @@ export default function PipelinePage() {
       if (res.ok) {
         const json: ProjectPipelineInfo = await res.json();
         setData(json);
+        setError(null);
+      } else {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        setError(body?.error || "Failed to sync PLAN.md");
       }
     } catch (err) {
-      console.error("Failed to sync PLAN.md", err);
+      setError(err instanceof Error ? err.message : "Failed to sync PLAN.md");
     } finally {
       setIsSyncing(false);
     }
@@ -140,13 +146,13 @@ export default function PipelinePage() {
 
       <ProjectTabs projectId={id} />
 
-      {loading && !data && (
+      {loading && !data && !error && (
         <div className="empty-state-panel">
           <p className="empty-state-text">Loading pipeline...</p>
         </div>
       )}
 
-      {error && !data && (
+      {error && (
         <div className="empty-state-panel">
           <p className="empty-state-text" style={{ color: "var(--danger)" }}>
             {error}
@@ -154,7 +160,7 @@ export default function PipelinePage() {
         </div>
       )}
 
-      {data && (
+      {!error && data && (
         <div className="pipeline-container">
           {/* 8-segment stage bar */}
           <div className="pipeline-stage-progress-card">

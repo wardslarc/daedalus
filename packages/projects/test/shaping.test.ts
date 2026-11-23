@@ -680,6 +680,33 @@ describe("shaping service", () => {
       expect(readFileSync(join(rootDir, "docs", "PLAN.md"), "utf8")).toBe(samplePlan);
     });
 
+    it("refuses approvePlanDoc when docs/PLAN.md has duplicate task codes", () => {
+      setupApprovedMock(rootDir);
+      beginPlanSession(db, projectId, rootDir, proj);
+
+      const dupPlan = [
+        "# Plan — PlanProj",
+        "",
+        "## M1 — v1.0 Core Release",
+        "",
+        "Done when: ready",
+        "",
+        "- [ ] **T1.1 Core feature** `[claude]` — [[SPEC#Overview]]",
+        "  Build the core feature.",
+        "  check: `pnpm test`",
+        "- [ ] **T1.1 Duplicate code** `[gemini]` — [[SPEC#Verify]]",
+        "  Verify the duplicate.",
+        "  check: `pnpm test:e2e`",
+        "",
+      ].join("\n");
+
+      writeFileSync(join(rootDir, "docs", "PLAN.md"), dupPlan, "utf8");
+
+      expect(() => approvePlanDoc(db, projectId, rootDir, undefined, proj)).toThrow(
+        "docs/PLAN.md has task code T1.1 more than once.",
+      );
+    });
+
     it("startMilestoneRelease creates daedalus/release-v1.0 from default branch in git and freezes scope", async () => {
       const git = (cwd: string, ...args: string[]) =>
         execFileSync("git", args, { cwd, encoding: "utf8" }).trim();

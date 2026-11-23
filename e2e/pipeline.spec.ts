@@ -220,4 +220,48 @@ Done when:
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("shows error message on Pipeline page when PLAN.md has duplicate task codes", async ({ page }) => {
+    const dir = fixtureRepo("dup-plan");
+    const docsDir = join(dir, "docs");
+    mkdirSync(docsDir, { recursive: true });
+
+    const planContent = `# Plan — Dup Project
+
+## M1 — v1.0 Initial Release
+
+Done when:
+- Complete end-to-end integration works smoothly
+
+- [ ] **T1.1 Task One** \`[claude]\` — [[SPEC#Core]]
+  check: \`pnpm test\`
+
+- [ ] **T1.1 Task Duplicate** \`[gemini]\` — [[SPEC#Core]]
+  check: \`pnpm test\`
+`;
+    writeFileSync(join(docsDir, "PLAN.md"), planContent, "utf8");
+    git(dir, "add", ".");
+    git(dir, "commit", "-m", "plan with duplicate code");
+
+    await login(page);
+
+    const imp = await post(page, "/api/projects/import", {
+      source: dir,
+      profile: "personal",
+      name: "Duplicate Pipeline Test",
+    });
+    expect(imp.status).toBe(201);
+    const projectId = (imp.json.project as { id: number }).id;
+
+    try {
+      await page.goto(`/projects/${projectId}/pipeline`);
+      await expect(page.getByRole("heading", { level: 1, name: "Pipeline" })).toBeVisible();
+      await expect(page.getByText("docs/PLAN.md has task code T1.1 more than once.")).toBeVisible();
+      // Keep the Sync PLAN.md button
+      await expect(page.getByRole("button", { name: "Sync PLAN.md" })).toBeVisible();
+    } finally {
+      deleteProject(projectId);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

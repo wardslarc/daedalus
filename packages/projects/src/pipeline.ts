@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { DaedalusDb } from "@daedalus/db";
 import { tasks } from "@daedalus/db";
-import { isKitTemplateDoc, readShapingDoc, SHAPING_DOCS } from "./shaping.js";
+import { isKitTemplateDoc, readShapingDoc, SHAPING_DOCS, ShapingError } from "./shaping.js";
 
 export type PipelineTaskStatus = "queued" | "running" | "check-failed" | "in-review" | "done";
 
@@ -195,6 +195,15 @@ export function parsePlanMarkdown(content: string): ParsedPlan {
   };
 }
 
+export function findDuplicateTaskCode(tasks: ParsedPlanTask[]): string | null {
+  const seen = new Set<string>();
+  for (const t of tasks) {
+    if (seen.has(t.code)) return t.code;
+    seen.add(t.code);
+  }
+  return null;
+}
+
 /**
  * Sync tasks from docs/PLAN.md into the SQLite tasks table.
  */
@@ -209,6 +218,11 @@ export function syncPlanTasksToDb(
   }
 
   const parsed = parsePlanMarkdown(planDoc.content);
+
+  const dupCode = findDuplicateTaskCode(parsed.tasks);
+  if (dupCode) {
+    throw new ShapingError(`docs/PLAN.md has task code ${dupCode} more than once.`, 400);
+  }
 
   const existingRows = db.select().from(tasks).where(eq(tasks.projectId, projectId)).all();
   const existingByCode = new Map(existingRows.map((r) => [r.code, r]));

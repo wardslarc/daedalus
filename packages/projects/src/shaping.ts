@@ -5,6 +5,7 @@ import type { DaedalusDb } from "@daedalus/db";
 import { shapingState } from "@daedalus/db";
 import { assertProviderAllowed, effectiveGeminiAllowed, rulesFor, type ProjectLike } from "@daedalus/core/profiles";
 import { branchExists as gitBranchExists, createBranch as gitCreateBranch } from "@daedalus/git";
+import { findDuplicateTaskCode, parsePlanMarkdown } from "./pipeline.js";
 
 export class ShapingError extends Error {
   override name = "ShapingError";
@@ -771,7 +772,10 @@ export function isValidPlanMarkdown(content: string | null): boolean {
       content,
     );
   const hasCheck = /^\s*check\s*:\s*\S+/im.test(content);
-  return hasMilestone && hasDoneWhen && hasTaskWithTagAndSpec && hasCheck;
+  if (!hasMilestone || !hasDoneWhen || !hasTaskWithTagAndSpec || !hasCheck) return false;
+  const parsed = parsePlanMarkdown(content);
+  if (findDuplicateTaskCode(parsed.tasks)) return false;
+  return true;
 }
 
 /**
@@ -858,6 +862,12 @@ export function approvePlanDoc(
   const planDoc = readShapingDoc(localPath, SHAPING_DOCS.plan);
   if (!planDoc.exists || !planDoc.content || isKitTemplateDoc(SHAPING_DOCS.plan, planDoc.content)) {
     throw new ShapingError("docs/PLAN.md does not exist yet. Generate the plan first.", 400);
+  }
+
+  const parsed = parsePlanMarkdown(planDoc.content);
+  const dupCode = findDuplicateTaskCode(parsed.tasks);
+  if (dupCode) {
+    throw new ShapingError(`docs/PLAN.md has task code ${dupCode} more than once.`, 400);
   }
 
   if (!isValidPlanMarkdown(planDoc.content)) {

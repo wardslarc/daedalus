@@ -267,5 +267,25 @@ Done when: v1 works.
       const t1AfterDone = result2.tasks.find((r) => r.code === "T1.1")!;
       expect(t1AfterDone.status).toBe("done");
     });
+
+    it("throws ShapingError (400) when PLAN.md has duplicate task codes and leaves db unchanged", () => {
+      mkdirSync(join(testDir, "docs"), { recursive: true });
+      const dupPlan = `## M1 — v1.0
+Done when: v1 works.
+- [ ] **T1.1 Task One** \`[claude]\` — [[SPEC#Core]]
+  check: pnpm test
+- [ ] **T1.1 Duplicate Task** \`[gemini]\` — [[SPEC#Core]]
+  check: pnpm test
+`;
+      writeFileSync(join(testDir, "docs", "PLAN.md"), dupPlan, "utf8");
+
+      expect(() => syncPlanTasksToDb(db, projectId, testDir)).toThrow(
+        "docs/PLAN.md has task code T1.1 more than once.",
+      );
+
+      // Verify db is unchanged (0 tasks)
+      const rows = db.select().from(tasks).where(eq(tasks.projectId, projectId)).all();
+      expect(rows).toHaveLength(0);
+    });
   });
 });
