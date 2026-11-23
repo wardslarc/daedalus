@@ -23,12 +23,14 @@ Sections are linkable as `[[SPEC#<Heading>]]`.
 ## Pipeline
 - Stages: Intake, Mock, Spec, Plan, Build, Review, Verify, Ship.
 - Task cards come from PLAN.md. Statuses: queued, running, check-failed, in-review, done.
-- Build and Review run per task: each task is reviewed and merged on its own while others build. The project moves to Verify once every PLAN.md task is done.
-- Ship is locked until every gate in Verify passes ([[SPEC#Release gate]]).
+- Levels: a project has milestones; one milestone = one release (`v1.0`, `v1.1`…); a milestone's features are spec sections; its tasks are PLAN.md items, each with a check.
+- Each release has a branch `daedalus/release-<version>`, made from `main` when the milestone starts. `main` only ever holds shipped releases.
+- Build and Review run per task: each task is reviewed and merged into the release branch on its own while others build. The release moves to Verify once every task of its milestone is merged.
+- Ship is locked until every gate in Verify passes ([[SPEC#Release gate]]). Ship merges the release branch into `main`, tags it, and pushes or hands off by profile (Personal/Client: push to GitHub; Work: GitLab merge request + Kollab handoff checklist). The next milestone's release branch starts from the new `main`.
 
 ## Task runner
 - At most 2 tasks at once.
-- One git worktree per task, outside the repo folder, branch `daedalus/<task>`.
+- One git worktree per task, outside the repo folder, branch `daedalus/<task>` made from the current release branch.
 - Fresh agent session per task.
 - The server runs the task's check itself. Pass → commit. Fail → one retry, then an inbox item.
 
@@ -40,7 +42,7 @@ Sections are linkable as `[[SPEC#<Heading>]]`.
 - Cross-review: the provider that did not write the change reviews it, read-only and sandboxed.
 - Shows diff, check results, findings, and Claude's triage.
 - Gates: checks pass, secret scan clean, dependency check, flag edited/deleted tests.
-- Actions: approve and merge, send back with notes, discard.
+- Actions: approve and merge into the release branch, send back with notes, discard. Approving never touches `main`.
 
 ## Providers
 - Each AI is an entry in `providers.json`: id, kind (`acp` | `cli`), command, args, roles (`lead` | `coder` | `reviewer` | `reader`), allowed profiles, pinned version.
@@ -63,8 +65,8 @@ Sections are linkable as `[[SPEC#<Heading>]]`.
 - Quick switcher `Ctrl+K`, command palette `Ctrl+P`.
 
 ## Release gate
-- The Verify stage, once per release. Uses no AI model unless the owner starts the optional security review.
-- UAT checklist: the project spec's `## Verify` items. Daedalus opens the app in a recorded Chromium window (screenshots, video, Playwright trace); the owner marks each item pass or fail with a note. A fail adds a task to PLAN.md and the project goes back to Build.
+- The Verify stage, once per release, on the release branch with every task of its milestone merged. Uses no AI model unless the owner starts the optional security test.
+- UAT checklist: only this milestone's "Done when" items (and any spec `## Verify` items it covers). Earlier milestones are not re-tested by hand: their saved scripts replay instead. Daedalus opens the app in a recorded Chromium window (screenshots, video, Playwright trace); the owner marks each item pass or fail with a note. A fail adds a fix task to the same milestone; it goes through Build and Review into the same release branch, then Verify runs again.
 - Recorded scripts: when the owner accepts an item, the recording (Playwright codegen, no model) is saved as a UAT script. Every later release replays all saved scripts before the owner starts, so only new or changed items are tested by hand.
 - Visual diff: each screen is compared with the approved mock's screenshots; the owner accepts or rejects every difference.
 - Security, always on, no model: secret scan of the release diff and the branch history, dependency audit, and the profile's ship checklist (Work: Kollab handoff).
