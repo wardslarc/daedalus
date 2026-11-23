@@ -15,6 +15,7 @@ Every screen is the shared **Sidebar** (232px) on the left plus a main area. Des
 | Pipeline | `/pipeline` | Pipeline board | — |
 | Workshop | `/workshop` | Workshop (agent consoles) | `2 live` |
 | Review | `/review` | Review center | count waiting |
+| Release gate | `/release` | Release gate (Verify stage) | — |
 | Providers & usage | `/providers` | Providers & usage | — |
 
 In M1 there is no data yet: badges are hidden when there is nothing to count, and every main area
@@ -113,15 +114,31 @@ and the screen's actions on the right.
   `surface`, border, radius 14px, padding 18px): h2 + count badge, empty text "Nothing is
   waiting on you."
 
-### Other screens (`/chat`, `/pipeline`, `/workshop`, `/review`, `/providers`)
+### Other screens (`/chat`, `/pipeline`, `/workshop`, `/review`, `/release`, `/providers`)
 Same header pattern with the board's title as h1 ("Project chat", "Pipeline", "Workshop",
-"Review", "Providers & usage"), a one-line summary, and one empty-state panel (`surface`,
+"Review", "Release gate", "Providers & usage"), a one-line summary, and one empty-state panel (`surface`,
 border, radius 14px, padding 24px) saying what will appear there and which milestone builds it:
 - Project chat — "Start a project by talking it through: intake, mock, spec and plan." (M4)
 - Pipeline — "Tasks from the project's PLAN.md, by stage." (M5)
 - Workshop — "Live agent sessions, one console per running agent." (M3)
 - Review — "Changes waiting for review, with findings and your decision." (M6)
+- Release gate — "UAT, security checks and your acceptance before a release ships." (M6)
 - Providers & usage — "Claude and Antigravity: status, roles and weekly usage." (M8)
+
+## Design changes, 2026-11-23 (canvas updated)
+- Pipeline stage bar has 8 stages: Intake, Mock approved, Spec, Plan, Build, Review, **Verify**, Ship
+  (Ship shown as locked until Verify passes). [[SPEC#Pipeline]]
+- New board **Release gate** (`ReleaseGate.dc.html`, sidebar item "Release gate"): UAT checklist
+  from the spec's `## Verify` items with Pass / Fail-with-note and an "Open app in recorded
+  Chromium" button; visual diff against the approved mock with Accept / Reject per screen;
+  always-on checks (saved UAT scripts, saved security tests, secret scan, dependency audit,
+  profile ship checklist); the optional security test (scope chips: throwaway 127.0.0.1 target,
+  proxy, budget; worker areas; findings with severity, Confirmed / Plausible, proof, "Save proof
+  as security test"). "Accept release and ship" stays disabled until every gate passes.
+  [[SPEC#Release gate]] [[SPEC#Security test]]
+- Workshop consoles: header buttons are **Cancel turn** and **Stop** (no Pause). A permission
+  request shows inline under the console output (amber panel: what the agent wants to do, time
+  left before auto-cancel, **Allow once** / **Deny**). [[SPEC#Workshop]]
 
 ## Responsive
 Sidebar and main sit in a wrapping flex row (sidebar `flex: 1 1 232px`, main `flex: 999 1 560px`),
