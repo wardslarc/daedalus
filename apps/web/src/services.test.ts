@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { projects } from "@daedalus/db";
 import { closeServices, initServices } from "./init-services.js";
 import { getServices } from "./services.js";
@@ -94,5 +94,17 @@ describe("services: provider registry", () => {
     writeFileSync(join(dir, "providers.json"), JSON.stringify({ providers: [{ id: "claude", kind: "acp" }] }));
     process.env.DAE_PROVIDERS_FILE = join(dir, "providers.json");
     expect(() => initServices({ dataDir: dir, repoRoot: "/srv/daedalus" })).toThrow(/providers\.json/);
+  });
+});
+
+describe("services: agent sessions", () => {
+  afterEach(() => closeServices());
+
+  it("closeServices stops every agent session before closing the database", async () => {
+    const s = initServices({ dataDir: mkdtempSync(join(tmpdir(), "svc-sess-")), repoRoot: "/srv/daedalus" });
+    const stopAll = vi.spyOn(s.sessions, "stopAll");
+    await closeServices();
+    expect(stopAll).toHaveBeenCalledOnce();
+    expect(() => getServices()).toThrow(/not initialised/);
   });
 });

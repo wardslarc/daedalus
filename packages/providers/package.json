@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Provider registry (providers.json) and, later, ACP sessions",
+  "description": "Provider registry (providers.json) and ACP agent sessions",
   "exports": {
     ".": {
       "import": "./src/index.ts",

@@ -98,7 +98,7 @@ Done when: you can chat with Claude and agy side by side on one project.
   allowed profiles, pinned version), load + validate at startup, seed the `providers` table.
   Unknown fields and unpinned versions are errors.
   check: `pnpm --filter @daedalus/providers test`
-- [ ] **T3.2 ACP session manager** `[claude]` — [[SPEC#Providers]] [[SPEC#Profiles]]
+- [x] **T3.2 ACP session manager** `[claude]` — [[SPEC#Providers]] [[SPEC#Profiles]]
   Start an ACP agent in a project folder (profile guard first), stream session updates, send
   prompts, cancel, stop; one process per session, all killed on server exit. Permission
   requests are passed to the owner, never auto-approved. Grows out of the M0 ACP spike.

@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { openDb, projects } from "@daedalus/db";
 import { branchExists } from "@daedalus/git";
 import { createProject, ImportError, importProject, mergeKit, realGitOps } from "@daedalus/projects";
-import { loadProviders, repoProvidersFile, syncProviders } from "@daedalus/providers";
+import { loadProviders, repoProvidersFile, SessionManager, syncProviders } from "@daedalus/providers";
 import { SERVICES_KEY, type Services, type ServicesHolder } from "./services.js";
 
 export type ServicesOptions = { dataDir: string; repoRoot: string };
@@ -27,6 +27,7 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
     dataDir,
     repoRoot,
     providers,
+    sessions: new SessionManager({ providers }),
     importProject: (input) =>
       importProject(input, {
         db,
@@ -72,8 +73,14 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
   return services;
 }
 
-/** Close the database and forget the instance (shutdown and tests). */
-export function closeServices(): void {
-  holder[SERVICES_KEY]?.db.$client.close();
+/** Stop every agent, close the database and forget the instance (shutdown and tests). */
+export async function closeServices(): Promise<void> {
+  const services = holder[SERVICES_KEY];
   delete holder[SERVICES_KEY];
+  if (!services) return;
+  try {
+    await services.sessions.stopAll();
+  } finally {
+    services.db.$client.close();
+  }
 }
