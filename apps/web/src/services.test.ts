@@ -510,9 +510,9 @@ describe("services: project chat and intake", () => {
     expect(chat.plan.approved).toBe(false);
     expect(chat.currentStep).toBe("spec");
 
-    await expect(s.startPlanSession(p!.id)).rejects.toThrow(/Approve the mock/i);
-    await expect(s.approvePlan(p!.id)).rejects.toThrow(/Approve the mock/i);
-    await expect(s.startMilestone(p!.id)).rejects.toThrow(/Approve docs\/PLAN\.md/i);
+    await expect(s.startPlanSession(p!.id)).rejects.toThrow(/SPEC\.md/i);
+    await expect(s.approvePlan(p!.id)).rejects.toThrow(/SPEC\.md/i);
+    await expect(s.startMilestone(p!.id)).rejects.toThrow(/SPEC\.md/i);
   });
 
   it("approvePlan saves docs/PLAN.md and startMilestone creates daedalus/release-v1.0 in git (T4.4)", async () => {
@@ -646,6 +646,36 @@ describe("services: project chat and intake", () => {
       s.db.update(tasks).set({ status: "done" }).where(eq(tasks.code, "T1.2")).run();
       pipe = await s.getProjectPipeline(p!.id);
       expect(pipe.stage).toBe("Verify");
+    });
+
+    it("sends mock approval POST straight after saving intake and gets 400 (BRIEF section 6)", async () => {
+      const s = initServices({ dataDir: mkdtempSync(join(tmpdir(), "svc-mock-gate-")), repoRoot: "/srv/daedalus" });
+      const repo = mkdtempSync(join(tmpdir(), "repo-mock-gate-"));
+      const [p] = s.db
+        .insert(projects)
+        .values({ name: "GateProj", localPath: repo, profile: "personal", geminiAllowed: true })
+        .returning()
+        .all();
+
+      await s.saveIntake(p!.id, { fields: { problem: "P", users: "U", constraints: "C" } });
+      writeFileSync(join(repo, "docs", "mock.html"), "<html><body>Mock</body></html>", "utf8");
+
+      // Calling approveMock directly without spec approval rejects
+      await expect(
+        s.approveMock(p!.id, { artifactUrl: "https://claude.site/artifacts/123", approvedBy: "Carls" }),
+      ).rejects.toThrow(/SPEC\.md/i);
+
+      // Sending mock approval POST straight after saving intake gets 400
+      const { POST: mockRoutePost } = await import("../app/api/projects/[id]/chat/mock/route.js");
+      const req = new Request(`http://127.0.0.1/api/projects/${p!.id}/chat/mock`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ artifactUrl: "https://claude.site/artifacts/123", approvedBy: "Carls" }),
+      });
+      const res = await mockRoutePost(req, { params: Promise.resolve({ id: String(p!.id) }) });
+      expect(res.status).toBe(400);
+      const json = (await res.json()) as { error?: string };
+      expect(json.error).toMatch(/SPEC\.md/i);
     });
   });
 });

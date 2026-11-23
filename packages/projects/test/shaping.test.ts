@@ -3,7 +3,8 @@ import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sym
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb, projects, type DaedalusDb } from "@daedalus/db";
+import { eq } from "drizzle-orm";
+import { openDb, projects, shapingState, type DaedalusDb } from "@daedalus/db";
 import {
   approveMockDoc,
   approvePlanDoc,
@@ -813,6 +814,155 @@ describe("shaping service", () => {
       // Scope is frozen: approvePlanDoc and beginPlanSession are refused with 409
       expect(() => beginPlanSession(db, projectId, rootDir, proj)).toThrow(/frozen/i);
       expect(() => approvePlanDoc(db, projectId, rootDir, { content: samplePlan }, proj)).toThrow(/frozen/i);
+    });
+
+    describe("Gate ordering and earlier gate requirements (BRIEF section 6)", () => {
+      it("refuses approveMockDoc when spec is not approved and leaves shaping_state unwritten", () => {
+        saveIntakeDoc(
+          db,
+          projectId,
+          rootDir,
+          { fields: { problem: "Need clickable mock", users: "Dev", constraints: "Web" } },
+          proj,
+        );
+        writeFileSync(join(rootDir, "docs", "mock.html"), "<html><body>Mock</body></html>", "utf8");
+
+        expect(() =>
+          approveMockDoc(
+            db,
+            projectId,
+            rootDir,
+            { artifactUrl: "https://claude.site/artifacts/mock-1", approvedBy: "Carls" },
+            proj,
+          ),
+        ).toThrow(ShapingError);
+        expect(() =>
+          approveMockDoc(
+            db,
+            projectId,
+            rootDir,
+            { artifactUrl: "https://claude.site/artifacts/mock-1", approvedBy: "Carls" },
+            proj,
+          ),
+        ).toThrow(/SPEC\.md/i);
+
+        const row = db.select().from(shapingState).where(eq(shapingState.projectId, projectId)).get();
+        expect(row?.mockApprovedAt).toBeFalsy();
+        expect(row?.mockArtifactUrl).toBeFalsy();
+      });
+
+      it("refuses approvePlanDoc when mock is approved in db but spec is not approved", () => {
+        saveIntakeDoc(
+          db,
+          projectId,
+          rootDir,
+          { fields: { problem: "Need plan", users: "Dev", constraints: "Web" } },
+          proj,
+        );
+        db.update(shapingState).set({
+          mockArtifactUrl: "https://claude.site/artifacts/mock-1",
+          mockApprovedBy: "Carls",
+          mockApprovedAt: new Date().toISOString(),
+        }).where(eq(shapingState.projectId, projectId)).run();
+        writeFileSync(join(rootDir, "docs", "mock.html"), "<html><body>Mock</body></html>", "utf8");
+        writeFileSync(join(rootDir, "docs", "PLAN.md"), samplePlan, "utf8");
+
+        expect(() => approvePlanDoc(db, projectId, rootDir, undefined, proj)).toThrow(ShapingError);
+        expect(() => approvePlanDoc(db, projectId, rootDir, undefined, proj)).toThrow(/SPEC\.md/i);
+      });
+
+      it("starting spec interview again after all three approvals leaves spec, mock, and plan all unapproved", () => {
+        setupApprovedMock(rootDir);
+        beginPlanSession(db, projectId, rootDir, proj);
+        writeFileSync(join(rootDir, "docs", "PLAN.md"), samplePlan, "utf8");
+        approvePlanDoc(db, projectId, rootDir, undefined, proj);
+
+        let state = getShapingState(db, projectId, rootDir, proj);
+        expect(state.spec.approved).toBe(true);
+        expect(state.mock.approved).toBe(true);
+        expect(state.plan.approved).toBe(true);
+
+        const reopened = beginSpecInterview(db, projectId, rootDir, proj);
+        expect(reopened.state.spec.approved).toBe(false);
+        expect(reopened.state.mock.approved).toBe(false);
+        expect(reopened.state.plan.approved).toBe(false);
+
+        state = getShapingState(db, projectId, rootDir, proj);
+        expect(state.spec.approved).toBe(false);
+        expect(state.mock.approved).toBe(false);
+        expect(state.plan.approved).toBe(false);
+        expect(state.currentStep).toBe("spec");
+      });
+
+      it("beginMockSession also clears planApprovedAt", () => {
+        setupApprovedMock(rootDir);
+        beginPlanSession(db, projectId, rootDir, proj);
+        writeFileSync(join(rootDir, "docs", "PLAN.md"), samplePlan, "utf8");
+        approvePlanDoc(db, projectId, rootDir, undefined, proj);
+
+        expect(getShapingState(db, projectId, rootDir, proj).plan.approved).toBe(true);
+
+        beginMockSession(db, projectId, rootDir, "claude", proj);
+        const row = db.select().from(shapingState).where(eq(shapingState.projectId, projectId)).get();
+        expect(row?.planApprovedAt).toBeNull();
+        expect(getShapingState(db, projectId, rootDir, proj).plan.approved).toBe(false);
+      });
+
+      it("refuses earlier shaping operations when milestone is frozen with 409", async () => {
+        const git = (cwd: string, ...args: string[]) =>
+          execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+        git(rootDir, "init", "--initial-branch=main");
+        git(rootDir, "config", "user.name", "Test");
+        git(rootDir, "config", "user.email", "test@example.com");
+        writeFileSync(join(rootDir, "README.md"), "# FreezeTest\n", "utf8");
+        git(rootDir, "add", ".");
+        git(rootDir, "commit", "-m", "initial");
+
+        setupApprovedMock(rootDir);
+        beginPlanSession(db, projectId, rootDir, proj);
+        writeFileSync(join(rootDir, "docs", "PLAN.md"), samplePlan, "utf8");
+        approvePlanDoc(db, projectId, rootDir, undefined, proj);
+        await startMilestoneRelease(db, projectId, rootDir, { version: "v1.0" }, proj);
+
+        expect(() => beginSpecInterview(db, projectId, rootDir, proj)).toThrow(ShapingError);
+        expect(() => beginSpecInterview(db, projectId, rootDir, proj)).toThrow(/frozen/i);
+        expect(() => beginMockSession(db, projectId, rootDir, "claude", proj)).toThrow(ShapingError);
+        expect(() => beginMockSession(db, projectId, rootDir, "claude", proj)).toThrow(/frozen/i);
+        expect(() => approveMockDoc(db, projectId, rootDir, { artifactUrl: "https://mock.com", approvedBy: "Tester" }, proj)).toThrow(/frozen/i);
+      });
+
+      it("startMilestoneRelease requires spec, mock, and plan approved, naming each missing step", async () => {
+        saveIntakeDoc(db, projectId, rootDir, { fields: { problem: "P", users: "U", constraints: "C" } }, proj);
+        await expect(startMilestoneRelease(db, projectId, rootDir, { version: "v1.0" }, proj)).rejects.toThrow(/SPEC\.md/i);
+
+        writeFileSync(join(rootDir, "docs", "SPEC.md"), "# Spec\n\n## Overview\n- O\n\n## Verify\n- V\n", "utf8");
+        approveSpecDoc(db, projectId, rootDir, undefined, proj);
+        await expect(startMilestoneRelease(db, projectId, rootDir, { version: "v1.0" }, proj)).rejects.toThrow(/mock/i);
+
+        beginMockSession(db, projectId, rootDir, "claude", proj);
+        writeFileSync(join(rootDir, "docs", "mock.html"), "<html><body>Mock</body></html>", "utf8");
+        approveMockDoc(db, projectId, rootDir, { artifactUrl: "https://mock.com", approvedBy: "Tester" }, proj);
+        await expect(startMilestoneRelease(db, projectId, rootDir, { version: "v1.0" }, proj)).rejects.toThrow(/PLAN\.md/i);
+      });
+
+      it("getShapingState reports a step as approved only if every earlier step is approved too", () => {
+        saveIntakeDoc(db, projectId, rootDir, { fields: { problem: "P", users: "U", constraints: "C" } }, proj);
+        // Write mock and plan approval into DB without spec approval
+        db.update(shapingState).set({
+          mockArtifactUrl: "https://mock.com",
+          mockApprovedBy: "Tester",
+          mockApprovedAt: new Date().toISOString(),
+          planApprovedAt: new Date().toISOString(),
+        }).where(eq(shapingState.projectId, projectId)).run();
+        writeFileSync(join(rootDir, "docs", "mock.html"), "<html><body>Mock</body></html>", "utf8");
+        writeFileSync(join(rootDir, "docs", "PLAN.md"), samplePlan, "utf8");
+
+        const state = getShapingState(db, projectId, rootDir, proj);
+        expect(state.spec.approved).toBe(false);
+        expect(state.mock.approved).toBe(false);
+        expect(state.plan.approved).toBe(false);
+        expect(state.currentStep).toBe("spec");
+      });
     });
   });
 });

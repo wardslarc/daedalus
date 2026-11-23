@@ -467,14 +467,14 @@ export function getShapingState(
   const intakeReady = intakeDoc.exists && !isKitTemplateDoc(SHAPING_DOCS.intake, intakeDoc.content);
   const specExists = specDoc.exists && !isKitTemplateDoc(SHAPING_DOCS.spec, specDoc.content);
   const specHasVerify = hasVerifySection(specDoc.content);
-  const specApproved = Boolean(row?.specApprovedAt) && specExists;
-  const mockApproved = Boolean(row?.mockApprovedAt && row?.mockArtifactUrl) && mockDoc.exists;
+  const specApproved = intakeReady && Boolean(row?.specApprovedAt) && specExists;
+  const mockApproved = specApproved && Boolean(row?.mockApprovedAt && row?.mockArtifactUrl) && mockDoc.exists;
   const planExists = planDoc.exists && !isKitTemplateDoc(SHAPING_DOCS.plan, planDoc.content);
   const planValid = isValidPlanMarkdown(planDoc.content);
-  const planApproved = Boolean(row?.planApprovedAt) && planExists;
+  const planApproved = mockApproved && Boolean(row?.planApprovedAt) && planExists;
 
   let mockApproval: MockApproval | null = null;
-  if (row?.mockArtifactUrl && row?.mockApprovedBy && row?.mockApprovedAt) {
+  if (mockApproved && row?.mockArtifactUrl && row?.mockApprovedBy && row?.mockApprovedAt) {
     mockApproval = {
       artifactUrl: row.mockArtifactUrl,
       approvedBy: row.mockApprovedBy,
@@ -561,7 +561,7 @@ export function getShapingState(
       content: specExists ? specDoc.content : null,
       hasVerify: specHasVerify,
       approved: specApproved,
-      approvedAt: row?.specApprovedAt ?? null,
+      approvedAt: specApproved ? (row?.specApprovedAt ?? null) : null,
     },
     mock: {
       exists: mockDoc.exists,
@@ -575,7 +575,7 @@ export function getShapingState(
       content: planExists ? planDoc.content : null,
       valid: planValid,
       approved: planApproved,
-      approvedAt: row?.planApprovedAt ?? null,
+      approvedAt: planApproved ? (row?.planApprovedAt ?? null) : null,
       activeMilestone,
     },
   };
@@ -626,6 +626,11 @@ export function beginSpecInterview(
   localPath: string,
   project: ProjectLike,
 ): { prompt: string; state: ShapingState } {
+  const row = readShapingStateRow(db, projectId);
+  if (row?.activeMilestoneFrozen) {
+    throw new ShapingError("Milestone scope is frozen. Submit a change request to modify the plan.", 409);
+  }
+
   const intakeDoc = readShapingDoc(localPath, SHAPING_DOCS.intake);
   if (!intakeDoc.exists || !intakeDoc.content || isKitTemplateDoc(SHAPING_DOCS.intake, intakeDoc.content)) {
     throw new ShapingError("Complete and save the Intake form before starting the Spec interview.", 400);
@@ -634,6 +639,10 @@ export function beginSpecInterview(
   writeShapingStateRow(db, projectId, {
     intakeCompletedAt: existingRow?.intakeCompletedAt ?? new Date().toISOString(),
     specApprovedAt: null,
+    mockArtifactUrl: null,
+    mockApprovedBy: null,
+    mockApprovedAt: null,
+    planApprovedAt: null,
   });
   return {
     prompt: buildSpecInterviewPrompt(project.name, intakeDoc.content),
@@ -653,6 +662,11 @@ export function approveSpecDoc(
   input: ApproveSpecInput | undefined,
   project: ProjectLike,
 ): ShapingState & { ok: true; content: string } {
+  const row = readShapingStateRow(db, projectId);
+  if (row?.activeMilestoneFrozen) {
+    throw new ShapingError("Milestone scope is frozen. Submit a change request to modify the plan.", 409);
+  }
+
   const intakeDoc = readShapingDoc(localPath, SHAPING_DOCS.intake);
   if (!intakeDoc.exists || !intakeDoc.content || isKitTemplateDoc(SHAPING_DOCS.intake, intakeDoc.content)) {
     throw new ShapingError("Complete the Intake step before approving the spec.", 400);
@@ -714,16 +728,18 @@ export function beginMockSession(
   providerId: string,
   project: ProjectLike,
 ): { providerId: "claude" | "antigravity"; prompt: string; state: ShapingState } {
+  const row = readShapingStateRow(db, projectId);
+  if (row?.activeMilestoneFrozen) {
+    throw new ShapingError("Milestone scope is frozen. Submit a change request to modify the plan.", 409);
+  }
+
   if (providerId !== "claude" && providerId !== "antigravity") {
     throw new ShapingError(`Invalid providerId: ${providerId}. Must be 'claude' or 'antigravity'.`, 400);
   }
   assertProviderAllowed(project, providerId);
 
-  const specDoc = readShapingDoc(localPath, SHAPING_DOCS.spec);
-  const row = readShapingStateRow(db, projectId);
-  const specApproved = Boolean(row?.specApprovedAt) && specDoc.exists && hasVerifySection(specDoc.content);
-
-  if (!specApproved || !specDoc.content) {
+  const stateBefore = getShapingState(db, projectId, localPath, project);
+  if (!stateBefore.spec.approved || !stateBefore.spec.content) {
     throw new ShapingError("docs/SPEC.md must exist and be approved before starting the mock session.", 400);
   }
 
@@ -732,11 +748,12 @@ export function beginMockSession(
     mockApprovedBy: null,
     mockApprovedAt: null,
     mockProviderId: providerId,
+    planApprovedAt: null,
   });
 
   return {
     providerId,
-    prompt: buildMockPrompt(project.name, specDoc.content),
+    prompt: buildMockPrompt(project.name, stateBefore.spec.content),
     state: getShapingState(db, projectId, localPath, project),
   };
 }
@@ -753,6 +770,16 @@ export function approveMockDoc(
   input: ApproveMockInput,
   project: ProjectLike,
 ): ShapingState & { ok: true; approval: MockApproval } {
+  const row = readShapingStateRow(db, projectId);
+  if (row?.activeMilestoneFrozen) {
+    throw new ShapingError("Milestone scope is frozen. Submit a change request to modify the plan.", 409);
+  }
+
+  const stateBefore = getShapingState(db, projectId, localPath, project);
+  if (!stateBefore.spec.approved) {
+    throw new ShapingError("Approve docs/SPEC.md before approving the mock.", 400);
+  }
+
   const mockDoc = readShapingDoc(localPath, SHAPING_DOCS.mock);
   if (!mockDoc.exists || !mockDoc.content || mockDoc.content.trim().length === 0) {
     throw new ShapingError("docs/mock.html does not exist yet or is empty. Build the mock first.", 400);
@@ -778,7 +805,6 @@ export function approveMockDoc(
   }
 
   const approvedAt = new Date().toISOString();
-  const row = readShapingStateRow(db, projectId);
   const approval: MockApproval = {
     artifactUrl: rawUrl,
     approvedBy,
@@ -859,6 +885,9 @@ export function beginPlanSession(
   }
 
   const stateBefore = getShapingState(db, projectId, localPath, project);
+  if (!stateBefore.spec.approved) {
+    throw new ShapingError("Approve docs/SPEC.md before starting plan generation.", 400);
+  }
   if (!stateBefore.mock.approved) {
     throw new ShapingError("Approve the mock before starting plan generation.", 400);
   }
@@ -893,6 +922,9 @@ export function approvePlanDoc(
   }
 
   const stateBefore = getShapingState(db, projectId, localPath, project);
+  if (!stateBefore.spec.approved) {
+    throw new ShapingError("Approve docs/SPEC.md before approving the plan.", 400);
+  }
   if (!stateBefore.mock.approved) {
     throw new ShapingError("Approve the mock before approving the plan.", 400);
   }
@@ -962,6 +994,12 @@ export async function startMilestoneRelease(
   } = { branchExists: gitBranchExists, createBranch: gitCreateBranch },
 ): Promise<ShapingState & { ok: true; milestone: MilestoneState }> {
   const stateBefore = getShapingState(db, projectId, localPath, project);
+  if (!stateBefore.spec.approved) {
+    throw new ShapingError("Approve docs/SPEC.md before starting a milestone.", 400);
+  }
+  if (!stateBefore.mock.approved) {
+    throw new ShapingError("Approve the mock before starting a milestone.", 400);
+  }
   if (!stateBefore.plan.approved || !stateBefore.plan.exists) {
     throw new ShapingError("Approve docs/PLAN.md before starting a milestone.", 400);
   }
