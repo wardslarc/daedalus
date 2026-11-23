@@ -6,6 +6,7 @@
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import type { SessionManager } from "@daedalus/providers";
+import type { TerminalManager } from "../terminal.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import { isAllowedOrigin } from "../auth/csrf.js";
 import { parseCookies } from "../auth/http.js";
@@ -19,6 +20,8 @@ export type WorkshopDeps = {
   isSession: (token: string | undefined) => boolean;
   onRevoke: (listener: (token: string) => void) => () => void;
   sessions: SessionManager;
+  /** Free terminals (T3.7); all are closed when the login that opened them ends. */
+  terminals: TerminalManager;
   /** Next.js dev HMR (`/_next/...`), reached after the Host and Origin checks. Omit in production. */
   nextUpgrade?: (req: IncomingMessage, socket: Duplex, head: Buffer) => void;
   heartbeatMs?: number;
@@ -42,6 +45,8 @@ export function attachWorkshop(server: Server, deps: WorkshopDeps): Workshop {
 
   const offRevoke = deps.onRevoke((token) => {
     for (const ws of byToken.get(token) ?? []) ws.close(4401, "Signed out");
+    // A terminal must not outlive the login that could type into it.
+    void deps.terminals.closeAll();
   });
 
   const onUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
@@ -66,7 +71,7 @@ export function attachWorkshop(server: Server, deps: WorkshopDeps): Workshop {
         set.delete(ws);
         if (set.size === 0) byToken.delete(key);
       });
-      new Channel(ws, deps.sessions, { isLive: () => deps.isSession(key) });
+      new Channel(ws, deps.sessions, deps.terminals, { isLive: () => deps.isSession(key) });
     });
   };
   server.on("upgrade", onUpgrade);

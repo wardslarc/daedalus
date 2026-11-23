@@ -5,6 +5,7 @@
  */
 import type { AgentSession, SessionManager } from "@daedalus/providers";
 import type WebSocket from "ws";
+import type { TerminalManager } from "../terminal.js";
 import { parseClientMessage, ProtocolError, type ClientMessage, type ServerMessage, type SessionInfo } from "./protocol.js";
 
 export function toSessionInfo(s: AgentSession): SessionInfo {
@@ -22,20 +23,25 @@ export type ChannelOptions = {
 
 export class Channel {
   private readonly subscriptions = new Map<string, () => void>();
+  private readonly terminalSubs = new Map<string, () => void>();
   private readonly offChange: () => void;
+  private readonly offTerminals: () => void;
   private badMessages = 0;
   private closed = false;
 
   constructor(
     private readonly ws: WebSocket,
     private readonly sessions: SessionManager,
+    private readonly terminals: TerminalManager,
     private readonly opts: ChannelOptions,
   ) {
     this.offChange = sessions.onChange(() => this.sendSessions());
+    this.offTerminals = terminals.onChange(() => this.sendTerminals());
     ws.on("message", (data, isBinary) => this.onMessage(isBinary ? "" : String(data)));
     ws.on("close", () => this.dispose());
     ws.on("error", () => this.dispose());
     this.sendSessions();
+    this.sendTerminals();
   }
 
   private send(m: ServerMessage): void {
@@ -47,6 +53,10 @@ export class Channel {
       return;
     }
     this.ws.send(JSON.stringify(m));
+  }
+
+  private sendTerminals(): void {
+    this.send({ type: "terminals", terminals: this.terminals.list() });
   }
 
   private sendSessions(): void {
@@ -70,7 +80,7 @@ export class Channel {
       () => this.send({ type: "ack", id: msg.id }),
       (err: unknown) => {
         const e = err as { name?: string; status?: unknown; message?: unknown };
-        const known = (e.name === "SessionError" || e.name === "ProfileRuleError") && typeof e.message === "string";
+        const known = (e.name === "SessionError" || e.name === "ProfileRuleError" || e.name === "TerminalError") && typeof e.message === "string";
         const status = typeof e.status === "number" ? e.status : e.name === "ProfileRuleError" ? 403 : 500;
         if (!known) console.error("[ws] unexpected error:", err);
         this.send({ type: "error", id: msg.id, status: known ? status : 500, message: known ? String(e.message) : "Something went wrong on the Daedalus server." });
@@ -85,6 +95,7 @@ export class Channel {
   }
 
   private async handle(msg: ClientMessage): Promise<void> {
+    if ("terminalId" in msg) return this.handleTerminal(msg);
     const s = this.session(msg.sessionId);
     switch (msg.type) {
       case "subscribe": {
@@ -118,10 +129,47 @@ export class Channel {
     }
   }
 
+  /** Free terminal (T3.7): only the owner, signed in on this socket, types into it. */
+  private handleTerminal(msg: Extract<ClientMessage, { terminalId: string }>): void {
+    const id = msg.terminalId;
+    switch (msg.type) {
+      case "terminal_attach": {
+        this.terminalSubs.get(id)?.();
+        const caught = this.terminals.backlog(id, msg.since ?? 0);
+        const start = caught.offset - caught.data.length;
+        if (caught.data) this.send({ type: "terminal_output", terminalId: id, data: caught.data, offset: start });
+        this.terminalSubs.set(
+          id,
+          this.terminals.onEvent(id, (e) => {
+            if (e.type === "output") this.send({ type: "terminal_output", terminalId: id, data: e.data, offset: e.offset });
+            else {
+              this.send({ type: "terminal_exit", terminalId: id, code: e.code });
+              this.terminalSubs.delete(id);
+            }
+          }),
+        );
+        return;
+      }
+      case "terminal_detach":
+        this.terminalSubs.get(id)?.();
+        this.terminalSubs.delete(id);
+        return;
+      case "terminal_input":
+        this.terminals.write(id, msg.data);
+        return;
+      case "terminal_resize":
+        this.terminals.resize(id, msg.cols, msg.rows);
+        return;
+    }
+  }
+
   dispose(): void {
     if (this.closed) return;
     this.closed = true;
     this.offChange();
+    this.offTerminals();
+    for (const off of this.terminalSubs.values()) off();
+    this.terminalSubs.clear();
     for (const off of this.subscriptions.values()) off();
     this.subscriptions.clear();
   }

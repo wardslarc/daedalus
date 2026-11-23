@@ -38,12 +38,26 @@ export type ClientMessage =
   | { id: string; type: "prompt"; sessionId: string; text: string }
   | { id: string; type: "cancel"; sessionId: string }
   /** Answer a `permission` event: one of its option ids, or "cancel". */
-  | { id: string; type: "permission"; sessionId: string; requestId: string; optionId: string };
+  | { id: string; type: "permission"; sessionId: string; requestId: string; optionId: string }
+  /** Free terminal (T3.7): receive its output from `since` (an offset in its output stream), then live. */
+  | { id: string; type: "terminal_attach"; terminalId: string; since?: number }
+  | { id: string; type: "terminal_detach"; terminalId: string }
+  /** The owner's keystrokes, sent as typed. */
+  | { id: string; type: "terminal_input"; terminalId: string; data: string }
+  | { id: string; type: "terminal_resize"; terminalId: string; cols: number; rows: number };
+
+/** A free terminal (T3.7). Opened with POST /api/terminals {projectId}, closed with POST /api/terminals/:id/close. */
+export type TerminalInfo = { id: string; projectId: number; projectName: string; startedAt: string };
 
 export type ServerMessage =
   /** Sent on connect and whenever a session starts or ends. */
   | { type: "sessions"; sessions: SessionInfo[] }
   | { type: "event"; sessionId: string; event: AgentEvent }
+  /** Sent on connect and whenever a terminal opens or closes. */
+  | { type: "terminals"; terminals: TerminalInfo[] }
+  /** `offset` is where `data` starts in the terminal's output stream; attach with `since` to catch up. */
+  | { type: "terminal_output"; terminalId: string; data: string; offset: number }
+  | { type: "terminal_exit"; terminalId: string; code: number | null }
   | { type: "ack"; id: string }
   | { type: "error"; id?: string; status: number; message: string };
 
@@ -72,17 +86,51 @@ export function parseClientMessage(raw: string): ClientMessage {
   const m = value as Record<string, unknown>;
   const id = str(m, "id", 64);
   if (!ID.test(id)) throw new ProtocolError(`"id" must be letters, digits, - or _`);
-  const allowed: Record<string, string[]> = {
-    subscribe: ["since"],
-    unsubscribe: [],
-    prompt: ["text"],
-    cancel: [],
-    permission: ["requestId", "optionId"],
+  // Each type: the id field it targets, and the other fields it may carry.
+  const allowed: Record<string, [string, string[]]> = {
+    subscribe: ["sessionId", ["since"]],
+    unsubscribe: ["sessionId", []],
+    prompt: ["sessionId", ["text"]],
+    cancel: ["sessionId", []],
+    permission: ["sessionId", ["requestId", "optionId"]],
+    terminal_attach: ["terminalId", ["since"]],
+    terminal_detach: ["terminalId", []],
+    terminal_input: ["terminalId", ["data"]],
+    terminal_resize: ["terminalId", ["cols", "rows"]],
   };
   const type = m.type;
-  if (typeof type !== "string" || !(type in allowed)) throw new ProtocolError(`Unknown message type "${String(type)}"`);
-  const fields = ["id", "type", "sessionId", ...allowed[type]!];
+  if (typeof type !== "string" || !Object.hasOwn(allowed, type)) throw new ProtocolError(`Unknown message type "${String(type)}"`);
+  const [target, extra] = allowed[type]!;
+  const fields = ["id", "type", target, ...extra];
   for (const k of Object.keys(m)) if (!fields.includes(k)) throw new ProtocolError(`Unknown field "${k}"`);
+  const wholeOrUndefined = (key: string): number | undefined => {
+    const v = m[key];
+    if (v === undefined) return undefined;
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 0) throw new ProtocolError(`"${key}" must be a whole number`);
+    return v;
+  };
+
+  if (target === "terminalId") {
+    const terminalId = str(m, "terminalId", 64);
+    switch (type) {
+      case "terminal_attach": {
+        const since = wholeOrUndefined("since");
+        return since === undefined ? { id, type, terminalId } : { id, type, terminalId, since };
+      }
+      case "terminal_detach":
+        return { id, type, terminalId };
+      case "terminal_input": {
+        if (typeof m.data !== "string" || m.data.length === 0) throw new ProtocolError(`"data" must be a non-empty string`);
+        return { id, type, terminalId, data: m.data };
+      }
+      default: {
+        const cols = wholeOrUndefined("cols");
+        const rows = wholeOrUndefined("rows");
+        if (cols === undefined || rows === undefined) throw new ProtocolError(`"cols" and "rows" are required`);
+        return { id, type: "terminal_resize", terminalId, cols, rows };
+      }
+    }
+  }
   const sessionId = str(m, "sessionId", 64);
 
   switch (type) {

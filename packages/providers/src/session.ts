@@ -10,6 +10,8 @@ import { realpath, stat } from "node:fs/promises";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import { assertProviderAllowed } from "@daedalus/core/profiles";
+import { SECRET_NAME } from "./redact.js";
+import { attachRunLog } from "./runlog.js";
 import type { ProviderEntry } from "./registry.js";
 
 /** HTTP-shaped refusal; T3.3 answers with `status` and shows `message` to the owner. */
@@ -60,11 +62,12 @@ export type SessionManagerOptions = {
   killGraceMs?: number;
   /** Time allowed for initialize + session/new. Default 60 s. */
   startTimeoutMs?: number;
+  /** Where run logs go (T3.6). Omit to keep no logs (tests). */
+  runLogDir?: string;
 };
 
 // A blocklist, not an allowlist (ADR 0010): agents need PATH, nvm, XDG and WSL variables we
 // can't list ahead of time. AUTH also covers SSH_AUTH_SOCK: agents don't push, Daedalus does.
-const SECRET_NAME = /TOKEN|SECRET|PASSW|CREDENTIAL|AUTH|COOKIE|(^|_)(API_?)?KEY($|_)|APIKEY|PRIVATE|(^|_)PAT($|_)/i;
 /** Credentials inside a URL value, e.g. postgres://user:pass@host. */
 const URL_USERINFO = /[a-z][a-z0-9+.-]*:\/\/[^/\s@]+@/i;
 
@@ -388,7 +391,7 @@ export class SessionManager {
   private readonly changeListeners = new Set<() => void>();
   private starting = 0;
   private readonly versions = new Map<string, Promise<string>>();
-  private readonly opts: Required<Omit<SessionManagerOptions, "providers">> & { providers: readonly ProviderEntry[] };
+  private readonly opts: Required<Omit<SessionManagerOptions, "providers" | "runLogDir">> & { providers: readonly ProviderEntry[]; runLogDir?: string };
 
   constructor(options: SessionManagerOptions) {
     this.opts = {
@@ -495,6 +498,8 @@ export class SessionManager {
     const session = new AgentSession(project, provider.id, child, this.opts, (s) => {
       if (this.sessions.delete(s.id)) this.changed();
     });
+    // Before the session does any I/O, so start-up output and failures are logged too.
+    if (this.opts.runLogDir) attachRunLog(session, this.opts.runLogDir);
     try {
       await session.open(folder, this.opts.startTimeoutMs);
     } catch (err) {
