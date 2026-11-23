@@ -107,6 +107,10 @@ function discoverRoots(home: string, mntRoot = "/mnt"): FolderRoot[] {
   if (existsSync(projectsDir)) {
     roots.push({ label: "Projects", path: projectsDir, kind: "wsl" });
   }
+  const wwwDir = join(normHome, "var", "www", "html");
+  if (existsSync(wwwDir)) {
+    roots.push({ label: "~/var/www/html", path: wwwDir, kind: "wsl" });
+  }
   roots.push({ label: "WSL /", path: "/", kind: "wsl" });
 
   // Discover mounted Windows drives under /mnt/<letter>
