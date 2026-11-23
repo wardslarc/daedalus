@@ -21,8 +21,10 @@ Sections are linkable as `[[SPEC#<Heading>]]`.
 - Plan: Claude writes `docs/PLAN.md` tasks, each with a check, tag `[claude]` or `[gemini]`, and `[[SPEC#...]]` links.
 
 ## Pipeline
-- Stages: Intake, Mock, Spec, Plan, Build, Review, Ship.
+- Stages: Intake, Mock, Spec, Plan, Build, Review, Verify, Ship.
 - Task cards come from PLAN.md. Statuses: queued, running, check-failed, in-review, done.
+- Build and Review run per task: each task is reviewed and merged on its own while others build. The project moves to Verify once every PLAN.md task is done.
+- Ship is locked until every gate in Verify passes ([[SPEC#Release gate]]).
 
 ## Task runner
 - At most 2 tasks at once.
@@ -59,6 +61,15 @@ Sections are linkable as `[[SPEC#<Heading>]]`.
 - Graph: whole project and per task; warnings for spec sections with no task, tasks with no spec link, and tasks older than the docs they link.
 - Embeds: a task prompt contains AGENTS.md, the task, and only the spec sections the task links.
 - Quick switcher `Ctrl+K`, command palette `Ctrl+P`.
+
+## Release gate
+- The Verify stage, once per release. Uses no AI model unless the owner starts the optional security review.
+- UAT checklist: the project spec's `## Verify` items. Daedalus opens the app in a recorded Chromium window (screenshots, video, Playwright trace); the owner marks each item pass or fail with a note. A fail adds a task to PLAN.md and the project goes back to Build.
+- Recorded scripts: when the owner accepts an item, the recording (Playwright codegen, no model) is saved as a UAT script. Every later release replays all saved scripts before the owner starts, so only new or changed items are tested by hand.
+- Visual diff: each screen is compared with the approved mock's screenshots; the owner accepts or rejects every difference.
+- Security, always on, no model: secret scan of the release diff and the branch history, dependency audit, and the profile's ship checklist (Work: Kollab handoff).
+- Optional security review by a model over the whole release diff, started by the owner. Its findings are advice; they never pass or fail the gate on their own.
+- The owner accepts the release; nothing ships without that click.
 
 ## Learning mode
 - Personal profile: before merge, the user writes a short explanation of the change.
