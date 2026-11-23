@@ -24,7 +24,8 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
   const db = openDb(join(dataDir, "daedalus.db"));
   syncProviders(db, providers);
   const home = process.env.DAE_PROJECTS_HOME || homedir();
-  const sessions = new SessionManager({ providers });
+  // Run logs (T3.6) live with the database, outside the repo; folders 0700, files 0600.
+  const sessions = new SessionManager({ providers, runLogDir: join(dataDir, "runs") });
   const services: Services = {
     db,
     dataDir,

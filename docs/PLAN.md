@@ -125,10 +125,11 @@ Done when: you can chat with Claude and agy side by side on one project.
 - [ ] **T3.5 Permission prompts** `[gemini]` — [[SPEC#Workshop]]
   Show the agent's permission requests inline in its console with Allow once / Deny.
   check: e2e — a denied request reaches the agent as denied; nothing runs without a click
-- [ ] **T3.6 Run logs with redaction** `[claude]` — [[SPEC#Security]]
+- [x] **T3.6 Run logs with redaction** `[claude]` — [[SPEC#Security]]
   Every session's updates saved as JSONL in the data folder, with secret-like strings
   (tokens, keys, passwords in URLs) redacted before writing.
   check: unit tests with planted secrets; nothing secret-like on disk
+  Open question: how long run logs are kept (no rotation yet; `<data>/runs/<day>/`).
 - [ ] **T3.7 Free terminal** `[claude]` — [[SPEC#Security]] [[SPEC#Workshop]]
   The one free shell the spec allows: a node-pty shell in the project folder, typed into by
   the owner only, over the T3.3 channel.
