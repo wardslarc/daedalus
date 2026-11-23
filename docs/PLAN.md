@@ -122,7 +122,7 @@ Done when: you can chat with Claude and agy side by side on one project.
   `docs/design/workshop.md`.
   Build against `apps/web/src/ws/protocol.ts` only; never import server code into the page.
   check: e2e with the fake agent; screenshot vs design
-- [ ] **T3.5 Permission prompts** `[gemini]` — [[SPEC#Workshop]]
+- [x] **T3.5 Permission prompts** `[gemini]` — [[SPEC#Workshop]]
   Show the agent's permission requests inline in its console with Allow once / Deny.
   check: e2e — a denied request reaches the agent as denied; nothing runs without a click
 - [x] **T3.6 Run logs with redaction** `[claude]` — [[SPEC#Security]]

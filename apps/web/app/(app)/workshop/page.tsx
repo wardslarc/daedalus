@@ -333,6 +333,17 @@ export default function WorkshopPage() {
     sendWs({ id, type: "prompt", sessionId, text });
   }
 
+  function handlePermission(
+    sessionId: string,
+    requestId: string,
+    optionId: string,
+    callbacks: { clear: () => void; setError: (err: string) => void },
+  ) {
+    const id = nextId("perm");
+    pendingPrompts.current.set(id, callbacks);
+    sendWs({ id, type: "permission", sessionId, requestId, optionId });
+  }
+
   function handleTerminalInput(terminalId: string, data: string) {
     sendWs({ id: nextId("in"), type: "terminal_input", terminalId, data });
   }
@@ -488,6 +499,7 @@ export default function WorkshopPage() {
                 isReconnecting={isReconnecting}
                 reconnectedSeq={reconnectedBanners[session.id]}
                 onSendPrompt={handleSendPrompt}
+                onPermission={handlePermission}
                 onCancel={handleCancelTurn}
                 onStop={handleStopSession}
                 onClose={handleCloseEndedSession}
