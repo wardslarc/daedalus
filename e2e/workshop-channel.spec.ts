@@ -24,7 +24,8 @@ function fixtureRepo(name: string): string {
 }
 
 function deleteProject(id: number) {
-  const db = new DatabaseSync(join(E2E_DATA_DIR, "daedalus.db"));
+  // The server writes to the same file; wait for its lock instead of failing.
+  const db = new DatabaseSync(join(E2E_DATA_DIR, "daedalus.db"), { timeout: 5000 });
   db.prepare("DELETE FROM projects WHERE id = ?").run(id);
   db.close();
 }

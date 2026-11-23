@@ -7,6 +7,8 @@ Runs only on 127.0.0.1. Work use runs inside WSL.
 ## Commands
 - install: `pnpm install`
 - typecheck all: `pnpm typecheck`
+- e2e: `pnpm test:e2e` (builds the web app and tests the production server; `DAE_E2E_DEV=1`
+  uses the dev server instead; `DAE_E2E_PORT=<port>` when another e2e run already uses 4318)
 - M0 spikes: `pnpm spike:acp -- <provider> <folder>` · `pnpm spike:pty -- <folder>`
 
 ## Rules that differ from defaults
