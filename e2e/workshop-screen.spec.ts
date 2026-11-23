@@ -68,6 +68,7 @@ test("Workshop screen: start session from picker, type prompt, see reply, stop; 
   const folder = execFileSync("realpath", [dir], { encoding: "utf8" }).trim();
 
   try {
+    await page.setViewportSize({ width: 1440, height: 960 });
     await page.goto("/workshop");
     await expect(page.getByRole("heading", { level: 1, name: "Workshop" })).toBeVisible();
 
@@ -100,6 +101,8 @@ test("Workshop screen: start session from picker, type prompt, see reply, stop; 
 
     // Fake agent replies with "hello"
     await expect(consoleSection.locator(".xterm")).toContainText("hello", { timeout: 15000 });
+    // For the plan's "screenshot vs design" check against the Workshop board.
+    await page.screenshot({ path: "test-results/screens/workshop-live-session-1440.png" });
 
     // 4. Stop the session
     const stopBtn = consoleSection.getByRole("button", { name: "Stop" });
@@ -122,6 +125,7 @@ test("Workshop screen: start session from picker, type prompt, see reply, stop; 
 
     // Terminal output should show the project folder
     await expect(terminalSection.locator(".xterm")).toContainText(folder, { timeout: 15000 });
+    await page.screenshot({ path: "test-results/screens/workshop-terminal-1440.png" });
 
     // Close the terminal
     await terminalSection.getByRole("button", { name: "Close" }).click();

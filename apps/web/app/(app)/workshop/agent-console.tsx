@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useId, type FormEvent } from "react";
 import type { Terminal } from "@xterm/xterm";
 import type { SessionInfo, AgentEvent } from "../../../src/ws/protocol";
+import { sanitizeAgentText } from "./terminal-text";
 
 export type AgentConsoleProps = {
   session: SessionInfo;
@@ -20,52 +21,57 @@ export type AgentConsoleProps = {
   onClose: (sessionId: string) => void;
 };
 
+/**
+ * Every string that came from the agent (or through the server) goes through `clean` before it
+ * is written: only the console's own colour codes reach xterm.js as escape sequences.
+ */
 function renderEventToTerm(term: Terminal, event: AgentEvent, providerId: string) {
+  const clean = sanitizeAgentText;
   switch (event.type) {
     case "prompt": {
       const color = providerId === "antigravity" ? "\x1b[38;2;141;184;255m" : "\x1b[38;2;242;167;126m";
-      term.writeln(`${color}> ${event.text}\x1b[0m`);
+      term.writeln(`${color}> ${clean(event.text)}\x1b[0m`);
       break;
     }
     case "message": {
-      term.write(event.text);
+      term.write(clean(event.text));
       break;
     }
     case "thought": {
-      term.write(`\x1b[38;2;151;163;188m${event.text}\x1b[0m`);
+      term.write(`\x1b[38;2;151;163;188m${clean(event.text)}\x1b[0m`);
       break;
     }
     case "tool_call": {
-      term.writeln(`● ${event.title}`);
+      term.writeln(`● ${clean(event.title)}`);
       break;
     }
     case "tool_call_update": {
       const icon = event.status === "failed" ? "✗" : "✓";
       const color = event.status === "failed" ? "\x1b[38;2;255;138;138m" : "\x1b[38;2;93;211;158m";
-      term.writeln(`${color}${icon} ${event.title ?? "Tool call"}\x1b[0m`);
+      term.writeln(`${color}${icon} ${clean(event.title ?? "Tool call")}\x1b[0m`);
       break;
     }
     case "plan": {
       for (const entry of event.entries) {
-        term.writeln(`[plan] ${entry.status}: ${entry.content}`);
+        term.writeln(`[plan] ${clean(String(entry.status))}: ${clean(entry.content)}`);
       }
       break;
     }
     case "turn_end": {
-      term.writeln(`\r\n\x1b[38;2;151;163;188m— turn ended (${event.stopReason})\x1b[0m`);
+      term.writeln(`\r\n\x1b[38;2;151;163;188m— turn ended (${clean(String(event.stopReason))})\x1b[0m`);
       break;
     }
     case "stderr": {
-      term.write(`\x1b[38;2;151;163;188m${event.text}\x1b[0m`);
+      term.write(`\x1b[38;2;151;163;188m${clean(event.text)}\x1b[0m`);
       break;
     }
     case "error": {
-      term.writeln(`\r\n\x1b[38;2;255;138;138mError: ${event.message}\x1b[0m`);
+      term.writeln(`\r\n\x1b[38;2;255;138;138mError: ${clean(event.message)}\x1b[0m`);
       break;
     }
     case "exit": {
       const codeOrSig = event.code !== null ? event.code : event.signal !== null ? event.signal : "unknown";
-      term.writeln(`\r\n\x1b[38;2;255;138;138mAgent exited (${codeOrSig})\x1b[0m`);
+      term.writeln(`\r\n\x1b[38;2;255;138;138mAgent exited (${clean(String(codeOrSig))})\x1b[0m`);
       break;
     }
     default:
