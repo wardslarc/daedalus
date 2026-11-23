@@ -469,6 +469,52 @@ describe("services: project chat and intake", () => {
     expect(chat.plan.activeMilestone).toBeNull();
   });
 
+  it("requires db record for approval: imported repo with docs stays at spec and refuses downstream sessions", async () => {
+    const s = initServices({ dataDir: mkdtempSync(join(tmpdir(), "svc-no-rec-")), repoRoot: "/srv/daedalus" });
+    const repo = mkdtempSync(join(tmpdir(), "repo-no-rec-"));
+    git(repo, "init", "--initial-branch=main");
+    git(repo, "config", "user.name", "Tester");
+    git(repo, "config", "user.email", "test@example.com");
+    writeFileSync(join(repo, "README.md"), "# NoRec\n", "utf8");
+    mkdirSync(join(repo, "docs"));
+    writeFileSync(join(repo, "docs", "INTAKE.md"), "# Intake\n- **Problem:** Real problem\n- **Users:** Developers\n- **Constraints:** None\n", "utf8");
+    writeFileSync(join(repo, "docs", "SPEC.md"), "# Spec\n\n## Overview\n- Features\n\n## Verify\n- E2E passes\n", "utf8");
+    writeFileSync(join(repo, "docs", "mock.html"), "<html><body>Mock</body></html>", "utf8");
+    writeFileSync(
+      join(repo, "docs", "PLAN.md"),
+      [
+        "# Plan",
+        "",
+        "## M1 — v1.0",
+        "",
+        "Done when: ready",
+        "",
+        "- [ ] **T1.1 Task** `[claude]` — [[SPEC#Overview]]",
+        "  check: `pnpm test`",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    git(repo, "add", ".");
+    git(repo, "commit", "-m", "init");
+
+    const [p] = s.db
+      .insert(projects)
+      .values({ name: "NoRecProj", localPath: repo, profile: "personal", geminiAllowed: true, defaultBranch: "main" })
+      .returning()
+      .all();
+
+    const chat = await s.getProjectChat(p!.id);
+    expect(chat.spec.approved).toBe(false);
+    expect(chat.mock.approved).toBe(false);
+    expect(chat.plan.approved).toBe(false);
+    expect(chat.currentStep).toBe("spec");
+
+    await expect(s.startPlanSession(p!.id)).rejects.toThrow(/Approve the mock/i);
+    await expect(s.approvePlan(p!.id)).rejects.toThrow(/Approve the mock/i);
+    await expect(s.startMilestone(p!.id)).rejects.toThrow(/Approve docs\/PLAN\.md/i);
+  });
+
   it("approvePlan saves docs/PLAN.md and startMilestone creates daedalus/release-v1.0 in git (T4.4)", async () => {
     const s = initServices({ dataDir: mkdtempSync(join(tmpdir(), "svc-plan-")), repoRoot: "/srv/daedalus" });
     const repo = mkdtempSync(join(tmpdir(), "repo-plan-"));

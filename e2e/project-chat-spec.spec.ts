@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -136,6 +136,64 @@ test.describe("project chat spec interview (T4.2)", () => {
       await expect(page.getByRole("heading", { level: 2, name: /Step 2: Spec interview/i })).toBeVisible();
       await expect(page.getByTestId("spec-readonly-content")).toContainText("## Verify");
       await expect(page.getByRole("button", { name: "Reopen interview" })).toBeVisible();
+    } finally {
+      deleteProject(projectId);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("imported repo with existing docs but no db records lands on Spec in UI", async ({ page }) => {
+    const dir = fixtureRepo("no-record");
+    mkdirSync(join(dir, "docs"));
+    writeFileSync(
+      join(dir, "docs", "INTAKE.md"),
+      "# Intake\n\n- **Problem:** Existing problem\n- **Users:** Developers\n- **Constraints:** None\n",
+      "utf8",
+    );
+    writeFileSync(
+      join(dir, "docs", "SPEC.md"),
+      "# Spec\n\n## Overview\n- Features\n\n## Verify\n- Passes check\n",
+      "utf8",
+    );
+    writeFileSync(join(dir, "docs", "mock.html"), "<html><body>Mock</body></html>", "utf8");
+    writeFileSync(
+      join(dir, "docs", "PLAN.md"),
+      [
+        "# Plan",
+        "",
+        "## M1 — v1.0",
+        "",
+        "Done when: ready",
+        "",
+        "- [ ] **T1.1 Task** `[claude]` — [[SPEC#Overview]]",
+        "  check: `pnpm test`",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    git(dir, "add", ".");
+    git(dir, "commit", "-m", "docs included");
+
+    await login(page);
+
+    const imp = await post(page, "/api/projects/import", {
+      source: dir,
+      profile: "personal",
+      name: "Existing Docs No Record",
+    });
+    expect(imp.status).toBe(201);
+    const projectId = (imp.json.project as { id: number }).id;
+
+    try {
+      await page.goto(`/projects/${projectId}/chat`);
+      await expect(page.getByRole("heading", { level: 2, name: /Step 2: Spec interview/i })).toBeVisible();
+
+      const stepper = page.getByRole("navigation", { name: "Shaping steps" });
+      const mockStep = stepper.getByRole("button", { name: /Mock/i });
+      const planStep = stepper.getByRole("button", { name: /Plan/i });
+
+      await expect(mockStep).toBeDisabled();
+      await expect(planStep).toBeDisabled();
     } finally {
       deleteProject(projectId);
       rmSync(dir, { recursive: true, force: true });
