@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -84,6 +84,21 @@ describe("shaping service", () => {
 
         expect(() => readShapingDoc(rootDir, "docs/INTAKE.md")).toThrow(ShapingError);
         expect(() => readShapingDoc(rootDir, "docs/INTAKE.md")).toThrow(/symlink/i);
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
+    it("throws ShapingError if target doc is a hardlink (nlink > 1)", () => {
+      mkdirSync(join(rootDir, "docs"));
+      const outside = mkdtempSync(join(tmpdir(), "daedalus-outside-"));
+      try {
+        const secret = join(outside, "secret.txt");
+        writeFileSync(secret, "secret", "utf8");
+        linkSync(secret, join(rootDir, "docs", "INTAKE.md"));
+
+        expect(() => readShapingDoc(rootDir, "docs/INTAKE.md")).toThrow(ShapingError);
+        expect(() => readShapingDoc(rootDir, "docs/INTAKE.md")).toThrow(/hardlink/i);
       } finally {
         rmSync(outside, { recursive: true, force: true });
       }
@@ -305,9 +320,54 @@ describe("shaping service", () => {
       expect(workState.steps.find((s) => s.id === "spec")?.provider).toBe("Claude");
       expect(workState.steps.find((s) => s.id === "plan")?.provider).toBe("Claude");
     });
+
+    it("refuses hardlinked doc (throws ShapingError)", () => {
+      mkdirSync(join(rootDir, "docs"));
+      const outside = mkdtempSync(join(tmpdir(), "daedalus-outside-"));
+      try {
+        const secret = join(outside, "secret.txt");
+        writeFileSync(secret, "secret data", "utf8");
+        linkSync(secret, join(rootDir, "docs", "INTAKE.md"));
+
+        expect(() =>
+          getShapingState(db, projectId, rootDir, { name: "Test", profile: "work", geminiAllowed: false }),
+        ).toThrow(ShapingError);
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("saveIntakeDoc", () => {
+    it("leaves hardlinked outside file unchanged and replaces docs/INTAKE.md with new content", () => {
+      mkdirSync(join(rootDir, "docs"));
+      const outside = mkdtempSync(join(tmpdir(), "daedalus-outside-"));
+      try {
+        const secret = join(outside, "secret.txt");
+        writeFileSync(secret, "original outside content", "utf8");
+        linkSync(secret, join(rootDir, "docs", "INTAKE.md"));
+
+        saveIntakeDoc(
+          db,
+          projectId,
+          rootDir,
+          {
+            fields: {
+              problem: "New problem",
+              users: "New users",
+              constraints: "New constraints",
+            },
+          },
+          { name: "My Project", profile: "personal", geminiAllowed: true },
+        );
+
+        expect(readFileSync(secret, "utf8")).toBe("original outside content");
+        const intakeContent = readFileSync(join(rootDir, "docs", "INTAKE.md"), "utf8");
+        expect(intakeContent).toContain("New problem");
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+    });
     it("saves structured fields into docs/INTAKE.md", () => {
       const result = saveIntakeDoc(
         db,

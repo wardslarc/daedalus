@@ -1,4 +1,19 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync, type Stats } from "node:fs";
+import { randomBytes } from "node:crypto";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  unlinkSync,
+  writeSync,
+  type Stats,
+} from "node:fs";
 import { join, sep } from "node:path";
 import { eq } from "drizzle-orm";
 import type { DaedalusDb } from "@daedalus/db";
@@ -177,8 +192,20 @@ export function readShapingDoc(root: string, relPath: string): { exists: boolean
     throw new ShapingError(`${relPath} escapes repo root.`, 400);
   }
 
-  const content = readFileSync(filePath, "utf8");
-  return { exists: true, content };
+  const fd = openSync(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const fdSt = fstatSync(fd);
+    if (!fdSt.isFile()) {
+      throw new ShapingError(`${relPath} is not a regular file.`, 400);
+    }
+    if (fdSt.nlink > 1) {
+      throw new ShapingError(`Hardlink detected for ${relPath}.`, 400);
+    }
+    const content = readFileSync(fd, "utf8");
+    return { exists: true, content };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
@@ -233,10 +260,25 @@ export function writeShapingDoc(root: string, relPath: string, content: string):
     if (!fileSt.isFile()) throw new ShapingError(`${relPath} is not a regular file.`, 400);
   }
 
-  writeFileSync(filePath, content, "utf8");
-  const realFile = realpathSync(filePath);
-  if (!realFile.startsWith(realRoot + sep)) {
-    throw new ShapingError(`${relPath} escapes repo root.`, 400);
+  const tempName = `.tmp-${parts[parts.length - 1]!}-${randomBytes(8).toString("hex")}`;
+  const tempPath = join(cur, tempName);
+  try {
+    const fd = openSync(tempPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o644);
+    try {
+      writeSync(fd, content, null, "utf8");
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tempPath, filePath);
+  } catch (err) {
+    try {
+      if (existsSync(tempPath)) {
+        unlinkSync(tempPath);
+      }
+    } catch {
+      // ignore
+    }
+    throw err;
   }
 }
 
