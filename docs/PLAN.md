@@ -107,10 +107,13 @@ Done when: you can chat with Claude and agy side by side on one project.
   `upgrade` handler on the custom server: Host allowlist, session cookie and Origin checked
   before any socket opens; one channel per session; typed messages.
   check: tests — no session, foreign Origin or foreign Host are all refused
+  Contract: `apps/web/src/ws/protocol.ts` (REST to start/list/stop sessions, `/ws` for live
+  events, prompts and permission answers).
 - [ ] **T3.4 Workshop screen** `[gemini]` — [[SPEC#Workshop]]
   Start a session (project + provider), one console per session in xterm.js, an input to
   type into it, stop button, sessions side by side. Matches the Workshop board, exported to
   `docs/design/workshop.md`.
+  Build against `apps/web/src/ws/protocol.ts` only; never import server code into the page.
   check: e2e with the fake agent; screenshot vs design
 - [ ] **T3.5 Permission prompts** `[gemini]` — [[SPEC#Workshop]]
   Show the agent's permission requests inline in its console with Allow once / Deny.
