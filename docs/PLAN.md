@@ -103,7 +103,7 @@ Done when: you can chat with Claude and agy side by side on one project.
   prompts, cancel, stop; one process per session, all killed on server exit. Permission
   requests are passed to the owner, never auto-approved. Grows out of the M0 ACP spike.
   check: integration tests against a fake ACP agent script; a Work project can't start agy
-- [ ] **T3.3 WebSocket channel** `[claude]` — [[SPEC#Security]]
+- [x] **T3.3 WebSocket channel** `[claude]` — [[SPEC#Security]]
   `upgrade` handler on the custom server: Host allowlist, session cookie and Origin checked
   before any socket opens; one channel per session; typed messages.
   check: tests — no session, foreign Origin or foreign Host are all refused

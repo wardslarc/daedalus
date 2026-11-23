@@ -385,6 +385,7 @@ export class AgentSession {
 
 export class SessionManager {
   private readonly sessions = new Map<string, AgentSession>();
+  private readonly changeListeners = new Set<() => void>();
   private starting = 0;
   private readonly versions = new Map<string, Promise<string>>();
   private readonly opts: Required<Omit<SessionManagerOptions, "providers">> & { providers: readonly ProviderEntry[] };
@@ -434,6 +435,22 @@ export class SessionManager {
     }
   }
 
+  /** Called whenever a session starts or ends. Returns a function that stops listening. */
+  onChange(listener: () => void): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
+
+  private changed(): void {
+    for (const l of this.changeListeners) {
+      try {
+        l();
+      } catch {
+        // A broken listener must not break the others.
+      }
+    }
+  }
+
   get(id: string): AgentSession | undefined {
     return this.sessions.get(id);
   }
@@ -475,7 +492,9 @@ export class SessionManager {
       stdio: ["pipe", "pipe", "pipe"],
     });
     if (child.pid) trackGroup(child.pid);
-    const session = new AgentSession(project, provider.id, child, this.opts, (s) => this.sessions.delete(s.id));
+    const session = new AgentSession(project, provider.id, child, this.opts, (s) => {
+      if (this.sessions.delete(s.id)) this.changed();
+    });
     try {
       await session.open(folder, this.opts.startTimeoutMs);
     } catch (err) {
@@ -485,6 +504,7 @@ export class SessionManager {
     }
     if (!session.running) throw new SessionError(`${provider.id} exited while starting.`, 502);
     this.sessions.set(session.id, session);
+    this.changed();
     return session;
   }
 }

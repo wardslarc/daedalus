@@ -48,7 +48,7 @@ type Named = { name?: unknown; message?: unknown; status?: unknown };
 export function toErrorResponse(err: unknown): Response {
   const e = (typeof err === "object" && err !== null ? err : {}) as Named;
   const message = typeof e.message === "string" ? e.message : "";
-  if ((e.name === "HttpError" || e.name === "ImportError") && typeof e.status === "number") {
+  if ((e.name === "HttpError" || e.name === "ImportError" || e.name === "SessionError") && typeof e.status === "number") {
     return jsonResponse(e.status, { error: message });
   }
   if (e.name === "ProfileRuleError") return jsonResponse(403, { error: message });

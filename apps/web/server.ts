@@ -2,14 +2,17 @@
  * Daedalus custom server: one Node process on 127.0.0.1 that serves Next.js.
  * Later milestones mount the WebSocket, job queue, git, docs index and SQLite here.
  */
+import { EventEmitter } from "node:events";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
+import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 import createNext from "next";
 import { withAuth } from "./src/auth/http.js";
 import { APP_DIR, dataDir } from "./src/data-dir.js";
 import { isAllowedHost } from "./src/host-check.js";
 import { closeServices, initServices } from "./src/init-services.js";
+import { attachWorkshop } from "./src/ws/upgrade.js";
 
 /** Never configurable: Daedalus is local-only (AGENTS.md, SPEC#Security). */
 export const HOST = "127.0.0.1";
@@ -47,20 +50,44 @@ function parsePort(raw: string | undefined): number {
   return port;
 }
 
+type UpgradeHandler = (req: IncomingMessage, socket: Duplex, head: Buffer) => void;
+
+/**
+ * Next.js dev HMR. `getUpgradeHandler()` on the custom-server wrapper reaches the render
+ * server, which ignores HMR; Next's own auto-hook uses the router server's `upgradeHandler`
+ * getter (next/dist/server/next.js, NextCustomServer). Checked against next 16.4.5.
+ */
+function nextHmrUpgrade(app: ReturnType<typeof createNext>): UpgradeHandler {
+  const handler = (app as unknown as { upgradeHandler?: UpgradeHandler }).upgradeHandler;
+  if (typeof handler !== "function") throw new Error("Next.js has no upgradeHandler: check nextHmrUpgrade against this Next version");
+  return (req, socket, head) => handler(req, socket, head);
+}
+
 async function main(): Promise<void> {
   const port = parsePort(process.env.DAE_PORT);
   const dev = process.env.NODE_ENV !== "production";
   // Open the database (and run migrations) before serving anything.
-  initServices({ dataDir: dataDir(), repoRoot: join(APP_DIR, "..", "..") });
-  const app = createNext({ dev, hostname: HOST, port, dir: APP_DIR });
+  const services = initServices({ dataDir: dataDir(), repoRoot: join(APP_DIR, "..", "..") });
+  // Next.js would add its own "upgrade" listener to the real server on the first request,
+  // accepting WebSockets with no session check. Give it a server that never emits; our upgrade
+  // handler forwards only HMR to Next, after its own checks (ADR 0011).
+  const app = createNext({ dev, hostname: HOST, port, dir: APP_DIR, httpServer: new EventEmitter() as Server });
   await app.prepare();
   const handle = app.getRequestHandler();
   const auth = withAuth({ port, dataDir: dataDir() }, (req, res) => handle(req, res));
   const server = await listen(port, auth.handler);
+  const workshop = attachWorkshop(server, {
+    port,
+    isSession: auth.isSession,
+    onRevoke: auth.onRevoke,
+    sessions: services.sessions,
+    ...(dev ? { nextUpgrade: nextHmrUpgrade(app) } : {}),
+  });
   console.log(`Daedalus ready on http://${HOST}:${port}${dev ? " (dev)" : ""}`);
 
   const stop = (): void => {
     // Agents get SIGTERM, then SIGKILL after 3 s: leave time for that before giving up.
+    void workshop.close();
     server.close(() => {
       void closeServices().finally(() => process.exit(0));
     });

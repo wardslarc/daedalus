@@ -127,7 +127,7 @@ test.describe("projects hub", () => {
     }
 
     // 5. Live counts on profile pills
-    await expect(page.getByRole("radio", { name: /^All · [3-9]\d*$/ })).toBeVisible();
+    await expect(page.getByRole("radio", { name: /^All · ([3-9]|[1-9]\d+)$/ })).toBeVisible();
     await expect(page.getByRole("radio", { name: /^Work · [1-9]\d*$/ })).toBeVisible();
     await expect(page.getByRole("radio", { name: /^Client · [1-9]\d*$/ })).toBeVisible();
     await expect(page.getByRole("radio", { name: /^Personal · [1-9]\d*$/ })).toBeVisible();
