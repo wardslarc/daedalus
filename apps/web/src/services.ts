@@ -8,7 +8,8 @@
 import type { DaedalusDb, projects } from "@daedalus/db";
 import type { CreateInput, createProject, ImportInput, importProject, mergeKit } from "@daedalus/projects";
 import type { ProviderEntry, SessionManager } from "@daedalus/providers";
-import type { SessionInfo } from "./ws/protocol.js";
+import type { SessionInfo, TerminalInfo } from "./ws/protocol.js";
+import type { TerminalManager } from "./terminal.js";
 
 export type ProjectWithKit = typeof projects.$inferSelect & {
   kitPending: boolean;
@@ -45,6 +46,13 @@ export type SessionServices = {
   listSessions(): SessionInfo[];
   /** 404 if no such session. */
   stopSession(id: string): Promise<void>;
+  /** Free terminals (T3.7). */
+  terminals: TerminalManager;
+  /** Open a shell in a project folder from the database. 404 no project or folder; 409 two open. */
+  openTerminal(projectId: number): Promise<TerminalInfo>;
+  listTerminals(): TerminalInfo[];
+  /** 404 if no such terminal. */
+  closeTerminal(id: string): Promise<void>;
 };
 
 export const SERVICES_KEY = Symbol.for("daedalus.services");

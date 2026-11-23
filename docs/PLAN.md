@@ -130,7 +130,7 @@ Done when: you can chat with Claude and agy side by side on one project.
   (tokens, keys, passwords in URLs) redacted before writing.
   check: unit tests with planted secrets; nothing secret-like on disk
   Open question: how long run logs are kept (no rotation yet; `<data>/runs/<day>/`).
-- [ ] **T3.7 Free terminal** `[claude]` — [[SPEC#Security]] [[SPEC#Workshop]]
+- [x] **T3.7 Free terminal** `[claude]` — [[SPEC#Security]] [[SPEC#Workshop]]
   The one free shell the spec allows: a node-pty shell in the project folder, typed into by
   the owner only, over the T3.3 channel.
   check: e2e types `pwd` and sees the project folder; the terminal is unreachable without a session

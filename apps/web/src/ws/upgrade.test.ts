@@ -10,6 +10,7 @@ import WebSocket from "ws";
 import { SessionManager, type ProviderEntry } from "@daedalus/providers";
 import type { ServerMessage } from "./protocol.js";
 import { attachWorkshop, type Workshop } from "./upgrade.js";
+import { TerminalManager } from "../terminal.js";
 
 const tsxCli = createRequire(import.meta.url).resolve("tsx/cli");
 const fakeAgent = fileURLToPath(new URL("../../../../packages/providers/test/fixtures/fake-agent.ts", import.meta.url));
@@ -29,6 +30,7 @@ let server: Server;
 let port: number;
 let workshop: Workshop;
 let manager: SessionManager;
+let terminals: TerminalManager;
 let revoke: (token: string) => void;
 let nextUpgrades: string[];
 
@@ -38,7 +40,9 @@ beforeEach(async () => {
   port = (server.address() as AddressInfo).port;
   manager = new SessionManager({ providers: [fake("claude"), fake("antigravity")], checkVersion: async () => "1.0.0" });
   nextUpgrades = [];
+  terminals = new TerminalManager({ shell: "/bin/sh" });
   workshop = attachWorkshop(server, {
+    terminals,
     port,
     isSession: (t) => t === GOOD,
     onRevoke: (l) => {
@@ -56,6 +60,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await workshop.close();
   await manager.stopAll();
+  await terminals.closeAll();
   await new Promise<void>((r) => server.close(() => r()));
 });
 
@@ -229,6 +234,48 @@ describe("Workshop channel", () => {
     await next((m) => m.type === "sessions" && m.sessions.length === 1);
     await s.stop();
     await next((m) => m.type === "sessions" && m.sessions.length === 0);
+    ws.close();
+  });
+});
+
+describe("Workshop channel: free terminal", () => {
+  it("lists terminals on connect; attach, type pwd, see the project folder", async () => {
+    const p = project();
+    const t = await terminals.open(p);
+    const { ws, next } = await connect();
+    expect(await next((m) => m.type === "terminals")).toMatchObject({ terminals: [{ id: t.id, projectId: 7 }] });
+    send(ws, { id: "a", type: "terminal_attach", terminalId: t.id });
+    await next((m) => m.type === "ack" && m.id === "a");
+    send(ws, { id: "b", type: "terminal_input", terminalId: t.id, data: "pwd\n" });
+    await next((m) => m.type === "ack" && m.id === "b");
+    const real = (await import("node:fs")).realpathSync(p.localPath);
+    let seen = "";
+    await next((m) => {
+      if (m.type === "terminal_output") seen += m.data;
+      return seen.includes(real);
+    });
+    ws.close();
+  });
+
+  it("unknown terminals are 404, bad payloads 400, and the socket stays open", async () => {
+    const { ws, next } = await connect();
+    send(ws, { id: "x", type: "terminal_input", terminalId: "nope", data: "ls\n" });
+    expect(await next((m) => m.type === "error" && m.id === "x")).toMatchObject({ status: 404 });
+    send(ws, { id: "y", type: "terminal_resize", terminalId: "nope", cols: 80 });
+    expect(await next((m) => m.type === "error")).toMatchObject({ status: 400 });
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
+  });
+
+  it("logging out closes every terminal", async () => {
+    const t = await terminals.open(project());
+    const pid = terminals.pid(t.id)!;
+    const gone = new Promise<void>((r) => terminals.onEvent(t.id, (e) => e.type === "exit" && r()));
+    const { ws } = await connect();
+    revoke(GOOD);
+    await gone;
+    expect(terminals.list()).toEqual([]);
+    expect(() => process.kill(pid, 0)).toThrow();
     ws.close();
   });
 });
