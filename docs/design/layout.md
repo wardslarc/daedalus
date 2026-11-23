@@ -1,145 +1,159 @@
-# Daedalus 1.0 Layout — design spec
+# Daedalus 1.0 Layout — design spec (Direction C)
 
-Exported from the owner's "Daedalus 1.0 Layout" design canvas (boards: Projects hub, Project chat,
-Pipeline board, Workshop, Review center, Providers & usage, Sidebar). This file is the source of
-truth for T1.4; values are copied exactly from the design.
+Exported from the owner's "Daedalus 1.0 Layout" design canvas after the 2026-11-23 UI/UX review.
+The canvas is the picture; this file is the source of truth for building. Values are copied from
+the boards. Direction C ("Midnight": navy, lime accent, icon rail) replaced the earlier gold theme.
 
-## Screens and routes
+Per-screen specs live beside this file: [workshop.md](workshop.md). Screens built in later
+milestones (Project chat M4, Pipeline M5, Review and Release gate M6, Providers M8) get their own
+file when their milestone starts, exported from their board at that time.
 
-Every screen is the shared **Sidebar** (232px) on the left plus a main area. Design frame: 1440×960.
+## Navigation and routes
 
-| Sidebar item | Route | Board | Sidebar badge in design |
+Two levels:
+1. **Rail** (left, 96px): only the app-wide screens.
+2. **Project tabs** (top of every project screen): the screens that belong to one project.
+
+| Where | Item | Route | Board |
 | --- | --- | --- | --- |
-| Projects | `/projects` | Projects hub | count of projects |
-| Project chat | `/chat` | Project chat | `start` |
-| Pipeline | `/pipeline` | Pipeline board | — |
-| Workshop | `/workshop` | Workshop (agent consoles) | `2 live` |
-| Review | `/review` | Review center | count waiting |
-| Release gate | `/release` | Release gate (Verify stage) | — |
-| Providers & usage | `/providers` | Providers & usage | — |
+| Rail | Projects | `/projects` | Projects hub |
+| Rail | Workshop | `/workshop` | Workshop (agent consoles) |
+| Rail | Usage | `/providers` | Providers & usage |
+| Project tab | Chat | `/projects/[id]/chat` | Project chat |
+| Project tab | Pipeline | `/projects/[id]/pipeline` | Pipeline board |
+| Project tab | Review | `/projects/[id]/review` | Review center |
+| Project tab | Release gate | `/projects/[id]/release` | Release gate |
+| Project tab | Change requests | `/projects/[id]/changes` | Change request |
 
-In M1 there is no data yet: badges are hidden when there is nothing to count, and every main area
-shows an empty state (see below). Sample data in the design (Bilyo, Relato, RMK…) is NOT built.
+The old top-level routes `/chat`, `/pipeline`, `/review` and `/release` are removed. A project
+screen highlights **Projects** in the rail. There is no global profile switch any more; the only
+profile filter is the chips on the Projects hub.
+
+Until a milestone builds a screen, it shows the empty state listed at the end of this file.
+Sample data in the boards (Bilyo, Relato, RMK…) is NOT built.
 
 ## Tokens
 
-Colors
+The app uses CSS custom properties (`apps/web/app/globals.css`); the names stay, the values change.
+
 | Token | Value | Used for |
 | --- | --- | --- |
-| `bg` | `#0F1115` | page background |
-| `sidebar-bg` | `#0B0D11` | sidebar background |
-| `surface` | `#151820` | cards, inputs, secondary buttons |
-| `surface-2` | `#1A1E27` | inbox items |
-| `surface-3` | `#12151B` | usage panel in sidebar |
-| `nav-active-bg` | `#1C212B` | active nav item, version chip |
-| `border` | `#232833` | card borders, sidebar right border, dividers |
-| `border-2` | `#2E3441` | buttons, inputs, active nav inset ring |
-| `track` | `#262B36` | meter tracks, inactive badges |
-| `ink` | `#E6E8EC` | primary text |
-| `ink-strong` | `#FFFFFF` | active nav text |
-| `ink-2` | `#B4BBC8` | nav text, secondary text |
-| `muted` | `#9AA3B2` | captions, labels |
-| `accent` | `#D9A441` | primary button, logo stroke, active badge, active pill border |
-| `accent-ink` | `#17130A` | text on accent |
-| `accent-soft-bg` | `#2A2312` | selected pill background |
-| `accent-soft-ink` | `#F2D38A` | selected pill text |
-| `link` / hover | `#E6C47A` / `#F5DCA0` | links |
-| `ok` | `#5DD39E` | "local only" status dot |
-| `claude` / `claude-bar` | `#F2A77E` / `#E0895A` | Claude label / meter fill |
-| `gemini` / `gemini-bar` | `#8DB8FF` / `#6AA6F8` | Antigravity label / meter fill |
-| `danger` | `#FF8A8A` | failed check label |
-| profile Work | `#C9B6FF` on `#241E36` | |
-| profile Client | `#7FD8C4` on `#15302B` | |
-| profile Personal | `#F2C66D` on `#2E2614` | |
+| `bg` | `#0A0F1C` | page background |
+| `sidebar-bg` | `#0E1424` | rail background |
+| `surface` | `#121A2E` | cards, inputs, secondary buttons |
+| `surface-2` | `#141D33` | inbox items, raised rows |
+| `surface-3` | `#0E1424` | panels, project tabs bar |
+| `nav-active-bg` | `#18213A` | active rail item, active tab |
+| `border` | `#1F2944` | card borders, rail border, dividers |
+| `border-2` | `#2A365A` | buttons, inputs, active tab inset ring |
+| `track` | `#212B47` | meter tracks, inactive stage segments, inactive badges |
+| `ink` | `#E8EDF7` | primary text |
+| `ink-strong` | `#FFFFFF` | active tab text |
+| `ink-2` | `#B3BDD1` | secondary text, inactive tabs |
+| `muted` | `#97A3BC` | captions, labels, inactive rail items |
+| `accent` | `#C8F25A` | primary buttons, logo, current stage, active badge |
+| `accent-ink` | `#0A0F1C` | text on accent |
+| `accent-soft-bg` | `#1B2410` | selected pill background |
+| `accent-soft-ink` | `#DDF79A` | selected pill text, current-stage label |
+| `accent-done` | `#7FA33A` | finished stage segments (new) |
+| `link` / hover | `#C8F25A` / `#E2FA9E` | links |
+| `ok` | `#5DD39E` on `#102019`, border `#1F4434` | passed, shipped, local-only dot |
+| `warn` (new) | `#F2C66D` / `#F2E3BF` on `#1D1810`, border `#6B5320` | waiting on you, frozen scope, permission requests |
+| `danger` | `#FF8A8A` on `#1D1414`, border `#5A2A2A` | failed checks, blocking items |
+| `claude` / `claude-bar` | `#F2A77E` / `#E0895A`, chip bg `#2A1D16` | Claude |
+| `gemini` / `gemini-bar` | `#8DB8FF` / `#6AA6F8`, chip bg `#16213A` | Antigravity |
+| profile Work | `#FBBF24` on `#2A2311` | |
+| profile Client | `#67E8F9` on `#0E2A33` | |
+| profile Personal | `#F0ABFC` on `#2A1633` | |
 
-Type (Google Fonts): **Space Grotesk** 500/600/700 for the wordmark and headings, **Inter**
-400/500/600 for UI text, **JetBrains Mono** 400/500 for the version chip and the local-only line.
-- Page title (h1): Space Grotesk 600, 30px, letter-spacing -0.01em
-- Card / panel title (h2): Space Grotesk 600, 17–18px
-- Body/UI: Inter 14px; captions 12–13px; labels 11px 600 uppercase, letter-spacing 0.08em, `muted`
+Status colours (ok, warn, danger) and the agent colours (claude, gemini) mean the same on every
+screen and are never used for decoration. All text/background pairs above pass 4.5:1.
 
-Radii: buttons/inputs 10px, cards 14px, nav items 10px, pills 999px, meters 3px.
-Controls: primary/secondary buttons min-height 44px, padding 0 18px.
+Type (Google Fonts, through `next/font`): **Space Grotesk** 600/700 for headings and card titles,
+**Plus Jakarta Sans** 400/500/600/700 for UI text (replaces Inter), **JetBrains Mono** 400/500 for
+ids, branches, versions and the local-only line.
+- Page title (h1): Space Grotesk 700, 30px, letter-spacing -0.02em
+- Card / panel title: Space Grotesk 600, 14–18px
+- Body/UI: Plus Jakarta Sans 14px; captions 12–13px; rail labels 11px 600
 
-## Sidebar (232px wide, full height)
+Radii: buttons/inputs 10px, cards 14px, phase columns 16px, rail items 12px, tabs 9px, pills 999px,
+stage segments 3px. Controls: primary/secondary buttons min-height 40–44px; nothing under 36px.
 
-`nav[aria-label="Main"]`, background `sidebar-bg`, right border 1px `border`, padding 24px 16px,
-column with 24px gap, top to bottom:
+## Rail (96px wide, full height)
 
-1. **Wordmark** (links to `/projects`): 28×28 SVG logo — a squared labyrinth spiral, stroke
-   `accent`, width 2, round caps:
-   `<path d="M3 3h22v22H3V9"/><path d="M8 8h12v12H8v-6"/><path d="M13 13h2v2"/>` —
-   then "Daedalus" (Space Grotesk 700, 20px, -0.01em), then a `1.0` chip (JetBrains Mono 500 11px,
-   `ink-2` on `nav-active-bg`, radius 6px, padding 2px 7px). Gap 10px, padding 0 8px.
-2. **Profile switcher**: label "Profile" (11px label style), then a 2×2 grid (gap 6px) of buttons
-   All / Work / Client / Personal, min-height 34px, radius 8px, Inter 500 12px. Selected: border
-   `accent`, bg `accent-soft-bg`, text `accent-soft-ink`, `aria-pressed="true"`. Others: border
-   `border-2`, transparent, text = that profile's color (All uses `accent-soft-ink`). In M1 the
-   choice is client-side only and remembered in localStorage; filtering comes in M2.
-3. **Nav** (gap 4px): the six items in the table above. Item: min-height 42px, padding 0 12px,
-   radius 10px, Inter 500 14px, label left, optional badge right. Active: bg `nav-active-bg`,
-   inset 0 0 0 1px `border-2`, text `ink-strong`, `aria-current="page"`, badge bg `accent` /
-   text `accent-ink`. Inactive: text `ink-2`, badge bg `track` / text `ink`. Badge: padding
-   1px 8px, radius 999px, 11px 600.
-4. Spacer (flex-grow).
-5. **Usage panel**: padding 14px, radius 12px, bg `surface-3`, border `border`. Two meters
-   (gap 14px): "Claude · this week" (`claude`) and "Antigravity · weekly" (`gemini`), percentage
-   right in `ink-2` 12px, 6px track `track`, fill `claude-bar` / `gemini-bar`, and under
-   Antigravity a caption "Resets Mon 08:00" (11px `muted`). In M1 there is no usage data: show
-   "—" instead of a percentage and an empty track (usage is M8).
-6. **Status line**: 8px `ok` dot + "127.0.0.1:4317 · local only" (JetBrains Mono 11px `muted`).
-   Show the real host:port the server is on.
-7. Add for M1: a **Sign out** control under the status line (secondary text style), using the
-   existing `LogoutButton` / CSRF helper from T1.3.
+`nav[aria-label="Main"]`, bg `sidebar-bg`, right border 1px `border`, padding 20px 8px, a centred
+column with 8px gap, top to bottom:
+1. **Logo** (links to `/projects`, `aria-label="Daedalus home"`): the 28×28 labyrinth SVG, stroke
+   `accent`, width 2.4, round caps:
+   `<path d="M3 3h22v22H3V9"/><path d="M8 8h12v12H8v-6"/><path d="M13 13h2v2"/>`; 16px below it.
+2. **Three items**: Projects, Workshop, Usage. Each is an 80px-wide link, padding 10px 4px, radius
+   12px, a 22px stroke icon (1.8 stroke, round) above an 11px 600 label, and an optional 10px badge
+   under it ("4 waiting", "2 live"). Active: bg `nav-active-bg`, text `ink`, icon and badge
+   `accent`, `aria-current="page"`. Inactive: text and icon `muted`. Icons (24×24 viewBox):
+   - Projects: four rounded squares `rect x=3 y=3 / 14 3 / 3 14 / 14 14, 7×7, rx 1.5`
+   - Workshop: `rect x=3 y=4 w=18 h=16 rx=2` + `path d="M7 9l3 3-3 3"` + `path d="M12 15h5"`
+   - Usage: `path d="M4 20V10"`, `M10 20V4`, `M16 20v-7`, `M22 20H2`
+3. Spacer.
+4. **Usage bars**: two 8×48px vertical tracks (`track`, radius 4px) filled from the bottom with
+   `claude-bar` and `gemini-bar` to the week's percentage, labelled "C" and "A" (10px, agent
+   colours), with `role="img"` and an `aria-label` giving both percentages. With no usage data:
+   empty tracks and the label "—".
+5. **Status**: "local / only" (JetBrains Mono 10px `muted`, two lines). The full host:port goes in
+   its `title`.
+6. **Sign out** stays reachable: an icon button under the status (`aria-label="Sign out"`), using the
+   existing `LogoutButton`.
+
+## Project tabs
+
+On every project screen, under the page header: `nav[aria-label="Project sections"]`, bg
+`surface-3`, border `border`, radius 12px, padding 4px, wrapping row with 4px gap. Tabs: Chat,
+Pipeline, Review, Release gate, Change requests. Each tab: min-height 40px, padding 0 14px, radius
+9px, 14px. Active: bg `nav-active-bg`, inset 1px `border-2`, text `ink-strong` 600,
+`aria-current="page"`, badge bg `accent` / text `accent-ink`. Inactive: text `ink-2` 500, badge bg
+`track` / text `ink`. Badges are hidden when there is nothing to count.
 
 ## Main area
 
-`main`: padding 32px 40px, column gap 24px, takes the remaining width.
+`main`: padding 28px 32px, column gap 20px, takes the remaining width; the page is a non-wrapping
+flex row (rail, main). Header row (wraps, space-between): h1 + one-line summary (14px `muted`), the
+screen's actions on the right.
 
-Header row (wraps, space-between, align end): h1 + one-line summary under it (14px `muted`),
-and the screen's actions on the right.
+### Projects hub (`/projects`)
+- h1 "Projects"; summary "N projects by phase · N tasks running · Claude N% · Antigravity N% this week".
+- Actions, right: profile chips **All / Work / Client / Personal** (min-height 36px, radius 8px;
+  selected: border and text `accent`, bg `accent-soft-bg`), **Import** (secondary), **New project**
+  (primary).
+- Body: a **phase board** of four columns (grid `repeat(4, minmax(230px, 1fr))`, gap 14px, scrolls
+  sideways inside its own box below ~1000px): **Shaping** (Intake → Plan), **Building** (Build ·
+  Review), **Verify** (Release gate), **Setup** (kit to merge). Column: bg `sidebar-bg`, border
+  `border`, radius 16px, padding 12px; title "Shaping · 2" (Space Grotesk 600 14px) with a 11px
+  subtitle right.
+- Project card (bg `surface`, border `border`, radius 14px, padding 16px, gap 12px): name (links to
+  the project's Pipeline) + profile chip; an **8-segment stage bar** (Intake, Spec, Mock, Plan, Build,
+  Review, Verify, Ship; 5px high, 3px gap; done `accent-done`, current `accent`, todo `track`;
+  `role="img"` with "Stage N of 8: name"); the status line ("Building v1.1 · M2 Quotes · 5 of 9 tasks
+  merged"); agent chips if any are running; footer with "GitHub · last shipped v1.0" (11px `muted`)
+  and **one next-action button** (primary, small: "Open pipeline", "Test release", "Approve plan",
+  "Merge kit", "Continue interview").
+- Right: **Needs you** (`aside`, flex 1 1 260px): items grouped and ordered **Blocking** (danger dot)
+  → **Decide** (accent dot) → **Info** (muted dot), each a link to the screen that resolves it.
+- Empty states: a column with no projects shows "None"; with no projects at all, one card "No
+  projects yet · Import a folder or a Git URL, or start a new project". Inbox empty: "Nothing needs you."
 
-### Projects (`/projects`)
-- h1 "Projects"; summary "No projects yet".
-- Actions: "Import project" (secondary: bg `surface`, border `border-2`, text `ink`) and
-  "New project" (primary: bg `accent`, text `accent-ink`, 600). Both disabled in M1 with a
-  tooltip "Comes in M2".
-- Filter row: profile pills "All · 0", "Work · 0", "Client · 0", "Personal · 0" (min-height 36px,
-  padding 0 14px, radius 999px, 13px; selected uses the accent-soft style) and a "Search"
-  labelled input (min-height 38px, width 220px, bg `surface`, border `border-2`, radius 10px).
-- Body: left, the project grid area (cards `surface`, border `border`, radius 14px, padding
-  18px; grid auto-fill minmax(280px,1fr), gap 16px) showing one dashed empty card
-  (bg `#121419`, 1px dashed `#3A4150`) with "No projects yet" and "Import a folder or a Git URL,
-  or start a new project." Right, the **"Waiting on you"** panel (`aside#inbox`, flex 1 1 300px,
-  `surface`, border, radius 14px, padding 18px): h2 + count badge, empty text "Nothing is
-  waiting on you."
-
-### Other screens (`/chat`, `/pipeline`, `/workshop`, `/review`, `/release`, `/providers`)
-Same header pattern with the board's title as h1 ("Project chat", "Pipeline", "Workshop",
-"Review", "Release gate", "Providers & usage"), a one-line summary, and one empty-state panel (`surface`,
-border, radius 14px, padding 24px) saying what will appear there and which milestone builds it:
-- Project chat — "Start a project by talking it through: intake, mock, spec and plan." (M4)
-- Pipeline — "Tasks from the project's PLAN.md, by stage." (M5)
-- Workshop — "Live agent sessions, one console per running agent." (M3)
+### Empty states for screens not built yet
+Same header pattern and one panel (`surface`, border, radius 14px, padding 24px):
+- Project chat — "Start a project by talking it through: intake, spec, mock and plan." (M4)
+- Pipeline — "This milestone's tasks, by status." (M5)
 - Review — "Changes waiting for review, with findings and your decision." (M6)
 - Release gate — "UAT, security checks and your acceptance before a release ships." (M6)
-- Providers & usage — "Claude and Antigravity: status, roles and weekly usage." (M8)
-
-## Design changes, 2026-11-23 (canvas updated)
-- Pipeline stage bar has 8 stages: Intake, Spec, Mock approved, Plan, Build, Review, **Verify**, Ship
-  (Ship shown as locked until Verify passes). [[SPEC#Pipeline]]
-- New board **Release gate** (`ReleaseGate.dc.html`, sidebar item "Release gate"): UAT checklist
-  from the spec's `## Verify` items with Pass / Fail-with-note and an "Open app in recorded
-  Chromium" button; visual diff against the approved mock with Accept / Reject per screen;
-  always-on checks (saved UAT scripts, saved security tests, secret scan, dependency audit,
-  profile ship checklist); the optional security test (scope chips: throwaway 127.0.0.1 target,
-  proxy, budget; worker areas; findings with severity, Confirmed / Plausible, proof, "Save proof
-  as security test"). "Accept release and ship" stays disabled until every gate passes.
-  [[SPEC#Release gate]] [[SPEC#Security test]]
-- Workshop consoles: header buttons are **Cancel turn** and **Stop** (no Pause). A permission
-  request shows inline under the console output (amber panel: what the agent wants to do, time
-  left before auto-cancel, **Allow once** / **Deny**). [[SPEC#Workshop]]
+- Change requests — "Changes asked for after a milestone started, and what you decided." (M6)
+- Providers & usage — "Claude and Antigravity: versions, status and weekly usage." (M8)
 
 ## Responsive
-Sidebar and main sit in a wrapping flex row (sidebar `flex: 1 1 232px`, main `flex: 999 1 560px`),
-so under ~800px the sidebar stacks above the main area. Nothing may scroll sideways at 400px.
+The rail stays 96px; main shrinks (`min-width: 0`). Wide content (phase board, consoles side by
+side, tables) scrolls inside its own box. Nothing may scroll the whole page sideways at 400px.
+
+## History
+- 2026-11-23: Direction C chosen over A (graphite list) and B (light paper); rail cut to three items;
+  project tabs added; stage order fixed to Intake, Spec, Mock, Plan; Verify stage, Release gate,
+  change requests and findings added. The earlier gold-theme spec is in git history.
