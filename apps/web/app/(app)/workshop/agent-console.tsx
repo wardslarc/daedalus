@@ -1,9 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState, useId, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, useId, type FormEvent } from "react";
 import type { Terminal } from "@xterm/xterm";
 import type { SessionInfo, AgentEvent } from "../../../src/ws/protocol";
 import { sanitizeAgentText } from "./terminal-text";
+import {
+  formatTimeLeft,
+  openPermissions,
+  optionStyle,
+  permissionTimeLeftMs,
+  type PermissionEvent,
+} from "./permissions";
+
+export type AnswerCallbacks = { clear: () => void; setError: (err: string) => void };
 
 export type AgentConsoleProps = {
   session: SessionInfo;
@@ -16,10 +25,74 @@ export type AgentConsoleProps = {
     text: string,
     callbacks: { clear: () => void; setError: (err: string) => void },
   ) => void;
+  /** Send the owner's answer to a permission request (an option id). */
+  onPermission: (sessionId: string, requestId: string, optionId: string, callbacks: AnswerCallbacks) => void;
   onCancel: (sessionId: string) => void;
   onStop: (sessionId: string) => void;
   onClose: (sessionId: string) => void;
 };
+
+const lowerFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
+
+/** One open request: amber panel, countdown to the server's auto-cancel, one button per option. */
+function PermissionPanel({
+  request,
+  providerName,
+  now,
+  onAnswer,
+}: {
+  request: PermissionEvent;
+  providerName: string;
+  now: number;
+  onAnswer: (optionId: string, callbacks: AnswerCallbacks) => void;
+}) {
+  const titleId = useId();
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const left = permissionTimeLeftMs(request.at, now);
+
+  function answer(optionId: string) {
+    if (sending) return;
+    setSending(true);
+    setError(null);
+    // The panel goes away on `permission_resolved`; the ack only confirms delivery.
+    onAnswer(optionId, {
+      clear: () => {},
+      setError: (err) => {
+        setError(err);
+        setSending(false);
+      },
+    });
+  }
+
+  return (
+    <div className="permission-panel" role="group" aria-labelledby={titleId}>
+      <div className="permission-title-row">
+        <p className="permission-title" id={titleId}>
+          {providerName} asks to {lowerFirst(request.title)}
+        </p>
+        <span className="permission-timer">{formatTimeLeft(left)} left before auto-cancel</span>
+      </div>
+      <p className="permission-note">Nothing runs until you choose. Stopping the session cancels this request.</p>
+      <div className="permission-actions">
+        {request.options.map((opt) => {
+          const { label, variant } = optionStyle(opt);
+          const cls = variant === "primary" ? "btn-primary" : variant === "danger" ? "btn-danger-outline" : "btn-secondary";
+          return (
+            <button key={opt.optionId} type="button" className={cls} disabled={sending} onClick={() => answer(opt.optionId)}>
+              {label}
+            </button>
+          );
+        })}
+      </div>
+      {error && (
+        <div className="form-error" role="alert">
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * Every string that came from the agent (or through the server) goes through `clean` before it
@@ -86,6 +159,7 @@ export function AgentConsole({
   isReconnecting,
   reconnectedSeq,
   onSendPrompt,
+  onPermission,
   onCancel,
   onStop,
   onClose,
@@ -94,6 +168,18 @@ export function AgentConsole({
   const termRef = useRef<Terminal | null>(null);
   const renderedCountRef = useRef<number>(0);
   const inputId = useId();
+
+  const pending = useMemo(() => openPermissions(events), [events]);
+  const isWaiting = pending.length > 0;
+  const [now, setNow] = useState(() => Date.now());
+
+  // Tick the countdown only while a request is open.
+  useEffect(() => {
+    if (!isWaiting) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [isWaiting]);
 
   const [inputText, setInputText] = useState("");
   const [inputError, setInputError] = useState<string | null>(null);
@@ -221,7 +307,9 @@ export function AgentConsole({
 
   return (
     <section
-      className={`workshop-console ${session.providerId === "antigravity" ? "console-antigravity" : "console-claude"}`}
+      className={`workshop-console ${session.providerId === "antigravity" ? "console-antigravity" : "console-claude"}${
+        isWaiting ? " console-waiting" : ""
+      }`}
       aria-label={ariaLabel}
     >
       {/* Reconnect Banner */}
@@ -254,6 +342,7 @@ export function AgentConsole({
           <span className="console-project-name">{session.projectName}</span>
           <span className={`profile-chip profile-chip-${profileLower}`}>{profileFormatted}</span>
           <span className="console-chip-session">Free session · project folder</span>
+          {isWaiting && <span className="console-chip-waiting">Waiting for you</span>}
           <span className="console-context">
             {contextPct !== null ? `context ${contextPct}%` : "context —"}
           </span>
@@ -288,8 +377,16 @@ export function AgentConsole({
       {/* Output Console (xterm.js) */}
       <div className="console-output" ref={containerRef} />
 
-      {/* T3.5 permission prompt panel location */}
-      <div className="permission-panel-slot" />
+      {/* T3.5: open permission requests. Nothing runs until the owner clicks. */}
+      {pending.map((p) => (
+        <PermissionPanel
+          key={p.requestId}
+          request={p}
+          providerName={providerName}
+          now={now}
+          onAnswer={(optionId, callbacks) => onPermission(session.id, p.requestId, optionId, callbacks)}
+        />
+      ))}
 
       {/* Input or Session Ended */}
       {isExited ? (
