@@ -43,6 +43,13 @@
       "when": 1795492150956,
       "tag": "0005_puzzling_vector",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1795496733732,
+      "tag": "0006_brainy_brood",
+      "breakpoints": true
     }
   ]
 }

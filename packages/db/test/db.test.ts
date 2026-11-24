@@ -37,6 +37,7 @@ describe("@daedalus/db", () => {
       "inbox",
       "projects",
       "providers",
+      "review_acks",
       "reviews",
       "runs",
       "shaping_state",

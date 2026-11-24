@@ -55,6 +55,7 @@ export function toErrorResponse(err: unknown): Response {
       e.name === "TerminalError" ||
       e.name === "ShapingError" ||
       e.name === "TaskRunnerError" ||
+      e.name === "ReviewError" ||
       e.name === "CheckExecError") &&
     typeof e.status === "number"
   ) {

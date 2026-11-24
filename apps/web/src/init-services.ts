@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { openDb, projects, tasks as tasksTable, shapingState } from "@daedalus/db";
 import { branchExists } from "@daedalus/git";
 import { assertProviderAllowed, effectiveGeminiAllowed, ProfileRuleError, rulesFor, validateProjectSettings } from "@daedalus/core/profiles";
-import { approveMockDoc, approvePlanDoc, approveSpecDoc, beginMockSession, beginPlanSession, beginSpecInterview, createProject, getShapingState, ImportError, importProject, listFolders, mergeKit, realGitOps, saveIntakeDoc, startMilestoneRelease, syncPlanTasksToDb, TaskRunner } from "@daedalus/projects";
+import { ackGate, approveMockDoc, approvePlanDoc, approveSpecDoc, approveTask, beginMockSession, beginPlanSession, beginSpecInterview, createProject, discardTask, getReview, getShapingState, ImportError, importProject, listFolders, listInReviewTasks, mergeKit, realGitOps, saveIntakeDoc, sendBack, startMilestoneRelease, syncPlanTasksToDb, TaskRunner } from "@daedalus/projects";
 import { loadProviders, repoProvidersFile, SessionManager, syncProviders } from "@daedalus/providers";
 import { SERVICES_KEY, type PipelineStage, type Services, type ServicesHolder } from "./services.js";
 import { toSessionInfo } from "./ws/channel.js";
@@ -347,6 +347,36 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
         tasks: enrichedTasks,
         runningTasksCount: totalRunning,
       };
+    },
+    getReview: async (projectId, taskCode) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return getReview(db, project, taskCode, { dataDir });
+    },
+    listInReviewTasks: async (projectId) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return listInReviewTasks(db, projectId);
+    },
+    approveTask: async (projectId, taskCode) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return approveTask(db, project, taskCode, { dataDir });
+    },
+    sendBack: async (projectId, taskCode, notes) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return sendBack(db, project, taskCode, notes, { dataDir });
+    },
+    discardTask: async (projectId, taskCode) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return discardTask(db, project, taskCode, { dataDir });
+    },
+    ackGate: async (projectId, taskCode, gateId, note) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return ackGate(db, project, taskCode, gateId, note);
     },
   };
   holder[SERVICES_KEY] = services;
