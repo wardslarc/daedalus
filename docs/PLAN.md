@@ -191,9 +191,74 @@ Done when: `docs/PLAN.md` tasks appear on `/projects/[id]/pipeline`, the task st
   Decided in ADR 0018: the runner runs only checks frozen at Start milestone; `[x]` in PLAN.md never
   changes a task's status.
 
-## M6–M9 (outline)
+## M6 — Review, release gate and change requests
 
-- M6 Review center and release gate (UAT checklist, recorded scripts, visual diff, security scans, security test) — [[SPEC#Review]] [[SPEC#Release gate]] [[SPEC#Security test]]
+Done when: an in-review task can be cross-reviewed and approved into its release branch; a release with every
+task merged goes through Verify (automatic security checks, UAT with recorded scripts, visual diff) with every
+finding resolved; the owner's accept click ships it by profile; and change requests are captured and decided.
+Status changes go through the T5.2 state machine; review and gate records are server state (ADR 0017, 0018).
+
+- [ ] **T6.1 Review center: diff, gates and decisions** `[gemini]` — [[SPEC#Review]]
+  Replace the empty state on `/projects/[id]/review` with the queue of `in-review` tasks. Per task: diff of
+  `daedalus/<task>` against its release branch, the frozen check's last result, and automatic gates with no
+  model — secret scan of the diff (reuse the redaction patterns), dependency change flag (package/lock files
+  touched), and edited or deleted test files flagged. Actions: **Approve** merges `--no-ff` into the release
+  branch (never `main`) and removes the worktree; **Send back** with notes requeues the task and keeps the notes
+  for its next run; **Discard** deletes the branch and worktree and requeues. Approve stays locked while a
+  must-fix finding is open or a test edit isn't acknowledged.
+  check: unit + e2e tests — approve merges into `daedalus/release-v1.0` and `main` is unchanged; a planted secret and a deleted test block Approve until handled; send back requeues with notes
+- [ ] **T6.2 Cross-review by the other provider** `[claude]` — [[SPEC#Review]] [[SPEC#Profiles]]
+  The provider that didn't write the change reviews it in a fresh session on the task worktree, read-only:
+  every write or exec permission request is denied by the server. Findings come back as a JSON block in the
+  final message (severity, file, line, claim, proof), are stored in `reviews`, and Claude triages each into
+  must-fix / should-fix / nit. Work projects review with a second Claude session. Findings show in the
+  Review center.
+  check: unit + e2e tests with the fake agent — reviewer provider is the opposite of the writer; a write request is denied; findings and triage are stored and shown; Work never starts Antigravity
+- [ ] **T6.3 Verify stage and automatic security checks** `[gemini]` — [[SPEC#Release gate]] [[SPEC#Gate findings]]
+  When every task of the active milestone is merged, the release moves to Verify. Replace the empty state on
+  `/projects/[id]/release` with the gate checklist. Automatic checks, no model: secret scan of the release diff
+  and branch history, dependency audit, saved security tests, the profile's ship checklist (Work: Kollab
+  handoff). Every finding is stored in a `gate_findings` table and must end as a fix task (added to the same
+  milestone, frozen), a change request, or an accept / defer with a written reason.
+  check: unit + e2e tests — a planted secret in branch history blocks the gate and becomes a fix task; a moderate dependency finding can be deferred only with a reason
+- [ ] **T6.4 UAT checklist with a recorded browser** `[gemini]` — [[SPEC#Release gate]] [[SPEC#Gate findings]]
+  UAT lists only this milestone's "Done when" items (and spec `## Verify` items they cover). Daedalus opens the
+  project's app in a recorded Chromium window (screenshots, video, Playwright trace) and the owner marks each item
+  pass or fail with a note. Fail → bug (fix task) or change (change request), chosen by the owner.
+  check: unit + e2e tests — a failed item adds a frozen fix task to the milestone; the trace and screenshots are saved under the data folder
+- [ ] **T6.5 Saved UAT scripts and replay** `[gemini]` — [[SPEC#Release gate]]
+  Accepting a UAT item saves its recording as a Playwright codegen script in the project. Every later release
+  replays all saved scripts before manual UAT; a failing script blocks Ship and becomes a fix task.
+  check: e2e — an accepted item's script is saved and replayed on the next release; a broken script blocks the gate
+- [ ] **T6.6 Visual diff against the approved mock** `[gemini]` — [[SPEC#Release gate]]
+  Each screen is compared with the approved mock's screenshots; the owner accepts (reference updated) or
+  rejects (fix task) every difference.
+  check: unit + e2e tests — a changed screen shows a difference; accept updates the reference; reject adds a fix task
+- [ ] **T6.7 Change requests** `[gemini]` — [[SPEC#Change requests]]
+  Capture a CR from Project chat or the inbox as `docs/changes/CR-<n>.md`; decisions and approvals are server
+  state. Replace the empty state on `/projects/[id]/changes` with the CR log. Claude writes the impact (spec
+  sections, tasks, mock screens, rough task count); the owner decides next milestone (default), reject with a
+  reason, or into the current milestone (refused once Verify started). Client CRs record who approved and when.
+  A release can't ship with an open CR aimed at it.
+  check: unit + e2e tests — CR saved and listed; into-current refused during Verify; an open CR blocks Ship
+- [ ] **T6.8 Accept and Ship** `[claude]` — [[SPEC#Pipeline]] [[SPEC#Release gate]] [[SPEC#Profiles]]
+  Ship unlocks only when nothing blocking is open, every UAT item passed, and every accept / defer has a reason;
+  the owner's **Accept release** click is required. Ship merges the release branch into `main`, tags it, and
+  pushes or hands off by profile (Personal/Client: push to GitHub; Work: GitLab merge request + Kollab handoff
+  checklist). Never force-pushes.
+  check: unit + e2e tests with a local bare remote — Ship is refused with an open finding; after Accept, `main` has the merge and tag `v1.0` and the bare remote received them
+- [ ] **T6.9 Security test by agents** `[claude]` — [[SPEC#Security test]]
+  Owner-started, advisory only. Throwaway instance on 127.0.0.1 (random port, copied data) behind a Daedalus
+  proxy that refuses every other host; planner + one worker per area with fixed non-destructive tools; proof
+  required; the other provider replays; fixed findings saved as security tests. Budgets shown before start.
+  Likely large: split into sub-tasks when it starts.
+  check: unit + e2e tests — the proxy refuses a foreign host; a finding without proof is not stored; a fixed finding's proof runs in the gate with no model
+- [ ] **T6.10 One release through the gate** `[you]`
+  Take a small project from Start milestone through Review, Verify and Ship; note what feels wrong.
+  check: the M6 done-when above
+
+## M7–M9 (outline)
+
 - M7 Docs — wikilink parser `[you]`, prompt builder `[you]` — [[SPEC#Docs]]
 - M8 Usage, inbox, providers screen — [[SPEC#Usage and quota]] [[SPEC#Inbox]]
 - M9 Dogfood, including one release through the gate — [[SPEC#Verify]] [[SPEC#Release gate]]
