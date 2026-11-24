@@ -348,6 +348,49 @@ export class AgentSession {
     }
   }
 
+  private async isReadOnlyToolCallAllowed(toolCall: acp.RequestPermissionRequest["toolCall"]): Promise<boolean> {
+    const kind = toolCall.kind;
+    if (kind === "think") {
+      const locs = toolCall.locations;
+      if (!locs || !Array.isArray(locs) || locs.length === 0) {
+        return true;
+      }
+      const checks = await Promise.all(
+        locs.map(async (l) => {
+          const p =
+            typeof l === "string"
+              ? l
+              : l && typeof l === "object" && typeof (l as { path?: unknown }).path === "string"
+                ? (l as { path: string }).path
+                : null;
+          if (!p || typeof p !== "string" || p.trim() === "") return false;
+          return this.isLocationInsideSessionFolder(p);
+        }),
+      );
+      return checks.every(Boolean);
+    }
+    if (kind === "read" || kind === "search") {
+      const locs = toolCall.locations;
+      if (!Array.isArray(locs) || locs.length === 0) {
+        return false;
+      }
+      const checks = await Promise.all(
+        locs.map(async (l) => {
+          const p =
+            typeof l === "string"
+              ? l
+              : l && typeof l === "object" && typeof (l as { path?: unknown }).path === "string"
+                ? (l as { path: string }).path
+                : null;
+          if (!p || typeof p !== "string" || p.trim() === "") return false;
+          return this.isLocationInsideSessionFolder(p);
+        }),
+      );
+      return checks.every(Boolean);
+    }
+    return false;
+  }
+
   private async askOwner(params: acp.RequestPermissionRequest, signal: AbortSignal): Promise<acp.RequestPermissionResponse> {
     if (this.ended || this.stopping) return { outcome: { outcome: "cancelled" } };
     const requestId = `perm-${++this.permissionSeq}`;
@@ -362,50 +405,7 @@ export class AgentSession {
         options,
       });
 
-      const kind = params.toolCall.kind;
-      let isAllowed = false;
-
-      if (kind === "think") {
-        const locs = params.toolCall.locations;
-        if (!locs || !Array.isArray(locs) || locs.length === 0) {
-          isAllowed = true;
-        } else {
-          const checks = await Promise.all(
-            locs.map(async (l) => {
-              const p =
-                typeof l === "string"
-                  ? l
-                  : l && typeof l === "object" && typeof (l as { path?: unknown }).path === "string"
-                    ? (l as { path: string }).path
-                    : null;
-              if (!p || typeof p !== "string" || p.trim() === "") return false;
-              return this.isLocationInsideSessionFolder(p);
-            }),
-          );
-          isAllowed = checks.every(Boolean);
-        }
-      } else if (kind === "read" || kind === "search") {
-        const locs = params.toolCall.locations;
-        if (Array.isArray(locs) && locs.length > 0) {
-          const checks = await Promise.all(
-            locs.map(async (l) => {
-              const p =
-                typeof l === "string"
-                  ? l
-                  : l && typeof l === "object" && typeof (l as { path?: unknown }).path === "string"
-                    ? (l as { path: string }).path
-                    : null;
-              if (!p || typeof p !== "string" || p.trim() === "") return false;
-              return this.isLocationInsideSessionFolder(p);
-            }),
-          );
-          isAllowed = checks.every(Boolean);
-        } else {
-          isAllowed = false;
-        }
-      } else {
-        isAllowed = false;
-      }
+      const isAllowed = await this.isReadOnlyToolCallAllowed(params.toolCall);
 
       let outcome: acp.RequestPermissionOutcome;
       if (isAllowed) {

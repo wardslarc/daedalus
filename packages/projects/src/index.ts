@@ -9,6 +9,24 @@ export * from "./pipeline.js";
 export * from "./check-exec.js";
 export * from "./runner.js";
 export * from "./review.js";
-export * from "./review-prompts.js";
-export * from "./cross-review.js";
+export {
+  buildReviewPrompt,
+  buildTriagePrompt,
+  type BuildReviewPromptInput,
+  type TriageItem,
+} from "./review-prompts.js";
+export {
+  ParseError,
+  parseFindings,
+  parseTriage,
+  hashGitCommonDir,
+  takeSnapshot,
+  isSameSnapshot,
+  closeAllReviews,
+  recoverReviewsOnStartup,
+  startCrossReview,
+  type Snapshot,
+  type CrossReviewDeps,
+  type StartCrossReviewResult,
+} from "./cross-review.js";
 

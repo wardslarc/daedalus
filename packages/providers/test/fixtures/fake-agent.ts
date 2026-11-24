@@ -14,7 +14,8 @@
  *   write-spec-verify  update docs/SPEC.md to include ## Verify (T4.2)
  *   [Cross-review]*    cross-review findings (T6.2): FAKE:ask-write requests edit & read permissions;
  *                      FAKE:write-file writes tampered.txt; FAKE:write-and-stall writes tampered.txt and stalls;
- *                      FAKE:delete-git deletes .git in its cwd; FAKE:write-common-hook writes <common-dir>/hooks/post-checkout;
+ *                      FAKE:delete-git deletes .git in its cwd; FAKE:rewrite-git rewrites .git in its cwd;
+ *                      FAKE:write-common-hook writes <common-dir>/hooks/post-checkout;
  *                      FAKE:bad-json replies without json; otherwise replies with 3 findings.
  *   [Triage]*          triage findings (T6.2): first finding must-fix, others should-fix / nit.
  */
@@ -186,6 +187,11 @@ const app = acp
           if (input.includes("FAKE:delete-git")) {
             const gitFile = join(process.cwd(), ".git");
             rmSync(gitFile, { recursive: true, force: true });
+          }
+
+          if (input.includes("FAKE:rewrite-git")) {
+            const gitFile = join(process.cwd(), ".git");
+            writeFileSync(gitFile, "gitdir: /tmp/fake-gitdir\n", "utf8");
           }
 
           if (input.includes("FAKE:write-common-hook")) {

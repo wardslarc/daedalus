@@ -15,7 +15,7 @@ import {
   tasks,
   type DaedalusDb,
 } from "@daedalus/db";
-import { SessionManager, type AgentSession, type ProviderEntry } from "@daedalus/providers";
+import { SessionManager, syncProviders, type AgentSession, type ProviderEntry } from "@daedalus/providers";
 import {
   parseFindings,
   parseTriage,
@@ -67,6 +67,7 @@ describe("Cross-review (T6.2, SPEC#Review, ADR 0019)", () => {
     git(repoDir, "branch", "daedalus/release-v1.0");
 
     testProviders = [fake("claude"), fake("antigravity")];
+    syncProviders(db, testProviders);
     manager = new SessionManager({
       providers: testProviders,
       checkVersion: async () => "1.0.0",
@@ -213,21 +214,8 @@ And then final response:
         defaultBranch: "main",
       }).returning().all();
 
-      const [provClaude] = db.insert(providers).values({
-        name: "claude",
-        kind: "acp",
-        launchCommand: "claude-agent-acp",
-        roles: ["coder"],
-        allowedProfiles: ["personal", "work"],
-      }).returning().all();
-
-      const [provAgy] = db.insert(providers).values({
-        name: "antigravity",
-        kind: "acp",
-        launchCommand: "agy",
-        roles: ["coder"],
-        allowedProfiles: ["personal"],
-      }).returning().all();
+      const provClaude = db.select().from(providers).where(eq(providers.name, "claude")).get()!;
+      const provAgy = db.select().from(providers).where(eq(providers.name, "antigravity")).get()!;
 
       // Setup task branch daedalus/t1
       git(repoDir, "checkout", "-b", "daedalus/t1", "daedalus/release-v1.0");
@@ -305,21 +293,8 @@ And then final response:
         defaultBranch: "main",
       }).returning().all();
 
-      const [provClaude] = db.insert(providers).values({
-        name: "claude",
-        kind: "acp",
-        launchCommand: "claude-agent-acp",
-        roles: ["coder"],
-        allowedProfiles: ["work"],
-      }).returning().all();
-
-      const [provAgy] = db.insert(providers).values({
-        name: "antigravity",
-        kind: "acp",
-        launchCommand: "agy",
-        roles: ["coder"],
-        allowedProfiles: ["personal"],
-      }).returning().all();
+      const provClaude = db.select().from(providers).where(eq(providers.name, "claude")).get()!;
+      const provAgy = db.select().from(providers).where(eq(providers.name, "antigravity")).get()!;
 
       git(repoDir, "checkout", "-b", "daedalus/tw1", "daedalus/release-v1.0");
       writeFileSync(join(repoDir, "work1.ts"), "export const w = 1;\n");
@@ -416,14 +391,8 @@ And then final response:
       }).returning().all();
       projId = proj!.id;
 
-      const [prov] = db.insert(providers).values({
-        name: "claude",
-        kind: "acp",
-        launchCommand: "claude-agent-acp",
-        roles: ["coder"],
-        allowedProfiles: ["personal"],
-      }).returning().all();
-      provClaudeId = prov!.id;
+      const prov = db.select().from(providers).where(eq(providers.name, "claude")).get()!;
+      provClaudeId = prov.id;
     });
 
     it("FAKE:ask-write -> edit request was denied (finding proof says denied), read allowed", async () => {
@@ -629,6 +598,46 @@ And then final response:
       expect(review?.status).toBe("tampered");
 
       const reviewData = await getReview(db, proj, "T-HOOK");
+      const xrGate = reviewData.gates.find((g) => g.id === "cross-review");
+      expect(xrGate?.status).toBe("blocked");
+      expect(xrGate?.items).toContain("The reviewer changed files; its review was discarded.");
+    });
+
+    it("FAKE:rewrite-git (rewrites cwd .git file to point elsewhere) -> status tampered, gate blocked", async () => {
+      git(repoDir, "checkout", "-b", "daedalus/t-rewrgit", "daedalus/release-v1.0");
+      writeFileSync(join(repoDir, "rewrgit.txt"), "rewrgit\n");
+      git(repoDir, "add", ".");
+      git(repoDir, "commit", "-m", "rewrgit commit");
+      git(repoDir, "checkout", "main");
+
+      const [t] = db.insert(tasks).values({
+        projectId: projId,
+        code: "T-REWRGIT",
+        title: "Test FAKE:rewrite-git tampering",
+        status: "in-review",
+        branch: "daedalus/t-rewrgit",
+      }).returning().all();
+
+      db.insert(runs).values({
+        taskId: t!.id,
+        providerId: provClaudeId,
+        role: "implement",
+        start: new Date().toISOString(),
+      }).run();
+
+      const proj = db.select().from(projects).where(eq(projects.id, projId)).get()!;
+
+      const res = await startCrossReview(
+        { db, dataDir, sessions: manager, providers: testProviders },
+        projId,
+        "T-REWRGIT",
+      );
+      await res.promise;
+
+      const review = db.select().from(reviews).where(eq(reviews.id, res.reviewId)).get();
+      expect(review?.status).toBe("tampered");
+
+      const reviewData = await getReview(db, proj, "T-REWRGIT");
       const xrGate = reviewData.gates.find((g) => g.id === "cross-review");
       expect(xrGate?.status).toBe("blocked");
       expect(xrGate?.items).toContain("The reviewer changed files; its review was discarded.");

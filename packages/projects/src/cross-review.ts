@@ -32,7 +32,7 @@ import {
 } from "./review-prompts.js";
 import { readShapingDoc, SHAPING_DOCS } from "./shaping.js";
 
-export { Finding, TriageItem } from "./review-prompts.js";
+export type { Finding, TriageItem } from "./review-prompts.js";
 
 export class ParseError extends Error {
   override name = "ParseError";
@@ -291,6 +291,7 @@ export type Snapshot = {
   worktreeHeadSha: string;
   statusOutput: string;
   commonDirHash: string;
+  worktreeGitFile: string;
 };
 
 export async function takeSnapshot(
@@ -298,26 +299,33 @@ export async function takeSnapshot(
   repoDir: string,
   worktreeDir: string,
   taskBranch: string,
+  commonDir?: string,
 ): Promise<Snapshot> {
-  const [branchRes, headRes, statusRes, commonDirRes] = await Promise.all([
+  let resolvedCommonDir = commonDir;
+  if (!resolvedCommonDir) {
+    const commonDirRes = await runExecGit(["rev-parse", "--git-common-dir"], { cwd: repoDir });
+    resolvedCommonDir = resolve(repoDir, commonDirRes.stdout.trim());
+  }
+
+  const [branchRes, headRes, statusRes] = await Promise.all([
     runExecGit(["rev-parse", "--verify", `${taskBranch}^{commit}`], { cwd: repoDir }),
     runExecGit(["rev-parse", "--verify", "HEAD"], { cwd: worktreeDir }),
     runExecGit(
       ["status", "--porcelain=v1", "-z", "--ignored", "--untracked-files=all"],
       { cwd: worktreeDir },
     ),
-    runExecGit(["rev-parse", "--git-common-dir"], { cwd: worktreeDir }),
   ]);
 
-  const commonDirRaw = commonDirRes.stdout.trim();
-  const commonDir = resolve(worktreeDir, commonDirRaw);
-  const commonDirHash = hashGitCommonDir(commonDir);
+  const commonDirHash = hashGitCommonDir(resolvedCommonDir);
+  const gitFilePath = join(worktreeDir, ".git");
+  const worktreeGitFile = readFileSync(gitFilePath, "utf8");
 
   return {
     taskBranchSha: branchRes.stdout.trim(),
     worktreeHeadSha: headRes.stdout.trim(),
     statusOutput: statusRes.stdout,
     commonDirHash,
+    worktreeGitFile,
   };
 }
 
@@ -326,7 +334,8 @@ export function isSameSnapshot(a: Snapshot, b: Snapshot): boolean {
     a.taskBranchSha === b.taskBranchSha &&
     a.worktreeHeadSha === b.worktreeHeadSha &&
     a.statusOutput === b.statusOutput &&
-    a.commonDirHash === b.commonDirHash
+    a.commonDirHash === b.commonDirHash &&
+    a.worktreeGitFile === b.worktreeGitFile
   );
 }
 
@@ -633,6 +642,7 @@ export async function startCrossReview(
     let findings: Finding[] = [];
     let claudeTriage: TriageItem[] | null = null;
     let initialSnapshot: Snapshot | null = null;
+    let commonDir: string | undefined;
 
     activeReviews.set(reviewId, {
       worktreeDir,
@@ -641,13 +651,17 @@ export async function startCrossReview(
     });
 
     try {
+      // Resolve common dir once from project.localPath before reviewer starts
+      const commonDirRes = await runExecGit(["rev-parse", "--git-common-dir"], { cwd: project.localPath });
+      commonDir = resolve(project.localPath, commonDirRes.stdout.trim());
+
       // 4.a Add detached worktree
       mkdirSync(dirname(worktreeDir), { recursive: true });
       const addDetached = deps.gitOps?.addDetachedWorktree ?? defaultAddDetachedWorktree;
       await addDetached(project.localPath, worktreeDir, headSha);
 
       // 4.b Initial snapshot
-      initialSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch);
+      initialSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch, commonDir);
 
       // 4.c Start reviewer session with read-only
       try {
@@ -727,7 +741,7 @@ export async function startCrossReview(
 
       let postReviewerSnapshot: Snapshot;
       try {
-        postReviewerSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch);
+        postReviewerSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch, commonDir);
       } catch {
         reviewStatus = "tampered";
         reviewError = "The reviewer changed files; its review was discarded.";
@@ -761,7 +775,7 @@ export async function startCrossReview(
       // 4.f Triage with Claude (read-only)
       let preTriageSnapshot: Snapshot;
       try {
-        preTriageSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch);
+        preTriageSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch, commonDir);
       } catch {
         reviewStatus = "tampered";
         reviewError = "The reviewer changed files; its review was discarded.";
@@ -812,7 +826,7 @@ export async function startCrossReview(
 
       let postTriageSnapshot: Snapshot;
       try {
-        postTriageSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch);
+        postTriageSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch, commonDir);
       } catch {
         reviewStatus = "tampered";
         reviewError = "The reviewer changed files; its review was discarded.";
@@ -856,7 +870,7 @@ export async function startCrossReview(
             reviewStatus = "tampered";
             reviewError = "The reviewer changed files; its review was discarded.";
           } else {
-            const finalSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch);
+            const finalSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch, commonDir);
             if (!isSameSnapshot(initialSnapshot, finalSnapshot)) {
               reviewStatus = "tampered";
               reviewError = "The reviewer changed files; its review was discarded.";

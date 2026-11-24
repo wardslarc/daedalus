@@ -34,6 +34,7 @@ import {
 } from "@daedalus/core/task-state";
 import type { ProjectLike } from "@daedalus/core/profiles";
 import { redact } from "@daedalus/providers";
+import type { Finding } from "./review-prompts.js";
 
 export type ReviewProject = ProjectLike & {
   id: number;
@@ -78,13 +79,7 @@ export type Gate = {
   ack?: { id?: number; ackedAt: string; note: string } | null;
 };
 
-export type Finding = {
-  severity: "high" | "medium" | "low";
-  file: string;
-  line: number | null;
-  claim: string;
-  proof: string;
-};
+export type { Finding };
 
 export type TriagedFinding = Finding & {
   bucket?: "must-fix" | "should-fix" | "nit";
