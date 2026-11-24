@@ -246,25 +246,30 @@ export function syncPlanTasksToDb(
   for (const t of parsed.tasks) {
     const prev = existingByCode.get(t.code);
     if (prev) {
-      const newStatus = t.markdownStatus === "done" ? "done" : prev.status;
-      db.update(tasks)
-        .set({
-          title: t.title,
-          tag: t.tag,
-          checkCommand: t.checkCommand,
-          linkedSpecSections: t.linkedSpecSections,
-          status: newStatus,
-        })
-        .where(eq(tasks.id, prev.id))
-        .run();
+      if (prev.frozenAt) {
+        // Frozen task: never change checkCommand, tag, milestoneCode, or status; title refreshes
+        db.update(tasks)
+          .set({
+            title: t.title,
+            linkedSpecSections: t.linkedSpecSections,
+          })
+          .where(eq(tasks.id, prev.id))
+          .run();
+      } else {
+        // Unfrozen task: never derive status from [x]/[~] marks; preserve prev.status
+        db.update(tasks)
+          .set({
+            title: t.title,
+            tag: t.tag,
+            checkCommand: t.checkCommand,
+            milestoneCode: t.milestoneCode,
+            linkedSpecSections: t.linkedSpecSections,
+          })
+          .where(eq(tasks.id, prev.id))
+          .run();
+      }
     } else {
-      const initialStatus: PipelineTaskStatus =
-        t.markdownStatus === "done"
-          ? "done"
-          : t.markdownStatus === "in_progress"
-            ? "running"
-            : "queued";
-
+      // New task: never derive status from [x]/[~] marks; new rows start "queued"
       db.insert(tasks)
         .values({
           projectId,
@@ -272,10 +277,12 @@ export function syncPlanTasksToDb(
           title: t.title,
           tag: t.tag,
           checkCommand: t.checkCommand,
-          status: initialStatus,
+          milestoneCode: t.milestoneCode,
+          status: "queued",
           linkedSpecSections: t.linkedSpecSections,
           attempts: 0,
           branch: null,
+          frozenAt: null,
         })
         .run();
     }

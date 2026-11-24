@@ -203,7 +203,7 @@ Done when:
       expect(dbRows).toHaveLength(0);
     });
 
-    it("inserts new tasks with initial statuses mapped from markdown", () => {
+    it("inserts new tasks with queued status regardless of markdown marks (ADR 0018)", () => {
       mkdirSync(join(testDir, "docs"));
       writeFileSync(
         join(testDir, "docs", "PLAN.md"),
@@ -229,9 +229,10 @@ Done when: It works.
       const t2 = dbRows.find((r) => r.code === "T1.2");
       const t3 = dbRows.find((r) => r.code === "T1.3");
 
+      // ADR 0018: new tasks start queued; marks [~] or [x] are ignored for status
       expect(t1?.status).toBe("queued");
-      expect(t2?.status).toBe("running");
-      expect(t3?.status).toBe("done");
+      expect(t2?.status).toBe("queued");
+      expect(t3?.status).toBe("queued");
 
       // Verify enriched return values
       const enrichedT1 = result.tasks.find((r) => r.code === "T1.1");
@@ -295,7 +296,7 @@ Done when: v1 works.
       expect(t2.branch).toBe("daedalus/T1.2");
       expect(t2.attempts).toBe(2);
 
-      // If markdown marks a task [x], status becomes "done"
+      // ADR 0018: [x] in PLAN.md never changes a task's status
       writeFileSync(
         join(testDir, "docs", "PLAN.md"),
         `## M1 — v1.0
@@ -310,7 +311,7 @@ Done when: v1 works.
 
       const result2 = syncPlanTasksToDb(db, projectId, testDir);
       const t1AfterDone = result2.tasks.find((r) => r.code === "T1.1")!;
-      expect(t1AfterDone.status).toBe("done");
+      expect(t1AfterDone.status).toBe("in-review");
     });
 
     it("throws ShapingError (400) when PLAN.md has duplicate task codes and leaves db unchanged", () => {

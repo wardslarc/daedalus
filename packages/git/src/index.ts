@@ -80,6 +80,39 @@ export async function checkout(dir: string, name: string): Promise<void> {
   await execGit(["checkout", name], { cwd: dir });
 }
 
+/** Stages all files except .env* files and commits them. Returns sha or null when nothing changed. */
+export async function commitAll(
+  dir: string,
+  message: string,
+  options?: { author?: string; noVerify?: boolean },
+): Promise<string | null> {
+  if (!message) {
+    throw new GitError("Commit message cannot be empty");
+  }
+
+  // Stage all changes excluding any .env* files anywhere in the repo
+  await execGit(["add", "-A", "--", ".", ":(exclude,glob)**/.env*"], { cwd: dir });
+
+  // Check if anything was staged
+  const diffRes = await execGitQuiet(["diff", "--cached", "--quiet"], { cwd: dir });
+  // If exit code is 0 (diffRes is not null), there are no changes staged
+  if (diffRes !== null) {
+    return null;
+  }
+
+  const commitArgs = ["commit", "-m", message];
+  if (options?.noVerify) {
+    commitArgs.push("--no-verify");
+  }
+  if (options?.author) {
+    commitArgs.push(`--author=${options.author}`);
+  }
+  await execGit(commitArgs, { cwd: dir });
+
+  const { stdout } = await execGit(["rev-parse", "HEAD"], { cwd: dir });
+  return stdout.trim();
+}
+
 /** Stages exactly the specified files and commits them. Returns the new commit sha. */
 export async function commitFiles(
   dir: string,

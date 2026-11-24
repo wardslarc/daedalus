@@ -6,3 +6,5 @@ export * from "./git-ops.js";
 export * from "./merge-kit.js";
 export * from "./shaping.js";
 export * from "./pipeline.js";
+export * from "./check-exec.js";
+export * from "./runner.js";

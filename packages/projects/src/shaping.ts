@@ -17,7 +17,7 @@ import {
 import { join, sep } from "node:path";
 import { eq } from "drizzle-orm";
 import type { DaedalusDb } from "@daedalus/db";
-import { shapingState } from "@daedalus/db";
+import { shapingState, tasks } from "@daedalus/db";
 import { assertProviderAllowed, effectiveGeminiAllowed, rulesFor, type ProjectLike } from "@daedalus/core/profiles";
 import { branchExists as gitBranchExists, createBranch as gitCreateBranch } from "@daedalus/git";
 import { findDuplicateTaskCode, parsePlanMarkdown } from "./pipeline.js";
@@ -1021,13 +1021,67 @@ export async function startMilestoneRelease(
     frozen: true,
   };
 
+  const planDoc = readShapingDoc(localPath, SHAPING_DOCS.plan);
+  const parsed = planDoc.content ? parsePlanMarkdown(planDoc.content) : { milestones: [], tasks: [] };
+
+  const matchedMilestone =
+    (input?.milestoneCode
+      ? parsed.milestones.find((m) => m.code.toLowerCase() === input.milestoneCode!.toLowerCase())
+      : null) ??
+    parsed.milestones.find(
+      (m) => m.code.toLowerCase() === version.toLowerCase() || m.title.toLowerCase().includes(version.toLowerCase()),
+    ) ??
+    parsed.milestones[0] ??
+    null;
+
+  const milestoneCode = matchedMilestone?.code ?? input?.milestoneCode ?? null;
+
   writeShapingStateRow(db, projectId, {
     activeMilestoneVersion: version,
-    activeMilestoneCode: input?.milestoneCode ?? null,
+    activeMilestoneCode: milestoneCode,
     activeMilestoneBranch: branch,
     activeMilestoneStartedAt: milestone.startedAt,
     activeMilestoneFrozen: true,
   });
+
+  const existingRows = db.select().from(tasks).where(eq(tasks.projectId, projectId)).all();
+  const existingByCode = new Map(existingRows.map((r) => [r.code, r]));
+
+  for (const t of matchedMilestone?.tasks ?? []) {
+    const prev = existingByCode.get(t.code);
+    const taskMilestoneCode = t.milestoneCode ?? milestoneCode;
+    if (prev) {
+      db.update(tasks)
+        .set({
+          title: t.title,
+          tag: t.tag,
+          checkCommand: t.checkCommand,
+          milestoneCode: taskMilestoneCode,
+          status: "queued",
+          attempts: 0,
+          frozenAt: milestone.startedAt,
+          linkedSpecSections: t.linkedSpecSections,
+        })
+        .where(eq(tasks.id, prev.id))
+        .run();
+    } else {
+      db.insert(tasks)
+        .values({
+          projectId,
+          code: t.code,
+          title: t.title,
+          tag: t.tag,
+          checkCommand: t.checkCommand,
+          milestoneCode: taskMilestoneCode,
+          status: "queued",
+          attempts: 0,
+          frozenAt: milestone.startedAt,
+          linkedSpecSections: t.linkedSpecSections,
+          branch: null,
+        })
+        .run();
+    }
+  }
 
   const state = getShapingState(db, projectId, localPath, project);
   return {

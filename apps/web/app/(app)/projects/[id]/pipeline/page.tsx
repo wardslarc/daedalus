@@ -34,6 +34,7 @@ export default function PipelinePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [runningTaskCode, setRunningTaskCode] = useState<string | null>(null);
   const [selectedMilestone, setSelectedMilestone] = useState<string>("all");
 
   const loadPipeline = useCallback(async () => {
@@ -77,6 +78,24 @@ export default function PipelinePage() {
       setError(err instanceof Error ? err.message : "Failed to sync PLAN.md");
     } finally {
       setIsSyncing(false);
+    }
+  };
+
+  const handleRunTask = async (taskCode: string) => {
+    if (!id || runningTaskCode) return;
+    try {
+      setRunningTaskCode(taskCode);
+      const res = await postJson(`/api/projects/${id}/tasks/${taskCode}/run`);
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        setError(body?.error || `Failed to run task ${taskCode}`);
+      } else {
+        await loadPipeline();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to run task ${taskCode}`);
+    } finally {
+      setRunningTaskCode(null);
     }
   };
 
@@ -311,6 +330,13 @@ export default function PipelinePage() {
                             </div>
                           )}
 
+                          {task.status === "check-failed" && task.lastCheckOutput && (
+                            <div className="pipeline-card-check-output">
+                              <span className="pipeline-check-output-label">Check output</span>
+                              <pre className="pipeline-check-output-text">{task.lastCheckOutput}</pre>
+                            </div>
+                          )}
+
                           {(task.branch || task.attempts > 0) && (
                             <div className="pipeline-card-footer">
                               {task.branch ? (
@@ -323,6 +349,33 @@ export default function PipelinePage() {
                                   {task.attempts} {task.attempts === 1 ? "attempt" : "attempts"}
                                 </span>
                               )}
+                            </div>
+                          )}
+
+                          {task.status === "queued" && (
+                            <div className="pipeline-card-actions">
+                              <button
+                                type="button"
+                                className="pipeline-run-btn"
+                                disabled={!task.runnable || runningTaskCode === task.code}
+                                title={task.disabledReason ?? "Run task"}
+                                onClick={() => handleRunTask(task.code)}
+                              >
+                                {runningTaskCode === task.code ? "Running..." : "Run"}
+                              </button>
+                              {task.disabledReason && (
+                                <span className="pipeline-card-disabled-reason">
+                                  {task.disabledReason}
+                                </span>
+                              )}
+                            </div>
+                          )}
+
+                          {task.status === "running" && (
+                            <div className="pipeline-card-actions">
+                              <Link href="/workshop" className="pipeline-workshop-link">
+                                Workshop session →
+                              </Link>
                             </div>
                           )}
                         </div>

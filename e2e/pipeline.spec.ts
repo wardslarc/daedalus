@@ -152,15 +152,12 @@ Done when:
       const board = page.getByRole("region", { name: "Pipeline board" });
       await expect(board).toBeVisible();
 
-      // Initially:
-      // T1.1, T1.3, T1.4 are queued (markdownStatus: todo) -> Queued column
-      // T1.2 is running (markdownStatus: in_progress) -> Running column
-      // T1.5 is done (markdownStatus: done) -> Done column
-      await expect(board.getByRole("heading", { level: 3, name: /Queued · 3/i })).toBeVisible();
-      await expect(board.getByRole("heading", { level: 3, name: /Running · 1/i })).toBeVisible();
+      // Initially: all 5 tasks start queued (ADR 0018: marks never set status)
+      await expect(board.getByRole("heading", { level: 3, name: /Queued · 5/i })).toBeVisible();
+      await expect(board.getByRole("heading", { level: 3, name: /Running · 0/i })).toBeVisible();
       await expect(board.getByRole("heading", { level: 3, name: /Check failed · 0/i })).toBeVisible();
       await expect(board.getByRole("heading", { level: 3, name: /In review · 0/i })).toBeVisible();
-      await expect(board.getByRole("heading", { level: 3, name: /Done · 1/i })).toBeVisible();
+      await expect(board.getByRole("heading", { level: 3, name: /Done · 0/i })).toBeVisible();
 
       // Verify task cards
       const cardT1 = page.getByTestId("task-card-T1.1");
@@ -196,17 +193,17 @@ Done when:
       // Click "Sync PLAN.md" button to re-fetch and verify column placement
       await page.getByRole("button", { name: "Sync PLAN.md" }).click();
 
-      // Verify column counts:
-      // Queued: 1 (T1.1)
-      // Running: 1 (T1.2)
+      // Verify column counts (ADR 0018: marks never set status, so T1.2 and T1.5 remain queued):
+      // Queued: 3 (T1.1, T1.2, T1.5)
+      // Running: 0
       // Check failed: 1 (T1.3)
       // In review: 1 (T1.4)
-      // Done: 1 (T1.5)
-      await expect(board.getByRole("heading", { level: 3, name: /Queued · 1/i })).toBeVisible();
-      await expect(board.getByRole("heading", { level: 3, name: /Running · 1/i })).toBeVisible();
+      // Done: 0
+      await expect(board.getByRole("heading", { level: 3, name: /Queued · 3/i })).toBeVisible();
+      await expect(board.getByRole("heading", { level: 3, name: /Running · 0/i })).toBeVisible();
       await expect(board.getByRole("heading", { level: 3, name: /Check failed · 1/i })).toBeVisible();
       await expect(board.getByRole("heading", { level: 3, name: /In review · 1/i })).toBeVisible();
-      await expect(board.getByRole("heading", { level: 3, name: /Done · 1/i })).toBeVisible();
+      await expect(board.getByRole("heading", { level: 3, name: /Done · 0/i })).toBeVisible();
 
       // Verify card footer with branch and attempts
       await expect(cardT3.getByText("daedalus/T1.3")).toBeVisible();

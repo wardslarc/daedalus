@@ -3,10 +3,10 @@ import { existsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { openDb, projects } from "@daedalus/db";
+import { openDb, projects, tasks as tasksTable, shapingState } from "@daedalus/db";
 import { branchExists } from "@daedalus/git";
 import { assertProviderAllowed, effectiveGeminiAllowed, ProfileRuleError, rulesFor, validateProjectSettings } from "@daedalus/core/profiles";
-import { approveMockDoc, approvePlanDoc, approveSpecDoc, beginMockSession, beginPlanSession, beginSpecInterview, createProject, getShapingState, ImportError, importProject, listFolders, mergeKit, realGitOps, saveIntakeDoc, startMilestoneRelease, syncPlanTasksToDb } from "@daedalus/projects";
+import { approveMockDoc, approvePlanDoc, approveSpecDoc, beginMockSession, beginPlanSession, beginSpecInterview, createProject, getShapingState, ImportError, importProject, listFolders, mergeKit, realGitOps, saveIntakeDoc, startMilestoneRelease, syncPlanTasksToDb, TaskRunner } from "@daedalus/projects";
 import { loadProviders, repoProvidersFile, SessionManager, syncProviders } from "@daedalus/providers";
 import { SERVICES_KEY, type PipelineStage, type Services, type ServicesHolder } from "./services.js";
 import { toSessionInfo } from "./ws/channel.js";
@@ -28,12 +28,22 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
   // Run logs (T3.6) live with the database, outside the repo; folders 0700, files 0600.
   const sessions = new SessionManager({ providers, runLogDir: join(dataDir, "runs") });
   const terminals = new TerminalManager();
+  const runner = new TaskRunner({
+    db,
+    dataDir,
+    sessions,
+    providers,
+  });
+  runner.recoverOnStartup();
   const services: Services = {
     db,
     dataDir,
     repoRoot,
     providers,
     sessions,
+    runner,
+    runTask: (projectId, taskCode) => runner.runTask(projectId, taskCode),
+    listRunning: () => runner.listRunning(),
     startSession: async (projectId, providerId) => {
       // The folder and profile come from the database, never from the browser.
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
@@ -292,13 +302,50 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
         }
       }
 
+      const totalRunning = db.select().from(tasksTable).where(eq(tasksTable.status, "running")).all().length;
+      const shapingRow = db.select().from(shapingState).where(eq(shapingState.projectId, projectId)).get();
+      const activeVer = shapingRow?.activeMilestoneVersion?.toLowerCase();
+      const activeCode = shapingRow?.activeMilestoneCode?.toLowerCase();
+
+      const enrichedTasks = tasks.map((t) => {
+        const lastCheckOutput = runner.getLastCheckOutput(projectId, t.code);
+        const taskMilestone = t.milestoneCode?.toLowerCase();
+        const matchesActive = Boolean(
+          shapingRow?.activeMilestoneFrozen &&
+          taskMilestone &&
+          ((activeVer && taskMilestone === activeVer) ||
+            (activeCode && taskMilestone === activeCode))
+        );
+
+        let disabledReason: string | null = null;
+        if (t.tag === "you") {
+          disabledReason = "Owner task";
+        } else if (!t.frozenAt) {
+          disabledReason = "Not frozen";
+        } else if (!matchesActive) {
+          disabledReason = "Not active milestone";
+        } else if (totalRunning >= 2) {
+          disabledReason = "2 of 2 running";
+        }
+
+        const runnable = t.status === "queued" && disabledReason === null;
+
+        return {
+          ...t,
+          lastCheckOutput,
+          runnable,
+          disabledReason,
+        };
+      });
+
       return {
         project,
         rules: { ...rules, effectiveGemini },
         stage,
         activeMilestone: shaping.plan.activeMilestone,
         milestones,
-        tasks,
+        tasks: enrichedTasks,
+        runningTasksCount: totalRunning,
       };
     },
   };
@@ -312,7 +359,10 @@ export async function closeServices(): Promise<void> {
   delete holder[SERVICES_KEY];
   if (!services) return;
   try {
-    await Promise.all([services.sessions.stopAll(), services.terminals.closeAll()]);
+    await Promise.all([
+      services.terminals.closeAll(),
+      services.runner.stopAll(),
+    ]);
   } finally {
     services.db.$client.close();
   }
