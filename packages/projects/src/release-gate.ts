@@ -134,8 +134,10 @@ export function parsePnpmWorkspacePackages(content: string): string[] | null {
   let packagesCount = 0;
   const packagesList: string[] = [];
 
-  for (let i = 0; i < lines.length; i++) {
-    const rawLine = lines[i];
+  for (const rawLine of lines) {
+    if (rawLine === undefined) {
+      return null;
+    }
     const trimmed = rawLine.trim();
 
     // Ignore empty lines, YAML doc markers, and comment lines
@@ -157,7 +159,11 @@ export function parsePnpmWorkspacePackages(content: string): string[] | null {
       }
 
       const key = topLevelMatch[1];
-      const remainder = topLevelMatch[2].trim();
+      const rawRemainder = topLevelMatch[2];
+      if (key === undefined || rawRemainder === undefined) {
+        return null;
+      }
+      const remainder = rawRemainder.trim();
 
       if (key === "packages") {
         packagesCount++;
@@ -171,9 +177,18 @@ export function parsePnpmWorkspacePackages(content: string): string[] | null {
           inPackages = false;
         } else if (remainder.startsWith("[") && remainder.endsWith("]")) {
           try {
-            const parsed = JSON.parse(remainder);
-            if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) {
-              packagesList.push(...parsed);
+            const parsed: unknown = JSON.parse(remainder);
+            if (Array.isArray(parsed)) {
+              for (const item of parsed) {
+                if (typeof item !== "string") {
+                  return null;
+                }
+                const trimmedItem = item.trim();
+                if (!trimmedItem) {
+                  return null;
+                }
+                packagesList.push(trimmedItem);
+              }
               inPackages = false;
               continue;
             }
@@ -189,7 +204,11 @@ export function parsePnpmWorkspacePackages(content: string): string[] | null {
       if (inPackages) {
         const itemMatch = rawLine.match(/^\s+-\s+(?:"([^"]*)"|'([^']*)'|([^#]+?))\s*(?:#.*)?$/);
         if (itemMatch) {
-          const val = (itemMatch[1] ?? itemMatch[2] ?? itemMatch[3])?.trim();
+          const rawItem = itemMatch[1] ?? itemMatch[2] ?? itemMatch[3];
+          if (rawItem === undefined) {
+            return null;
+          }
+          const val = rawItem.trim();
           if (!val) {
             return null;
           }

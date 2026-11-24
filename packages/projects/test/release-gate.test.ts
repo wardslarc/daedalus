@@ -564,7 +564,6 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
     const run2 = await startGateRun({ db, dataDir }, projectRow.id);
     activeRunPromises.push(run2.promise);
     await run2.promise;
-    let r2 = db.select().from(gateRuns).where(eq(gateRuns.id, run2.runId)).get();
 
     const failedFinding = db
       .select()
@@ -589,7 +588,7 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
     const run3 = await startGateRun({ db, dataDir }, projectRow.id);
     activeRunPromises.push(run3.promise);
     await run3.promise;
-    let r3 = db.select().from(gateRuns).where(eq(gateRuns.id, run3.runId)).get();
+    const r3 = db.select().from(gateRuns).where(eq(gateRuns.id, run3.runId)).get();
 
     const r3Checks = r3?.checks as GateRunChecks | null;
     expect(r3Checks?.securityTests?.status).toBe("pass");
@@ -911,7 +910,6 @@ Done when: all tasks pass.
     );
     activeRunPromises.push(p1);
     await p1;
-    let run = db.select().from(gateRuns).where(eq(gateRuns.id, runId1)).get();
 
     expect(capturedCmd).toBe("npm");
     expect(capturedArgs).toContain("--audit-level=low");
@@ -933,7 +931,6 @@ Done when: all tasks pass.
     );
     activeRunPromises.push(p2);
     await p2;
-    run = db.select().from(gateRuns).where(eq(gateRuns.id, runId2)).get();
 
     expect(capturedCmd).toBe("pnpm");
     expect(capturedArgs).toContain("--audit-level=low");
