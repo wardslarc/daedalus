@@ -85,7 +85,7 @@ Imports from a URL clone to `~/work/<name>` for Work projects (WSL file system) 
   into the default branch only when asked. Refuses a checkout with uncommitted changes, merges
   through a temporary worktree when the branch isn't checked out, aborts on conflicts.
   check: e2e merges once then answers 409; real-git tests for clean, dirty, other-branch, conflict
-- [ ] **T2.8 Bilyo import** `[you]`
+- [x] **T2.8 Bilyo import** `[you]`
   Import Bilyo for real and review its `daedalus/kit` branch.
   check: the M2 done-when above
 
