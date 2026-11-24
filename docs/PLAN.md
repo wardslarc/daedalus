@@ -198,7 +198,7 @@ task merged goes through Verify (automatic security checks, UAT with recorded sc
 finding resolved; the owner's accept click ships it by profile; and change requests are captured and decided.
 Status changes go through the T5.2 state machine; review and gate records are server state (ADR 0017, 0018).
 
-- [ ] **T6.1 Review center: diff, gates and decisions** `[gemini]` — [[SPEC#Review]]
+- [x] **T6.1 Review center: diff, gates and decisions** `[gemini]` — [[SPEC#Review]]
   Replace the empty state on `/projects/[id]/review` with the queue of `in-review` tasks. Per task: diff of
   `daedalus/<task>` against its release branch, the frozen check's last result, and automatic gates with no
   model — secret scan of the diff (reuse the redaction patterns), dependency change flag (package/lock files
