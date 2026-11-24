@@ -77,7 +77,7 @@ export type ReleaseGateData = {
 export type AuditRunner = (
   cmd: string,
   args: string[],
-  opts: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number },
+  opts: { cwd: string; env: Record<string, string | undefined>; timeoutMs: number },
 ) => Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }>;
 
 export type ReleaseGateDeps = {
@@ -107,11 +107,11 @@ const activeRuns = new Map<number, ActiveRunRecord>();
  * Sets npm_config_globalconfig if emptyConfigPath is provided.
  */
 export function buildAuditEnv(
-  baseEnv: NodeJS.ProcessEnv = process.env,
+  baseEnv: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
   emptyConfigPath?: string,
-): NodeJS.ProcessEnv {
+): Record<string, string | undefined> {
   const clean = scrubEnv(baseEnv);
-  const out: NodeJS.ProcessEnv = {};
+  const out: Record<string, string | undefined> = {};
   for (const [k, v] of Object.entries(clean)) {
     if (/^npm_config_/i.test(k) || /^corepack_/i.test(k)) {
       continue;
@@ -125,12 +125,96 @@ export function buildAuditEnv(
 }
 
 /**
+ * Strict line parser for extracting top-level `packages:` list from pnpm-workspace.yaml.
+ * Returns string[] if unambiguously parsed, or null if missing, duplicate, or malformed/ambiguous.
+ */
+export function parsePnpmWorkspacePackages(content: string): string[] | null {
+  const lines = content.split(/\r?\n/);
+  let inPackages = false;
+  let packagesCount = 0;
+  const packagesList: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const trimmed = rawLine.trim();
+
+    // Ignore empty lines, YAML doc markers, and comment lines
+    if (!trimmed || trimmed === "---" || trimmed === "..." || trimmed.startsWith("#")) {
+      continue;
+    }
+
+    // Check if line is top-level (no leading whitespace)
+    const isTopLevel = !/^\s/.test(rawLine);
+
+    if (isTopLevel) {
+      if (inPackages) {
+        inPackages = false;
+      }
+
+      const topLevelMatch = trimmed.match(/^([a-zA-Z0-9_-]+):(.*)$/);
+      if (!topLevelMatch) {
+        return null;
+      }
+
+      const key = topLevelMatch[1];
+      const remainder = topLevelMatch[2].trim();
+
+      if (key === "packages") {
+        packagesCount++;
+        if (packagesCount > 1) {
+          return null;
+        }
+
+        if (remainder === "" || remainder.startsWith("#")) {
+          inPackages = true;
+        } else if (remainder === "[]") {
+          inPackages = false;
+        } else if (remainder.startsWith("[") && remainder.endsWith("]")) {
+          try {
+            const parsed = JSON.parse(remainder);
+            if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) {
+              packagesList.push(...parsed);
+              inPackages = false;
+              continue;
+            }
+          } catch {
+            return null;
+          }
+          return null;
+        } else {
+          return null;
+        }
+      }
+    } else {
+      if (inPackages) {
+        const itemMatch = rawLine.match(/^\s+-\s+(?:"([^"]*)"|'([^']*)'|([^#]+?))\s*(?:#.*)?$/);
+        if (itemMatch) {
+          const val = (itemMatch[1] ?? itemMatch[2] ?? itemMatch[3])?.trim();
+          if (!val) {
+            return null;
+          }
+          packagesList.push(val);
+        } else {
+          return null;
+        }
+      }
+    }
+  }
+
+  if (packagesCount !== 1 || packagesList.length === 0) {
+    return null;
+  }
+
+  return packagesList;
+}
+
+/**
  * Default spawn-based runner for dependency audit commands (argv array, no shell).
  */
 export async function defaultAuditRunner(
   cmd: string,
   args: string[],
-  opts: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number },
+  opts: { cwd: string; env: Record<string, string | undefined>; timeoutMs: number },
   onPid?: (pid: number) => void,
 ): Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }> {
   return new Promise((resolve) => {
@@ -138,7 +222,7 @@ export async function defaultAuditRunner(
     try {
       child = spawn(cmd, args, {
         cwd: opts.cwd,
-        env: opts.env,
+        env: opts.env as NodeJS.ProcessEnv,
         shell: false,
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
@@ -716,7 +800,7 @@ async function executeGateRun(
     // CHECK 1: Secrets (no worktree)
     // ----------------------------------------------------
     try {
-      const gitEnv = { ...REVIEW_GIT_ENV };
+      const gitEnv: NodeJS.ProcessEnv = { ...process.env, ...REVIEW_GIT_ENV };
 
       // a) Release diff: <defaultBranch>...<releaseBranch>
       const diffArgs = buildReviewDiffArgs(["--unified=0"], `${defaultBranch}...${releaseBranch}`);
@@ -867,11 +951,21 @@ async function executeGateRun(
           }
         }
 
+        let parsedWorkspacePackages: string[] | null = null;
         if (!disallowedAuditConfig && workspaceCheck.exists) {
           try {
             const workspaceContent = readFileSync(srcWorkspace, "utf8");
             if (/^\s*(auditConfig|ignoreCves|ignoreGhsas)\s*:/m.test(workspaceContent)) {
               disallowedAuditConfig = true;
+            } else {
+              parsedWorkspacePackages = parsePnpmWorkspacePackages(workspaceContent);
+              if (!parsedWorkspacePackages) {
+                checks.dependencies = {
+                  status: "error",
+                  detail: "pnpm-workspace.yaml packages list could not be read unambiguously",
+                };
+                disallowedAuditConfig = true;
+              }
             }
           } catch {
             checks.dependencies = {
@@ -902,8 +996,11 @@ async function executeGateRun(
             copyFileSync(srcPkgJson, join(auditDir, "package.json"));
           }
 
-          if (workspaceCheck.exists) {
-            copyFileSync(srcWorkspace, join(auditDir, "pnpm-workspace.yaml"));
+          if (workspaceCheck.exists && parsedWorkspacePackages) {
+            const newWorkspaceContent =
+              "packages:\n" +
+              parsedWorkspacePackages.map((p) => `  - ${JSON.stringify(p)}\n`).join("");
+            writeFileSync(join(auditDir, "pnpm-workspace.yaml"), newWorkspaceContent, "utf8");
           }
 
           const cmd = hasPnpmLock ? "pnpm" : "npm";

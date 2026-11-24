@@ -7,7 +7,7 @@ const execFileAsync = promisify(execFile);
 export interface ExecGitOptions {
   cwd: string;
   timeoutMs?: number;
-  env?: NodeJS.ProcessEnv;
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   maxBuffer?: number;
 }
 

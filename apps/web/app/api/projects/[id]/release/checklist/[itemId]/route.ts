@@ -1,8 +1,8 @@
 /**
  * POST /api/projects/:id/release/checklist/:itemId — set ship checklist item ticked state (T6.3)
  */
-import { getServices } from "../../../../../../../../src/services";
-import { HttpError, jsonResponse, readJsonBody, toErrorResponse } from "../../../../../../../../src/api/http";
+import { getServices } from "../../../../../../../src/services";
+import { HttpError, jsonResponse, readJsonBody, toErrorResponse } from "../../../../../../../src/api/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

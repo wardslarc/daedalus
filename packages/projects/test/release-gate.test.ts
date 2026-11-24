@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -11,6 +11,7 @@ import {
   openDb,
   projects,
   providers,
+  runs,
   securityTests,
   shapingState,
   tasks,
@@ -22,6 +23,7 @@ import {
   buildAuditEnv,
   decideFinding,
   getReleaseGate,
+  parsePnpmWorkspacePackages,
   refreshVerifyStage,
   ReleaseGateError,
   setChecklistItem,
@@ -124,7 +126,7 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
       })
       .run();
 
-    db.insert(tasks)
+    const [t12] = db.insert(tasks)
       .values({
         projectId: projectRow.id,
         code: "T1.2",
@@ -133,6 +135,19 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
         milestoneCode: "M1",
         frozenAt: now,
         branch: "daedalus/t1.2",
+      })
+      .returning()
+      .all();
+
+    const prov = db.select().from(providers).get()!;
+    db.insert(runs)
+      .values({
+        taskId: t12!.id,
+        providerId: prov.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
       })
       .run();
 
@@ -526,7 +541,6 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
     const run1 = await startGateRun({ db, dataDir }, projectRow.id);
     activeRunPromises.push(run1.promise);
     await run1.promise;
-    let r1 = db.select().from(gateRuns).where(eq(gateRuns.id, run1.runId)).get();
 
     const tamperedFinding = db
       .select()
@@ -1075,7 +1089,7 @@ Done when: all tasks pass.
     expect(gate.status).toBe("blocked");
   });
 
-  it("pnpm-workspace.yaml with auditConfig → dependencies check error", async () => {
+  it("pnpm-workspace.yaml with auditConfig and overrides → refusal", async () => {
     db.update(shapingState)
       .set({ activeMilestoneVerifyStartedAt: new Date().toISOString() })
       .where(eq(shapingState.projectId, projectRow.id))
@@ -1084,11 +1098,11 @@ Done when: all tasks pass.
     git(repoDir, "checkout", "daedalus/release-v1.0");
     writeFileSync(
       join(repoDir, "pnpm-workspace.yaml"),
-      "packages:\n  - 'packages/*'\nauditConfig:\n  ignoreCves:\n    - CVE-2023-1234\n",
+      "packages:\n  - 'packages/*'\noverrides:\n  foo: '1.0.0'\nauditConfig:\n  ignoreCves:\n    - CVE-2023-1234\n",
     );
     writeFileSync(join(repoDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
     git(repoDir, "add", "pnpm-workspace.yaml", "pnpm-lock.yaml");
-    git(repoDir, "commit", "-m", "add workspace with auditConfig");
+    git(repoDir, "commit", "-m", "add workspace with auditConfig and overrides");
     git(repoDir, "checkout", "main");
 
     const { runId, promise } = await startGateRun({ db, dataDir }, projectRow.id);
@@ -1104,6 +1118,123 @@ Done when: all tasks pass.
 
     const gate = await getReleaseGate(db, projectRow);
     expect(gate.status).toBe("blocked");
+  });
+
+  it("pnpm-workspace.yaml with only packages + catalog → audit folder copy has packages only", async () => {
+    db.update(shapingState)
+      .set({ activeMilestoneVerifyStartedAt: new Date().toISOString() })
+      .where(eq(shapingState.projectId, projectRow.id))
+      .run();
+
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    writeFileSync(
+      join(repoDir, "pnpm-workspace.yaml"),
+      "packages:\n  - 'packages/*'\n  - 'apps/*'\ncatalog:\n  react: 19.0.0\n",
+    );
+    writeFileSync(join(repoDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    git(repoDir, "add", "pnpm-workspace.yaml", "pnpm-lock.yaml");
+    git(repoDir, "commit", "-m", "add workspace with packages and catalog");
+    git(repoDir, "checkout", "main");
+
+    let auditWorkspaceContent: string | null = null;
+    const stubRunner: AuditRunner = async (_cmd, _args, opts) => {
+      const wsPath = join(opts.cwd, "pnpm-workspace.yaml");
+      if (existsSync(wsPath)) {
+        auditWorkspaceContent = readFileSync(wsPath, "utf8");
+      }
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ vulnerabilities: {} }),
+        stderr: "",
+        timedOut: false,
+      };
+    };
+
+    const { runId, promise } = await startGateRun(
+      { db, dataDir, auditRunner: stubRunner },
+      projectRow.id,
+    );
+    activeRunPromises.push(promise);
+    await promise;
+
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    const checks = run?.checks as GateRunChecks | null;
+    expect(checks?.dependencies?.status).toBe("pass");
+
+    expect(auditWorkspaceContent).toBeTruthy();
+    expect(auditWorkspaceContent).toContain("packages:");
+    expect(auditWorkspaceContent).toContain("packages/*");
+    expect(auditWorkspaceContent).toContain("apps/*");
+    expect(auditWorkspaceContent).not.toContain("catalog");
+    expect(auditWorkspaceContent).not.toContain("react");
+  });
+
+  it("pnpm-workspace.yaml that cannot be read unambiguously → dependencies check error", async () => {
+    db.update(shapingState)
+      .set({ activeMilestoneVerifyStartedAt: new Date().toISOString() })
+      .where(eq(shapingState.projectId, projectRow.id))
+      .run();
+
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    writeFileSync(
+      join(repoDir, "pnpm-workspace.yaml"),
+      "packages:\n  invalid indentation or item\n",
+    );
+    writeFileSync(join(repoDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    git(repoDir, "add", "pnpm-workspace.yaml", "pnpm-lock.yaml");
+    git(repoDir, "commit", "-m", "add ambiguous workspace");
+    git(repoDir, "checkout", "main");
+
+    const { runId, promise } = await startGateRun({ db, dataDir }, projectRow.id);
+    activeRunPromises.push(promise);
+    await promise;
+
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    const checks = run?.checks as GateRunChecks | null;
+    expect(checks?.dependencies?.status).toBe("error");
+    expect(checks?.dependencies?.detail).toBe(
+      "pnpm-workspace.yaml packages list could not be read unambiguously",
+    );
+
+    const gate = await getReleaseGate(db, projectRow);
+    expect(gate.status).toBe("blocked");
+  });
+
+  it("parsePnpmWorkspacePackages strictly parses top-level packages list and rejects ambiguity", () => {
+    // Valid standard with quotes, comments, trailing keys
+    const validYaml = `---
+# Top comment
+packages:
+  - "apps/*"
+  - 'packages/*'
+  - spikes # inline comment
+catalog:
+  react: 19.0.0
+...`;
+    expect(parsePnpmWorkspacePackages(validYaml)).toEqual([
+      "apps/*",
+      "packages/*",
+      "spikes",
+    ]);
+
+    // Missing packages:
+    expect(parsePnpmWorkspacePackages("catalog:\n  react: 19.0.0\n")).toBeNull();
+
+    // Duplicate packages:
+    const dup = `packages:
+  - "apps/*"
+packages:
+  - "packages/*"`;
+    expect(parsePnpmWorkspacePackages(dup)).toBeNull();
+
+    // Ambiguous indented line under packages:
+    const badIndent = `packages:
+  - "apps/*"
+  not-a-list-item`;
+    expect(parsePnpmWorkspacePackages(badIndent)).toBeNull();
+
+    // Empty packages:
+    expect(parsePnpmWorkspacePackages("packages:\n")).toBeNull();
   });
 
   it("package.json as a symlink to a file outside → error, and the outside file's content appears nowhere in the run or findings", async () => {
