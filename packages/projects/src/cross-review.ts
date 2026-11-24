@@ -315,7 +315,7 @@ export function hashGitCommonDir(commonDir: string): string {
       hash.update("worktrees:unreadable\0");
     }
   } else {
-    hash.update("worktrees:missing\0");
+    hash.update("worktrees_config:0\0");
   }
 
   return hash.digest("hex");
