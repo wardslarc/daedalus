@@ -342,7 +342,9 @@ export default function ReviewPage() {
                           <span className={`review-file-status status-${file.status}`}>
                             {file.status}
                           </span>
-                          <span className="review-file-path">{file.path}</span>
+                          <span className="review-file-path">
+                            {file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}
+                          </span>
                           <span className="review-file-counts">
                             <span className="count-add">+{file.additions}</span>
                             <span className="count-del">-{file.deletions}</span>

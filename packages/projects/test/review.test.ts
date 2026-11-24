@@ -1017,4 +1017,463 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     const checkGate = review.gates.find((g) => g.id === "check");
     expect(checkGate?.status).toBe("pass");
   });
+
+  // --- Security Fix: Git config, gitattributes and renames bypass fixes ---
+
+  it(".gitattributes 'secret.txt binary' + a secret in secret.txt -> secrets gate blocked (secret found) and the .gitattributes item listed as needs-ack", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-sec-gitattr", "daedalus/release-v1.0");
+
+    const secretKey = "sk-ant-api03-plantedsecretkey1234567890abcdef";
+    writeFileSync(join(repoDir, ".gitattributes"), "secret.txt binary\n");
+    writeFileSync(join(repoDir, "secret.txt"), `export const API_KEY = "${secretKey}";\n`);
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "add secret with gitattributes");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-SEC-GA",
+        title: "Gitattributes Secret Task",
+        status: "in-review",
+        branch: "daedalus/t-sec-gitattr",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-SEC-GA");
+    const secretGate = review.gates.find((g) => g.id === "secrets");
+    expect(secretGate).toBeDefined();
+    expect(secretGate?.status).toBe("blocked");
+    expect(secretGate?.items).toContain("secret.txt:1");
+    expect(secretGate?.items).toContain(".gitattributes: changes how git shows diffs");
+
+    await expect(approveTask(db, projectRow, "T-SEC-GA", { dataDir })).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/gate 'secrets' is blocked/i),
+    });
+  });
+
+  it("repo-local git config color.diff always and diff.noprefix true -> a secret on an added line is still found with the right file and line", async () => {
+    git(repoDir, "config", "color.diff", "always");
+    git(repoDir, "config", "diff.noprefix", "true");
+
+    git(repoDir, "checkout", "-b", "daedalus/t-sec-cfg", "daedalus/release-v1.0");
+    const secretKey = "sk-ant-api03-plantedsecretkey1234567890abcdef";
+    writeFileSync(join(repoDir, "config-test.ts"), `const key = "${secretKey}";\n`);
+    git(repoDir, "add", "config-test.ts");
+    git(repoDir, "commit", "-m", "add secret under custom config");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-SEC-CFG",
+        title: "Config Secret Task",
+        status: "in-review",
+        branch: "daedalus/t-sec-cfg",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-SEC-CFG");
+    const secretGate = review.gates.find((g) => g.id === "secrets");
+    expect(secretGate).toBeDefined();
+    expect(secretGate?.status).toBe("blocked");
+    expect(secretGate?.items).toContain("config-test.ts:1");
+  });
+
+  it("a real binary file (bytes with NUL) added -> secrets gate lists it as not scanned (needs-ack), never pass", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-sec-bin", "daedalus/release-v1.0");
+    const binBuffer = Buffer.from([0x00, 0x01, 0x02, 0x03, 0xff, 0xfe, 0x00, 0xaa]);
+    writeFileSync(join(repoDir, "sample.bin"), binBuffer);
+    git(repoDir, "add", "sample.bin");
+    git(repoDir, "commit", "-m", "add binary file");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-SEC-BIN",
+        title: "Binary File Task",
+        status: "in-review",
+        branch: "daedalus/t-sec-bin",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-SEC-BIN");
+    const secretGate = review.gates.find((g) => g.id === "secrets");
+    expect(secretGate).toBeDefined();
+    expect(secretGate?.status).toBe("needs-ack");
+    expect(secretGate?.items).toContain("sample.bin: binary or attribute change, not scanned");
+
+    // Approval fails because unacknowledged
+    await expect(approveTask(db, projectRow, "T-SEC-BIN", { dataDir })).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/gate 'secrets' requires acknowledgement/i),
+    });
+
+    // Acknowledge the gate
+    await ackGate(db, projectRow, "T-SEC-BIN", "secrets", "Verified binary sample asset");
+    const reviewAfterAck = await getReview(db, projectRow, "T-SEC-BIN");
+    const secretGateAfter = reviewAfterAck.gates.find((g) => g.id === "secrets");
+    expect(secretGateAfter?.ack?.note).toBe("Verified binary sample asset");
+  });
+
+  it("git mv test/a.test.ts src/a.ts -> tests gate needs-ack listing it; file entry has oldPath", async () => {
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    mkdirSync(join(repoDir, "test"), { recursive: true });
+    writeFileSync(join(repoDir, "test", "a.test.ts"), "describe('a', () => {});\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "add a.test.ts on release branch");
+
+    git(repoDir, "checkout", "-b", "daedalus/t-mv-test", "daedalus/release-v1.0");
+    mkdirSync(join(repoDir, "src"), { recursive: true });
+    git(repoDir, "mv", "test/a.test.ts", "src/a.ts");
+    git(repoDir, "commit", "-m", "move test to src");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-MV-TEST",
+        title: "Move Test Task",
+        status: "in-review",
+        branch: "daedalus/t-mv-test",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-MV-TEST");
+    const testGate = review.gates.find((g) => g.id === "tests");
+    expect(testGate?.status).toBe("needs-ack");
+    expect(testGate?.items).toContain("src/a.ts");
+
+    const file = review.diff.files.find((f) => f.path === "src/a.ts");
+    expect(file).toBeDefined();
+    expect(file?.status).toBe("R");
+    expect(file?.oldPath).toBe("test/a.test.ts");
+  });
+
+  it("git mv package.json pkg.json -> dependencies gate needs-ack", async () => {
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "package.json"), JSON.stringify({ name: "app" }));
+    git(repoDir, "add", "package.json");
+    git(repoDir, "commit", "-m", "add package.json on release branch");
+
+    git(repoDir, "checkout", "-b", "daedalus/t-mv-dep", "daedalus/release-v1.0");
+    git(repoDir, "mv", "package.json", "pkg.json");
+    git(repoDir, "commit", "-m", "rename package.json away");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-MV-DEP",
+        title: "Move Dep Task",
+        status: "in-review",
+        branch: "daedalus/t-mv-dep",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-MV-DEP");
+    const depGate = review.gates.find((g) => g.id === "dependencies");
+    expect(depGate?.status).toBe("needs-ack");
+    expect(depGate?.items).toContain("pkg.json");
+
+    const file = review.diff.files.find((f) => f.path === "pkg.json");
+    expect(file).toBeDefined();
+    expect(file?.status).toBe("R");
+    expect(file?.oldPath).toBe("package.json");
+  });
+
+  it("a path containing a tab character -> parsed correctly (no crash, right path)", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-tab-path", "daedalus/release-v1.0");
+    const tabFileName = "tab\tfile.txt";
+    writeFileSync(join(repoDir, tabFileName), "line 1\nline 2\n");
+    git(repoDir, "add", tabFileName);
+    git(repoDir, "commit", "-m", "add file with tab in path");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-TAB",
+        title: "Tab Path Task",
+        status: "in-review",
+        branch: "daedalus/t-tab-path",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-TAB");
+    const file = review.diff.files.find((f) => f.path === tabFileName);
+    expect(file).toBeDefined();
+    expect(file?.path).toBe(tabFileName);
+    expect(file?.status).toBe("A");
+    expect(file?.additions).toBe(2);
+    expect(file?.deletions).toBe(0);
+  });
+
+  it("diff with a renamed file between two modified files, plus a third modified file -> every file has the right counts", async () => {
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    const baseContent = Array.from({ length: 10 }, (_, i) => `base line ${i + 1}`).join("\n") + "\n";
+    writeFileSync(join(repoDir, "a-mod.txt"), "line 1\nline 2\nline 3\n");
+    writeFileSync(join(repoDir, "m-old.txt"), baseContent);
+    writeFileSync(join(repoDir, "s-mod.txt"), "s line 1\ns line 2\n");
+    writeFileSync(join(repoDir, "z-mod.txt"), "z line 1\nz line 2\nz line 3\nz line 4\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "setup files for rename and modified test");
+
+    git(repoDir, "checkout", "-b", "daedalus/t-rename-counts", "daedalus/release-v1.0");
+
+    // Modified file 1: a-mod.txt (2 additions, 1 deletion)
+    writeFileSync(join(repoDir, "a-mod.txt"), "line 1\nmodified line 2\nline 3\nadded line 4\n");
+
+    // Renamed file between two modified files: m-old.txt -> m-renamed.txt (3 additions, 0 deletions)
+    git(repoDir, "mv", "m-old.txt", "m-renamed.txt");
+    writeFileSync(join(repoDir, "m-renamed.txt"), baseContent + "extra 1\nextra 2\nextra 3\n");
+
+    // Modified file 2: s-mod.txt (1 addition, 0 deletions)
+    writeFileSync(join(repoDir, "s-mod.txt"), "s line 1\ns line 2\ns line 3\n");
+
+    // Modified file 3: z-mod.txt (0 additions, 2 deletions)
+    writeFileSync(join(repoDir, "z-mod.txt"), "z line 1\nz line 2\n");
+
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "task changes with rename and 3 modified files");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-RENAME-COUNTS",
+        title: "Rename Counts Task",
+        status: "in-review",
+        branch: "daedalus/t-rename-counts",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-RENAME-COUNTS");
+    expect(review.diff.files.length).toBe(4);
+
+    const aFile = review.diff.files.find((f) => f.path === "a-mod.txt");
+    expect(aFile).toBeDefined();
+    expect(aFile?.status).toBe("M");
+    expect(aFile?.additions).toBe(2);
+    expect(aFile?.deletions).toBe(1);
+
+    const mFile = review.diff.files.find((f) => f.path === "m-renamed.txt");
+    expect(mFile).toBeDefined();
+    expect(mFile?.status).toBe("R");
+    expect(mFile?.oldPath).toBe("m-old.txt");
+    expect(mFile?.additions).toBe(3);
+    expect(mFile?.deletions).toBe(0);
+
+    const sFile = review.diff.files.find((f) => f.path === "s-mod.txt");
+    expect(sFile).toBeDefined();
+    expect(sFile?.status).toBe("M");
+    expect(sFile?.additions).toBe(1);
+    expect(sFile?.deletions).toBe(0);
+
+    const zFile = review.diff.files.find((f) => f.path === "z-mod.txt");
+    expect(zFile).toBeDefined();
+    expect(zFile?.status).toBe("M");
+    expect(zFile?.additions).toBe(0);
+    expect(zFile?.deletions).toBe(2);
+  });
+
+  it("truncated name-status record makes diff unreadable and blocks secrets gate", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-trunc-name", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "trunc.txt"), "line\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "commit trunc test");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-TRUNC-NAME",
+        title: "Truncated Name Task",
+        status: "in-review",
+        branch: "daedalus/t-trunc-name",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const truncatedGitOps = {
+      execGit: async (args: string[]) => {
+        if (args.includes("--name-status")) {
+          return { stdout: "R100\0only-old-path.txt\0", stderr: "" };
+        }
+        if (args.includes("--numstat")) {
+          return { stdout: "0\t0\t\0only-old-path.txt\0dest.txt\0", stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      },
+    };
+
+    const review = await getReview(db, projectRow, "T-TRUNC-NAME", {
+      gitOps: truncatedGitOps,
+    });
+
+    const secretGate = review.gates.find((g) => g.id === "secrets");
+    expect(secretGate?.status).toBe("blocked");
+    expect(secretGate?.items[0]).toContain("diff unavailable: truncated name-status record");
+    expect(review.diff.files.length).toBe(0);
+  });
+
+  it("name-status entry missing from numstat map is treated as binary/not scanned (needs-ack)", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-missing-numstat", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "missing.txt"), "hello\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "commit missing numstat test");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-MISSING-NUMSTAT",
+        title: "Missing Numstat Task",
+        status: "in-review",
+        branch: "daedalus/t-missing-numstat",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const missingNumstatGitOps = {
+      execGit: async (args: string[]) => {
+        if (args.includes("--name-status")) {
+          return { stdout: "M\0missing.txt\0", stderr: "" };
+        }
+        if (args.includes("--numstat")) {
+          return { stdout: "", stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      },
+    };
+
+    const review = await getReview(db, projectRow, "T-MISSING-NUMSTAT", {
+      gitOps: missingNumstatGitOps,
+    });
+
+    const secretGate = review.gates.find((g) => g.id === "secrets");
+    expect(secretGate?.status).toBe("needs-ack");
+    expect(secretGate?.items).toContain("missing.txt: binary or attribute change, not scanned");
+    const file = review.diff.files.find((f) => f.path === "missing.txt");
+    expect(file).toBeDefined();
+    expect(file?.additions).toBe(0);
+    expect(file?.deletions).toBe(0);
+  });
 });

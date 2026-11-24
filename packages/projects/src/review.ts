@@ -52,6 +52,7 @@ export class ReviewError extends Error {
 
 export type ReviewDiffFile = {
   path: string;
+  oldPath?: string;
   status: "A" | "M" | "D" | "R";
   additions: number;
   deletions: number;
@@ -168,6 +169,53 @@ export function isTestPath(filePath: string): boolean {
   return /\.(?:test|spec)\.[^/]+$/i.test(base);
 }
 
+/** Check if a file path is considered a .gitattributes file. */
+export function isGitAttributesPath(filePath: string): boolean {
+  const norm = filePath.replace(/\\/g, "/");
+  const base = norm.split("/").pop() ?? "";
+  return base === ".gitattributes";
+}
+
+export const REVIEW_GIT_ENV: Record<string, string> = {
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_CONFIG_GLOBAL: "/dev/null",
+};
+
+/**
+ * Builds git diff command arguments with strict safety flags that prevent
+ * review gates from being bypassed by repo-local or user git configs,
+ * external diff tools, color codes, or gitattributes.
+ */
+export function buildReviewDiffArgs(extraArgs: string[], range: string): string[] {
+  return [
+    "-c",
+    "color.ui=never",
+    "-c",
+    "color.diff=never",
+    "-c",
+    "diff.noprefix=false",
+    "-c",
+    "diff.mnemonicPrefix=false",
+    "-c",
+    "diff.relative=false",
+    "-c",
+    "core.quotePath=false",
+    "-c",
+    "diff.external=",
+    "diff",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--text",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    "--find-renames",
+    ...extraArgs,
+    "--end-of-options",
+    range,
+  ];
+}
+
 /**
  * Scan added lines of a unified diff patch for secrets using the redaction rules.
  * Any hit returns `${filePath}:${lineNumber}`, never the secret itself.
@@ -273,90 +321,149 @@ export async function getReview(
     currentHeadSha = null;
   }
 
-  // Execute git diff <release>...daedalus/<task> with --no-ext-diff --no-textconv
+  // Execute git diff <release>...daedalus/<task> with review safety flags
   let rawPatch = "";
   let diffError: string | null = null;
   const files: ReviewDiffFile[] = [];
+  const binaryPaths = new Set<string>();
 
   try {
     const nameStatusRes = await runExecGit(
-      [
-        "diff",
-        "--name-status",
-        "--no-ext-diff",
-        "--no-textconv",
-        "--end-of-options",
-        `${releaseBranch}...${taskBranch}`,
-      ],
-      { cwd: project.localPath },
+      buildReviewDiffArgs(["--name-status", "-z"], `${releaseBranch}...${taskBranch}`),
+      {
+        cwd: project.localPath,
+        // Cast only: Next.js types make NODE_ENV a required key of ProcessEnv.
+        env: REVIEW_GIT_ENV as NodeJS.ProcessEnv,
+      },
     );
 
     const numstatRes = await runExecGit(
-      [
-        "diff",
-        "--numstat",
-        "--no-ext-diff",
-        "--no-textconv",
-        "--end-of-options",
-        `${releaseBranch}...${taskBranch}`,
-      ],
-      { cwd: project.localPath },
+      buildReviewDiffArgs(["--numstat", "-z"], `${releaseBranch}...${taskBranch}`),
+      {
+        cwd: project.localPath,
+        // Cast only: Next.js types make NODE_ENV a required key of ProcessEnv.
+        env: REVIEW_GIT_ENV as NodeJS.ProcessEnv,
+      },
     );
 
-    const nameLines = nameStatusRes.stdout
-      .split("\n")
-      .filter((l) => l.trim().length > 0);
-    const numLines = numstatRes.stdout
-      .split("\n")
-      .filter((l) => l.trim().length > 0);
+    const nameTokens = nameStatusRes.stdout ? nameStatusRes.stdout.split("\0") : [];
+    if (nameTokens.length > 0 && nameTokens[nameTokens.length - 1] === "") {
+      nameTokens.pop();
+    }
 
-    const parsedNumstat = numLines.map((line) => {
-      const parts = line.split("\t");
-      const addStr = parts[0]?.trim() ?? "0";
-      const delStr = parts[1]?.trim() ?? "0";
-      return {
-        additions: addStr === "-" ? 0 : parseInt(addStr, 10) || 0,
-        deletions: delStr === "-" ? 0 : parseInt(delStr, 10) || 0,
-      };
-    });
+    const numTokens = numstatRes.stdout ? numstatRes.stdout.split("\0") : [];
+    if (numTokens.length > 0 && numTokens[numTokens.length - 1] === "") {
+      numTokens.pop();
+    }
 
-    nameLines.forEach((line, idx) => {
-      const parts = line.split("\t");
-      const rawStatus = parts[0]?.trim() ?? "M";
+    interface NumstatEntry {
+      additions: number;
+      deletions: number;
+      binary: boolean;
+    }
+    const numstatMap = new Map<string, NumstatEntry>();
+
+    let numIdx = 0;
+    while (numIdx < numTokens.length) {
+      const token = numTokens[numIdx++];
+      if (!token) continue;
+
+      const parts = token.split("\t");
+      if (parts.length < 2) {
+        throw new Error("truncated numstat record");
+      }
+
+      const addStr = parts[0]?.trim();
+      const delStr = parts[1]?.trim();
+      const isBinary = addStr === "-" || delStr === "-";
+      const additions = isBinary ? 0 : parseInt(addStr ?? "0", 10) || 0;
+      const deletions = isBinary ? 0 : parseInt(delStr ?? "0", 10) || 0;
+
+      let newPath: string;
+      const rest = parts.slice(2).join("\t");
+      if (rest !== "") {
+        newPath = rest;
+      } else {
+        const rawOld = numTokens[numIdx++];
+        const rawNew = numTokens[numIdx++];
+        if (rawOld === undefined || rawNew === undefined) {
+          throw new Error("truncated numstat record");
+        }
+        newPath = rawNew;
+      }
+
+      numstatMap.set(newPath, { additions, deletions, binary: isBinary });
+    }
+
+    let nameIdx = 0;
+    while (nameIdx < nameTokens.length) {
+      const rawStatus = nameTokens[nameIdx++];
+      if (!rawStatus) continue;
+      const statusChar = rawStatus[0];
+      const isRenameOrCopy = statusChar === "R" || statusChar === "C";
+
+      let oldPath: string | undefined;
+      let filePath: string;
+
+      if (isRenameOrCopy) {
+        const rawOld = nameTokens[nameIdx++];
+        const rawNew = nameTokens[nameIdx++];
+        if (rawOld === undefined || rawNew === undefined) {
+          throw new Error("truncated name-status record");
+        }
+        oldPath = rawOld;
+        filePath = rawNew;
+      } else {
+        const rawPath = nameTokens[nameIdx++];
+        if (rawPath === undefined) {
+          throw new Error("truncated name-status record");
+        }
+        filePath = rawPath;
+      }
+
+      let additions = 0;
+      let deletions = 0;
+
+      const numstat = numstatMap.get(filePath);
+      if (!numstat || numstat.binary) {
+        binaryPaths.add(filePath);
+        if (oldPath) binaryPaths.add(oldPath);
+        additions = 0;
+        deletions = 0;
+      } else {
+        additions = numstat.additions;
+        deletions = numstat.deletions;
+      }
+
       let status: "A" | "M" | "D" | "R" = "M";
-      if (rawStatus.startsWith("A")) status = "A";
-      else if (rawStatus.startsWith("D")) status = "D";
-      else if (rawStatus.startsWith("R")) status = "R";
+      if (statusChar === "A") status = "A";
+      else if (statusChar === "D") status = "D";
+      else if (statusChar === "R" || statusChar === "C") status = "R";
       else status = "M";
-
-      const filePath =
-        status === "R"
-          ? (parts[2] ?? parts[1] ?? "").trim()
-          : (parts[1] ?? "").trim();
-      const num = parsedNumstat[idx];
 
       files.push({
         path: filePath,
+        ...(oldPath ? { oldPath } : {}),
         status,
-        additions: num?.additions ?? 0,
-        deletions: num?.deletions ?? 0,
+        additions,
+        deletions,
       });
-    });
+    }
 
     const patchRes = await runExecGit(
-      [
-        "diff",
-        "--no-ext-diff",
-        "--no-textconv",
-        "--end-of-options",
-        `${releaseBranch}...${taskBranch}`,
-      ],
-      { cwd: project.localPath, maxBuffer: SIXTY_FOUR_MIB },
+      buildReviewDiffArgs([], `${releaseBranch}...${taskBranch}`),
+      {
+        cwd: project.localPath,
+        maxBuffer: SIXTY_FOUR_MIB,
+        // Cast only: Next.js types make NODE_ENV a required key of ProcessEnv.
+        env: REVIEW_GIT_ENV as NodeJS.ProcessEnv,
+      },
     );
     rawPatch = patchRes.stdout;
   } catch (err) {
     diffError = (err instanceof Error ? err.message : String(err)).trim();
     rawPatch = "";
+    files.length = 0;
   }
 
   // Scan added lines for secrets from the unredacted patch
@@ -412,22 +519,45 @@ export async function getReview(
 
   // Gates
   // 1. secrets
+  const secretNeedsAckItems: string[] = [];
+  for (const f of files) {
+    if (binaryPaths.has(f.path)) {
+      secretNeedsAckItems.push(`${f.path}: binary or attribute change, not scanned`);
+    } else {
+      const isGitAttr = isGitAttributesPath(f.path) || (f.oldPath ? isGitAttributesPath(f.oldPath) : false);
+      if (isGitAttr && f.status !== "D") {
+        const p = isGitAttributesPath(f.path) ? f.path : f.oldPath!;
+        secretNeedsAckItems.push(`${p}: changes how git shows diffs`);
+      }
+    }
+  }
+
   const secretItems: string[] = [];
   if (diffError) {
     secretItems.push(`diff unavailable: ${diffError}`);
   } else {
     secretItems.push(...secretHits);
   }
+  secretItems.push(...secretNeedsAckItems);
+
+  let secretGateStatus: "pass" | "blocked" | "needs-ack" = "pass";
+  if (diffError || secretHits.length > 0) {
+    secretGateStatus = "blocked";
+  } else if (secretNeedsAckItems.length > 0) {
+    secretGateStatus = "needs-ack";
+  }
 
   // 2. dependencies
   const depItems = files
-    .filter((f) => isDependencyPath(f.path))
+    .filter((f) => isDependencyPath(f.path) || (f.oldPath ? isDependencyPath(f.oldPath) : false))
     .map((f) => f.path);
 
-  // 3. tests: deleted test file or modified test file where lines were removed
+  // 3. tests: deleted test file or modified test file where lines were removed, or moved out of tests
   const testItems: string[] = [];
   for (const f of files) {
-    if (isTestPath(f.path) && (f.status === "D" || f.deletions > 0)) {
+    const isTest = isTestPath(f.path);
+    const wasTest = f.oldPath ? isTestPath(f.oldPath) : false;
+    if ((isTest || wasTest) && (!isTest || f.status === "D" || f.deletions > 0)) {
       testItems.push(f.path);
     }
   }
@@ -467,7 +597,7 @@ export async function getReview(
   const gates: Gate[] = [
     {
       id: "secrets",
-      status: secretItems.length > 0 ? "blocked" : "pass",
+      status: secretGateStatus,
       items: secretItems,
       ack: ackMap.get("secrets")
         ? {
