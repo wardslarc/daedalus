@@ -5,8 +5,8 @@
  * handlers reach them through this object on globalThis (Symbol.for key, so it also
  * survives Next's dev reloads).
  */
-import type { DaedalusDb, projects, tasks } from "@daedalus/db";
-import type { ApproveMockInput, ApprovePlanInput, ApproveSpecInput, BrowseResult, CreateInput, createProject, ImportInput, importProject, mergeKit, MilestoneState, MockApproval, ParsedMilestone, PipelineTask, ReviewData, RunTaskResult, SaveIntakeInput, ShapingState, StartMilestoneInput, TaskRunner } from "@daedalus/projects";
+import type { DaedalusDb, gateFindings, gateRuns, projects, tasks } from "@daedalus/db";
+import type { ApproveMockInput, ApprovePlanInput, ApproveSpecInput, BrowseResult, CreateInput, createProject, ImportInput, importProject, mergeKit, MilestoneState, MockApproval, ParsedMilestone, PipelineTask, ReleaseGateData, ReviewData, RunTaskResult, SaveIntakeInput, ShapingState, StartMilestoneInput, TaskRunner } from "@daedalus/projects";
 import type { ProfileRules } from "@daedalus/core/profiles";
 import type { TaskStatus } from "@daedalus/core/task-state";
 import type { ProviderEntry, SessionManager } from "@daedalus/providers";
@@ -120,6 +120,22 @@ export type Services = SessionServices & {
     gateId: string,
     note: string,
   ): Promise<{ gate: string; note: string; ackedAt: string; headSha?: string | null }>;
+  /** Get release gate status, checks, findings, and ship checklist (T6.3). */
+  getReleaseGate(projectId: number): Promise<ReleaseGateData>;
+  /** Start a background gate run (T6.3). 409 if verify not started or already running. */
+  startGateRun(projectId: number): Promise<{ runId: number }>;
+  /** Decide an outcome for a gate finding (fix-task, accept, defer) (T6.3). */
+  decideFinding(
+    projectId: number,
+    findingId: number,
+    input: { outcome: string; reason?: string; checkCommand?: string },
+  ): Promise<{ finding: typeof gateFindings.$inferSelect; task?: typeof tasks.$inferSelect }>;
+  /** Toggle or set a ship checklist item (T6.3). */
+  setChecklistItem(
+    projectId: number,
+    itemId: string,
+    ticked: boolean,
+  ): Promise<{ itemId: string; ticked: boolean }>;
 };
 
 export type SessionServices = {

@@ -95,3 +95,53 @@ export function redactDeep<T>(value: T, r: (text: string) => string = redact): T
   }
   return value;
 }
+
+export type SecretMatch = {
+  ruleId: string;
+  value: string;
+};
+
+/**
+ * Scan text using the redaction rules and return each matched secret with its ruleId and value.
+ * Used by the release gate secret scanner (T6.3, ADR 0020).
+ */
+export function findSecretsInText(text: string): SecretMatch[] {
+  const matches: SecretMatch[] = [];
+
+  for (const r of RULES) {
+    const re = new RegExp(r.re.source, r.re.flags);
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      if (!r.keep) {
+        matches.push({ ruleId: r.kind, value: m[0] });
+      } else {
+        const [before, after] = r.keep(m);
+        const val = m[0].slice(before.length, m[0].length - after.length);
+        if (val) {
+          matches.push({ ruleId: r.kind, value: val });
+        }
+      }
+    }
+  }
+
+  const assignRe = new RegExp(ASSIGNMENT.source, ASSIGNMENT.flags);
+  let am: RegExpExecArray | null;
+  while ((am = assignRe.exec(text)) !== null) {
+    const val = am[3]!;
+    if (!val.startsWith("[REDACTED:") && secretLooking(val)) {
+      matches.push({ ruleId: "assignment", value: val });
+    }
+  }
+
+  const candRe = new RegExp(CANDIDATE.source, CANDIDATE.flags);
+  let cm: RegExpExecArray | null;
+  while ((cm = candRe.exec(text)) !== null) {
+    const s = cm[0];
+    if (/[A-Za-z]/.test(s) && /[0-9]/.test(s) && !/^[0-9a-f-]+$/i.test(s) && entropy(s) >= 4.2) {
+      matches.push({ ruleId: "entropy", value: s });
+    }
+  }
+
+  return matches;
+}
+

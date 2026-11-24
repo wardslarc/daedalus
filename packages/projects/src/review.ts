@@ -3,6 +3,7 @@
  * (secrets, dependencies, tests, check), acknowledgements and owner review decisions
  * (approve, send back with notes, discard).
  */
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { and, desc, eq } from "drizzle-orm";
@@ -33,7 +34,8 @@ import {
   type Transition,
 } from "@daedalus/core/task-state";
 import type { ProjectLike } from "@daedalus/core/profiles";
-import { redact } from "@daedalus/providers";
+import { findSecretsInText, redact } from "@daedalus/providers";
+import { refreshVerifyStage } from "./release-gate.js";
 
 export type ReviewProject = ProjectLike & {
   id: number;
@@ -214,6 +216,134 @@ export function buildReviewDiffArgs(extraArgs: string[], range: string): string[
     "--end-of-options",
     range,
   ];
+}
+
+/**
+ * Builds git log arguments for release history secret scanning with strict safety flags.
+ */
+export function buildReviewLogArgs(extraArgs: string[], range: string): string[] {
+  return [
+    "-c",
+    "color.ui=never",
+    "-c",
+    "color.diff=never",
+    "-c",
+    "diff.noprefix=false",
+    "-c",
+    "diff.mnemonicPrefix=false",
+    "-c",
+    "diff.relative=false",
+    "-c",
+    "core.quotePath=false",
+    "-c",
+    "diff.external=",
+    "log",
+    "-p",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--text",
+    "--unified=0",
+    "--format=commit %H",
+    ...extraArgs,
+    "--end-of-options",
+    range,
+  ];
+}
+
+export type SecretHit = {
+  file: string;
+  line: number;
+  commit?: string;
+  ruleId: string;
+  valueSha256: string;
+};
+
+/**
+ * Detailed scanner for added lines in patches or git log output.
+ * Returns each hit with file, line, commit (if present), matched ruleId, and valueSha256.
+ * The secret value itself is never kept.
+ */
+export function scanPatchAddedLinesForDetailedSecrets(
+  rawPatch: string,
+  defaultCommit?: string,
+): SecretHit[] {
+  const hits: SecretHit[] = [];
+  let currentFile = "";
+  let currentNewLine = 0;
+  let remainingNewLines = 0;
+  let inHunk = false;
+  let currentCommit = defaultCommit;
+
+  for (const line of rawPatch.split("\n")) {
+    if (line.startsWith("commit ") && /^[0-9a-f]{40}$/i.test(line.slice(7).trim())) {
+      currentCommit = line.slice(7).trim();
+      inHunk = false;
+      remainingNewLines = 0;
+    } else if (line.startsWith("diff --git ")) {
+      inHunk = false;
+      remainingNewLines = 0;
+      const match = /diff --git a\/(.+) b\/(.+)/.exec(line);
+      if (match) {
+        currentFile = match[2]!;
+      }
+    } else if (!inHunk && line.startsWith("+++ b/")) {
+      currentFile = line.slice("+++ b/".length);
+    } else if (line.startsWith("@@ ")) {
+      const match = /@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+      if (match) {
+        currentNewLine = parseInt(match[1]!, 10);
+        const countStr = match[2];
+        remainingNewLines = countStr !== undefined ? parseInt(countStr, 10) : 1;
+        inHunk = remainingNewLines > 0;
+      }
+    } else if (inHunk) {
+      if (line.startsWith("+")) {
+        const addedContent = line.slice(1);
+        const secrets = findSecretsInText(addedContent);
+        if (secrets.length > 0) {
+          for (const s of secrets) {
+            hits.push({
+              file: currentFile,
+              line: currentNewLine,
+              commit: currentCommit,
+              ruleId: s.ruleId,
+              valueSha256: createHash("sha256").update(s.value, "utf8").digest("hex"),
+            });
+          }
+        } else {
+          const redactedContent = redact(addedContent);
+          if (redactedContent !== addedContent || redactedContent.includes("[REDACTED:")) {
+            const match = /\[REDACTED:([^\]]+)\]/.exec(redactedContent);
+            const ruleId = match ? match[1]! : "unknown";
+            hits.push({
+              file: currentFile,
+              line: currentNewLine,
+              commit: currentCommit,
+              ruleId,
+              valueSha256: createHash("sha256").update(addedContent, "utf8").digest("hex"),
+            });
+          }
+        }
+        currentNewLine++;
+        remainingNewLines--;
+        if (remainingNewLines <= 0) {
+          inHunk = false;
+        }
+      } else if (line.startsWith("-")) {
+        // deleted line from old file, does not affect new line count or number
+      } else if (line.startsWith(" ") || (line === "" && remainingNewLines > 0)) {
+        // context line
+        currentNewLine++;
+        remainingNewLines--;
+        if (remainingNewLines <= 0) {
+          inHunk = false;
+        }
+      }
+    }
+  }
+
+  return hits;
 }
 
 /**
@@ -819,6 +949,12 @@ export async function approveTask(
       } catch {
         // ignore
       }
+    }
+
+    try {
+      refreshVerifyStage(db, project.id);
+    } catch {
+      // ignore
     }
 
     return { sha: result.sha, status: trans.state.status };

@@ -50,6 +50,13 @@
       "when": 1795496733732,
       "tag": "0006_brainy_brood",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1795506533174,
+      "tag": "0007_mature_kree",
+      "breakpoints": true
     }
   ]
 }

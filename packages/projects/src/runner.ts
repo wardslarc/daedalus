@@ -419,6 +419,9 @@ export class TaskRunner {
       } catch {
         // ignore
       }
+      if (!taskDescription && task.description) {
+        taskDescription = task.description;
+      }
 
       const specLinks = (task.linkedSpecSections || [])
         .map((s) => `[[SPEC#${s}]]`)

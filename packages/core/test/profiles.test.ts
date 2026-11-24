@@ -10,6 +10,7 @@ import {
   profileRulesMarkdown,
   providerFamily,
   rulesFor,
+  shipChecklist,
   validateProjectSettings,
   type ProjectLike,
 } from "../src/profiles.js";
@@ -134,3 +135,33 @@ describe("profileRulesMarkdown", () => {
     expect(profileRulesMarkdown("client")).toMatch(/change-request log/i);
   });
 });
+
+describe("shipChecklist (SPEC#Profiles, SPEC#Release gate)", () => {
+  it("lists Kollab handoff items for work profile", () => {
+    expect(shipChecklist("work")).toEqual([
+      { id: "mr-opened", label: "GitLab merge request opened" },
+      { id: "kollab-form", label: "Kollab handoff form filled" },
+      { id: "release-notes", label: "Release notes attached to the handoff" },
+      { id: "deploy-owner", label: "Deploy owner named in the handoff" },
+    ]);
+  });
+
+  it("lists release notes and changelog review for client profile", () => {
+    expect(shipChecklist("client")).toEqual([
+      { id: "release-notes", label: "Release notes written" },
+      { id: "changelog-reviewed", label: "Changes since the last release reviewed" },
+    ]);
+  });
+
+  it("lists release notes and changelog review for personal profile", () => {
+    expect(shipChecklist("personal")).toEqual([
+      { id: "release-notes", label: "Release notes written" },
+      { id: "changelog-reviewed", label: "Changes since the last release reviewed" },
+    ]);
+  });
+
+  it("refuses an unknown profile", () => {
+    expect(() => shipChecklist("unknown")).toThrow(ProfileRuleError);
+  });
+});
+

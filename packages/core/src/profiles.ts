@@ -172,3 +172,32 @@ export function profileRulesMarkdown(profile: string): string {
   if (r.deploy === "kollab-handoff") lines.push("- Deploys are not done from here: finish with the deploy handoff checklist.");
   return lines.join("\n");
 }
+
+export type ShipChecklistItem = {
+  id: string;
+  label: string;
+};
+
+/**
+ * Ship checklist items for a profile (T6.3, SPEC#Profiles, SPEC#Release gate, ADR 0020).
+ * Work gets the Kollab handoff list; Client and Personal get release notes and changelog review.
+ */
+export function shipChecklist(profile: string): ShipChecklistItem[] {
+  const p = profile.trim().toLowerCase();
+  if (p === "work") {
+    return [
+      { id: "mr-opened", label: "GitLab merge request opened" },
+      { id: "kollab-form", label: "Kollab handoff form filled" },
+      { id: "release-notes", label: "Release notes attached to the handoff" },
+      { id: "deploy-owner", label: "Deploy owner named in the handoff" },
+    ];
+  }
+  if (p === "client" || p === "personal") {
+    return [
+      { id: "release-notes", label: "Release notes written" },
+      { id: "changelog-reviewed", label: "Changes since the last release reviewed" },
+    ];
+  }
+  throw new ProfileRuleError(`Unknown profile "${profile}"`);
+}
+

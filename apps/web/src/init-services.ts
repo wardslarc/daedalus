@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { openDb, projects, tasks as tasksTable, shapingState } from "@daedalus/db";
 import { branchExists } from "@daedalus/git";
 import { assertProviderAllowed, effectiveGeminiAllowed, ProfileRuleError, rulesFor, validateProjectSettings } from "@daedalus/core/profiles";
-import { ackGate, approveMockDoc, approvePlanDoc, approveSpecDoc, approveTask, beginMockSession, beginPlanSession, beginSpecInterview, createProject, discardTask, getReview, getShapingState, ImportError, importProject, listFolders, listInReviewTasks, mergeKit, realGitOps, saveIntakeDoc, sendBack, startMilestoneRelease, syncPlanTasksToDb, TaskRunner } from "@daedalus/projects";
+import { ackGate, approveMockDoc, approvePlanDoc, approveSpecDoc, approveTask, beginMockSession, beginPlanSession, beginSpecInterview, createProject, decideFinding, discardTask, getReleaseGate, getReview, getShapingState, ImportError, importProject, listFolders, listInReviewTasks, mergeKit, realGitOps, recoverGateRunsOnStartup, refreshVerifyStage, saveIntakeDoc, sendBack, setChecklistItem, startGateRun, startMilestoneRelease, stopAllGateRuns, syncPlanTasksToDb, TaskRunner } from "@daedalus/projects";
 import { loadProviders, repoProvidersFile, SessionManager, syncProviders } from "@daedalus/providers";
 import { SERVICES_KEY, type PipelineStage, type Services, type ServicesHolder } from "./services.js";
 import { toSessionInfo } from "./ws/channel.js";
@@ -35,6 +35,7 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
     providers,
   });
   runner.recoverOnStartup();
+  recoverGateRunsOnStartup(db);
   const services: Services = {
     db,
     dataDir,
@@ -293,7 +294,11 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
           activeTasks = tasks.filter((t) => codes.has(t.code));
         }
 
-        if (activeTasks.length > 0 && activeTasks.every((t) => t.status === "done")) {
+        refreshVerifyStage(db, projectId);
+        const shapingCheck = db.select().from(shapingState).where(eq(shapingState.projectId, projectId)).get();
+        if (shapingCheck?.activeMilestoneVerifyStartedAt) {
+          stage = "Verify";
+        } else if (activeTasks.length > 0 && activeTasks.every((t) => t.status === "done")) {
           stage = "Verify";
         } else if (activeTasks.some((t) => t.status === "in-review")) {
           stage = "Review";
@@ -378,6 +383,26 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
       if (!project) throw new ImportError("No such project.", 404);
       return ackGate(db, project, taskCode, gateId, note);
     },
+    getReleaseGate: async (projectId) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return getReleaseGate(db, project);
+    },
+    startGateRun: async (projectId) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return startGateRun({ db, dataDir }, projectId);
+    },
+    decideFinding: async (projectId, findingId, input) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return decideFinding(db, projectId, findingId, input);
+    },
+    setChecklistItem: async (projectId, itemId, ticked) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return setChecklistItem(db, project, itemId, ticked);
+    },
   };
   holder[SERVICES_KEY] = services;
   return services;
@@ -392,6 +417,7 @@ export async function closeServices(): Promise<void> {
     await Promise.all([
       services.terminals.closeAll(),
       services.runner.stopAll(),
+      stopAllGateRuns(services.db, services.dataDir),
     ]);
   } finally {
     services.db.$client.close();

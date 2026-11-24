@@ -296,8 +296,8 @@ export function syncPlanTasksToDb(
     const pt = parsedByCode.get(row.code);
     return {
       ...row,
-      description: pt?.description ?? "",
-      milestoneCode: pt?.milestoneCode ?? null,
+      description: pt?.description ?? row.description ?? "",
+      milestoneCode: pt?.milestoneCode ?? row.milestoneCode ?? null,
       milestoneTitle: pt?.milestoneTitle ?? null,
     };
   });
