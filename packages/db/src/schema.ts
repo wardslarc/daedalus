@@ -208,6 +208,7 @@ export const shapingState = sqliteTable("shaping_state", {
   mockApprovedBy: text("mock_approved_by"),
   mockApprovedAt: text("mock_approved_at"),
   planApprovedAt: text("plan_approved_at"),
+  planApprovedSha256: text("plan_approved_sha256"),
   activeMilestoneVersion: text("active_milestone_version"),
   activeMilestoneCode: text("active_milestone_code"),
   activeMilestoneBranch: text("active_milestone_branch"),

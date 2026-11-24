@@ -36,6 +36,13 @@
       "when": 1795487295952,
       "tag": "0004_same_mercury",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1795492150956,
+      "tag": "0005_puzzling_vector",
+      "breakpoints": true
     }
   ]
 }
