@@ -554,6 +554,86 @@ And then final response:
       expect(xrGate?.items).toContain("The reviewer changed files; its review was discarded.");
     });
 
+    it("FAKE:delete-git -> status tampered, gate blocked", async () => {
+      git(repoDir, "checkout", "-b", "daedalus/t-delgit", "daedalus/release-v1.0");
+      writeFileSync(join(repoDir, "delgit.txt"), "delgit\n");
+      git(repoDir, "add", ".");
+      git(repoDir, "commit", "-m", "delgit commit");
+      git(repoDir, "checkout", "main");
+
+      const [t] = db.insert(tasks).values({
+        projectId: projId,
+        code: "T-DELGIT",
+        title: "Test FAKE:delete-git tampering",
+        status: "in-review",
+        branch: "daedalus/t-delgit",
+      }).returning().all();
+
+      db.insert(runs).values({
+        taskId: t!.id,
+        providerId: provClaudeId,
+        role: "implement",
+        start: new Date().toISOString(),
+      }).run();
+
+      const proj = db.select().from(projects).where(eq(projects.id, projId)).get()!;
+
+      const res = await startCrossReview(
+        { db, dataDir, sessions: manager, providers: testProviders },
+        projId,
+        "T-DELGIT",
+      );
+      await res.promise;
+
+      const review = db.select().from(reviews).where(eq(reviews.id, res.reviewId)).get();
+      expect(review?.status).toBe("tampered");
+
+      const reviewData = await getReview(db, proj, "T-DELGIT");
+      const xrGate = reviewData.gates.find((g) => g.id === "cross-review");
+      expect(xrGate?.status).toBe("blocked");
+      expect(xrGate?.items).toContain("The reviewer changed files; its review was discarded.");
+    });
+
+    it("FAKE:write-common-hook (writes <common-dir>/hooks/post-checkout) -> status tampered, gate blocked", async () => {
+      git(repoDir, "checkout", "-b", "daedalus/t-hook", "daedalus/release-v1.0");
+      writeFileSync(join(repoDir, "hook.txt"), "hook test\n");
+      git(repoDir, "add", ".");
+      git(repoDir, "commit", "-m", "hook commit");
+      git(repoDir, "checkout", "main");
+
+      const [t] = db.insert(tasks).values({
+        projectId: projId,
+        code: "T-HOOK",
+        title: "Test FAKE:write-common-hook tampering",
+        status: "in-review",
+        branch: "daedalus/t-hook",
+      }).returning().all();
+
+      db.insert(runs).values({
+        taskId: t!.id,
+        providerId: provClaudeId,
+        role: "implement",
+        start: new Date().toISOString(),
+      }).run();
+
+      const proj = db.select().from(projects).where(eq(projects.id, projId)).get()!;
+
+      const res = await startCrossReview(
+        { db, dataDir, sessions: manager, providers: testProviders },
+        projId,
+        "T-HOOK",
+      );
+      await res.promise;
+
+      const review = db.select().from(reviews).where(eq(reviews.id, res.reviewId)).get();
+      expect(review?.status).toBe("tampered");
+
+      const reviewData = await getReview(db, proj, "T-HOOK");
+      const xrGate = reviewData.gates.find((g) => g.id === "cross-review");
+      expect(xrGate?.status).toBe("blocked");
+      expect(xrGate?.items).toContain("The reviewer changed files; its review was discarded.");
+    });
+
     it("two startCrossReview calls started together -> one succeeds, the other is 409", async () => {
       git(repoDir, "checkout", "-b", "daedalus/t-race", "daedalus/release-v1.0");
       writeFileSync(join(repoDir, "race.txt"), "race test\n");

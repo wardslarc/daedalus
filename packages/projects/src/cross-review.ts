@@ -3,8 +3,9 @@
  * Starts an isolated read-only session in a detached worktree, gathers findings,
  * triages them with Claude, validates output strictly, and enforces tamper detection.
  */
-import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { dirname, posix, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { dirname, join, posix, relative, resolve } from "node:path";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import type { DaedalusDb } from "@daedalus/db";
 import {
@@ -224,10 +225,72 @@ export function parseTriage(text: string, findingsCount: number): TriageItem[] {
   return out;
 }
 
+function getFilesRecursive(dir: string, baseDir: string = dir): Array<{ relPath: string; fullPath: string }> {
+  if (!existsSync(dir)) return [];
+  const entries = readdirSync(dir, { withFileTypes: true });
+  const files: Array<{ relPath: string; fullPath: string }> = [];
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...getFilesRecursive(full, baseDir));
+    } else if (entry.isFile() || entry.isSymbolicLink()) {
+      files.push({ relPath: relative(baseDir, full), fullPath: full });
+    }
+  }
+  return files;
+}
+
+export function hashGitCommonDir(commonDir: string): string {
+  const hash = createHash("sha256");
+
+  // 1. config
+  const configFile = join(commonDir, "config");
+  if (existsSync(configFile)) {
+    hash.update("config:exists\0");
+    try {
+      hash.update(readFileSync(configFile));
+    } catch {
+      hash.update("unreadable\0");
+    }
+  } else {
+    hash.update("config:missing\0");
+  }
+
+  // 2. hooks/
+  const hooksDir = join(commonDir, "hooks");
+  const hookFiles = getFilesRecursive(hooksDir);
+  hookFiles.sort((a, b) => a.relPath.localeCompare(b.relPath));
+  hash.update(`hooks:${hookFiles.length}\0`);
+  for (const hf of hookFiles) {
+    hash.update(`hook:${hf.relPath}\0`);
+    try {
+      hash.update(readFileSync(hf.fullPath));
+    } catch {
+      hash.update("unreadable\0");
+    }
+  }
+
+  // 3. info/attributes
+  const infoAttrFile = join(commonDir, "info", "attributes");
+  if (existsSync(infoAttrFile)) {
+    hash.update("info/attributes:exists\0");
+    try {
+      hash.update(readFileSync(infoAttrFile));
+    } catch {
+      hash.update("unreadable\0");
+    }
+  } else {
+    hash.update("info/attributes:missing\0");
+  }
+
+  return hash.digest("hex");
+}
+
 export type Snapshot = {
   taskBranchSha: string;
   worktreeHeadSha: string;
   statusOutput: string;
+  commonDirHash: string;
 };
 
 export async function takeSnapshot(
@@ -236,19 +299,25 @@ export async function takeSnapshot(
   worktreeDir: string,
   taskBranch: string,
 ): Promise<Snapshot> {
-  const [branchRes, headRes, statusRes] = await Promise.all([
+  const [branchRes, headRes, statusRes, commonDirRes] = await Promise.all([
     runExecGit(["rev-parse", "--verify", `${taskBranch}^{commit}`], { cwd: repoDir }),
     runExecGit(["rev-parse", "--verify", "HEAD"], { cwd: worktreeDir }),
     runExecGit(
       ["status", "--porcelain=v1", "-z", "--ignored", "--untracked-files=all"],
       { cwd: worktreeDir },
     ),
+    runExecGit(["rev-parse", "--git-common-dir"], { cwd: worktreeDir }),
   ]);
+
+  const commonDirRaw = commonDirRes.stdout.trim();
+  const commonDir = resolve(worktreeDir, commonDirRaw);
+  const commonDirHash = hashGitCommonDir(commonDir);
 
   return {
     taskBranchSha: branchRes.stdout.trim(),
     worktreeHeadSha: headRes.stdout.trim(),
     statusOutput: statusRes.stdout,
+    commonDirHash,
   };
 }
 
@@ -256,7 +325,8 @@ export function isSameSnapshot(a: Snapshot, b: Snapshot): boolean {
   return (
     a.taskBranchSha === b.taskBranchSha &&
     a.worktreeHeadSha === b.worktreeHeadSha &&
-    a.statusOutput === b.statusOutput
+    a.statusOutput === b.statusOutput &&
+    a.commonDirHash === b.commonDirHash
   );
 }
 
@@ -562,7 +632,7 @@ export async function startCrossReview(
     let reviewError: string | null = null;
     let findings: Finding[] = [];
     let claudeTriage: TriageItem[] | null = null;
-    let initialSnapshot: { commitSha: string; headSha: string; statusPorcelain: string } | null = null;
+    let initialSnapshot: Snapshot | null = null;
 
     activeReviews.set(reviewId, {
       worktreeDir,
@@ -655,7 +725,19 @@ export async function startCrossReview(
       await reviewerSession.stop().catch(() => {});
       reviewerSession = null;
 
-      const postReviewerSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch);
+      let postReviewerSnapshot: Snapshot;
+      try {
+        postReviewerSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch);
+      } catch {
+        reviewStatus = "tampered";
+        reviewError = "The reviewer changed files; its review was discarded.";
+        try {
+          findings = parseFindings(reviewerMessageText);
+        } catch {
+          findings = [];
+        }
+        return;
+      }
       if (!isSameSnapshot(initialSnapshot, postReviewerSnapshot)) {
         reviewStatus = "tampered";
         reviewError = "The reviewer changed files; its review was discarded.";
@@ -677,7 +759,15 @@ export async function startCrossReview(
       }
 
       // 4.f Triage with Claude (read-only)
-      const preTriageSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch);
+      let preTriageSnapshot: Snapshot;
+      try {
+        preTriageSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch);
+      } catch {
+        reviewStatus = "tampered";
+        reviewError = "The reviewer changed files; its review was discarded.";
+        claudeTriage = null;
+        return;
+      }
 
       try {
         triageSession = await deps.sessions.start(
@@ -720,7 +810,15 @@ export async function startCrossReview(
       await triageSession.stop().catch(() => {});
       triageSession = null;
 
-      const postTriageSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch);
+      let postTriageSnapshot: Snapshot;
+      try {
+        postTriageSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch);
+      } catch {
+        reviewStatus = "tampered";
+        reviewError = "The reviewer changed files; its review was discarded.";
+        claudeTriage = null;
+        return;
+      }
       if (!isSameSnapshot(preTriageSnapshot, postTriageSnapshot)) {
         reviewStatus = "tampered";
         reviewError = "The reviewer changed files; its review was discarded.";
@@ -750,68 +848,25 @@ export async function startCrossReview(
       }
 
       // Once the initial snapshot exists, every exit path stops the sessions first,
-      // then takes the after-snapshot and compares; any difference -> tampered,
+      // then takes the after-snapshot and compares; any difference or failure to verify -> tampered,
       // which wins over every other status.
-      if (initialSnapshot && existsSync(worktreeDir)) {
+      if (initialSnapshot) {
         try {
-          const finalSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch);
-          if (!isSameSnapshot(initialSnapshot, finalSnapshot)) {
+          if (!existsSync(worktreeDir)) {
             reviewStatus = "tampered";
             reviewError = "The reviewer changed files; its review was discarded.";
+          } else {
+            const finalSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch);
+            if (!isSameSnapshot(initialSnapshot, finalSnapshot)) {
+              reviewStatus = "tampered";
+              reviewError = "The reviewer changed files; its review was discarded.";
+            }
           }
         } catch {
-          if (reviewStatus !== "tampered") {
-            reviewStatus = "failed";
-            reviewError = reviewError || "Failed to verify worktree snapshot";
-          }
+          reviewStatus = "tampered";
+          reviewError = "The reviewer changed files; its review was discarded.";
         }
       }
-
-      if (existsSync(worktreeDir)) {
-        const remove = deps.gitOps?.removeWorktree ?? defaultRemoveWorktree;
-        try {
-          await remove(project.localPath, worktreeDir);
-        } catch {
-          // ignore
-        }
-        try {
-          rmSync(worktreeDir, { recursive: true, force: true });
-        } catch {
-          // ignore
-        }
-      }
-
-      activeReviews.delete(reviewId);
-
-      const finishedAt = deps.now ? deps.now() : new Date().toISOString();
-
-      try {
-        db.update(reviews)
-          .set({
-            status: reviewStatus,
-            findings: JSON.stringify(findings),
-            claudeTriage: claudeTriage ? JSON.stringify(claudeTriage) : null,
-            finishedAt,
-            error: reviewError,
-          })
-          .where(eq(reviews.id, reviewId))
-          .run();
-      } catch {
-        // ignore
-      }
-
-      try {
-        db.update(runs)
-          .set({
-            end: finishedAt,
-            exitStatus: reviewStatus === "done" ? 0 : 1,
-          })
-          .where(eq(runs.id, runId))
-          .run();
-      } catch {
-        // ignore
-      }
-    }
 
       if (existsSync(worktreeDir)) {
         const remove = deps.gitOps?.removeWorktree ?? defaultRemoveWorktree;

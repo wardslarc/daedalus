@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -216,7 +216,7 @@ describe("AgentSession", () => {
 });
 
 describe("PermissionPolicy: read-only", () => {
-  it("read-only policy: answers edit with reject, read with allow, no kind with reject", async () => {
+  it("read-only policy: answers edit with reject, no kind with reject", async () => {
     const s = await make().start(project(), "claude", { permissionPolicy: "read-only" });
     expect(s.policy).toBe("read-only");
     expect(s.permissionPolicy).toBe("read-only");
@@ -226,15 +226,63 @@ describe("PermissionPolicy: read-only", () => {
     await s.prompt("permission-kind edit");
     expect(text(await doneEdit)).toBe("denied");
 
-    // read request -> allowed (allow_once)
-    const doneRead = waitFor(s, (e) => e.type === "turn_end");
-    await s.prompt("permission-kind read");
-    expect(text(await doneRead)).toBe("allowed");
-
     // no kind -> denied (reject_once)
     const doneNone = waitFor(s, (e) => e.type === "turn_end");
     await s.prompt("permission-kind none");
     expect(text(await doneNone)).toBe("denied");
+  });
+
+  it("read-only policy: read inside allowed, read ../outside and symlink pointing outside rejected, read with no locations rejected, think with no locations allowed", async () => {
+    const p = project();
+    const insideFile = join(p.localPath, "inside.txt");
+    writeFileSync(insideFile, "inside content\n");
+
+    const outsideDir = mkdtempSync(join(tmpdir(), "outside-dir-"));
+    const outsideFile = join(outsideDir, "outside.txt");
+    writeFileSync(outsideFile, "outside content\n");
+
+    const symlinkFile = join(p.localPath, "symlink-outside");
+    symlinkSync(outsideFile, symlinkFile);
+
+    try {
+      const s = await make().start(p, "claude", { permissionPolicy: "read-only" });
+
+      // read inside -> allowed
+      const doneInside = waitFor(s, (e) => e.type === "turn_end");
+      await s.prompt(`permission-kind read ${insideFile}`);
+      expect(text(await doneInside)).toBe("allowed");
+
+      // read of ../outside -> rejected (denied)
+      const doneOutside = waitFor(s, (e) => e.type === "turn_end");
+      await s.prompt("permission-kind read ../outside");
+      expect(text(await doneOutside)).toBe("denied");
+
+      // read of symlink pointing outside -> rejected (denied)
+      const doneSymlink = waitFor(s, (e) => e.type === "turn_end");
+      await s.prompt(`permission-kind read ${symlinkFile}`);
+      expect(text(await doneSymlink)).toBe("denied");
+
+      // read with no locations -> rejected (denied)
+      const doneNoLoc = waitFor(s, (e) => e.type === "turn_end");
+      await s.prompt("permission-kind read");
+      expect(text(await doneNoLoc)).toBe("denied");
+
+      // think with no locations -> allowed
+      const doneThink = waitFor(s, (e) => e.type === "turn_end");
+      await s.prompt("permission-kind think");
+      expect(text(await doneThink)).toBe("allowed");
+    } finally {
+      try {
+        rmSync(outsideDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+      try {
+        rmSync(p.localPath, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    }
   });
 
   it("owner is never asked in read-only and respondPermission throws 409", async () => {

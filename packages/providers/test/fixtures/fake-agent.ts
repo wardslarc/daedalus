@@ -14,12 +14,13 @@
  *   write-spec-verify  update docs/SPEC.md to include ## Verify (T4.2)
  *   [Cross-review]*    cross-review findings (T6.2): FAKE:ask-write requests edit & read permissions;
  *                      FAKE:write-file writes tampered.txt; FAKE:write-and-stall writes tampered.txt and stalls;
+ *                      FAKE:delete-git deletes .git in its cwd; FAKE:write-common-hook writes <common-dir>/hooks/post-checkout;
  *                      FAKE:bad-json replies without json; otherwise replies with 3 findings.
  *   [Triage]*          triage findings (T6.2): first finding must-fix, others should-fix / nit.
  */
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 
@@ -87,10 +88,18 @@ const app = acp
         break;
       }
       case "permission-kind": {
-        const kind = arg === "none" ? undefined : (arg || "edit");
+        const [kindStr, locPath] = arg.split(" ");
+        const kind = kindStr === "none" ? undefined : (kindStr || "edit");
+        const locations = locPath && locPath !== "none" ? [{ path: locPath }] : undefined;
         const res = (await client.request(acp.methods.client.session.requestPermission, {
           sessionId: sid,
-          toolCall: { toolCallId: "tool-1", title: "Tool request", ...(kind ? { kind } : {}), status: "pending" },
+          toolCall: {
+            toolCallId: "tool-1",
+            title: "Tool request",
+            ...(kind ? { kind } : {}),
+            ...(locations ? { locations } : {}),
+            status: "pending",
+          },
           options: [
             { optionId: "allow", name: "Allow once", kind: "allow_once" },
             { optionId: "deny", name: "Deny", kind: "reject_once" },
@@ -174,6 +183,26 @@ const app = acp
             writeFileSync(join(process.cwd(), "tampered.txt"), "tampered by fake agent\n", "utf8");
           }
 
+          if (input.includes("FAKE:delete-git")) {
+            const gitFile = join(process.cwd(), ".git");
+            rmSync(gitFile, { recursive: true, force: true });
+          }
+
+          if (input.includes("FAKE:write-common-hook")) {
+            try {
+              const commonDirRaw = execFileSync("git", ["rev-parse", "--git-common-dir"], {
+                cwd: process.cwd(),
+                encoding: "utf8",
+              }).trim();
+              const commonDir = resolve(process.cwd(), commonDirRaw);
+              const hooksDir = join(commonDir, "hooks");
+              mkdirSync(hooksDir, { recursive: true });
+              writeFileSync(join(hooksDir, "post-checkout"), "#!/bin/sh\necho pwned\n", "utf8");
+            } catch {
+              // ignore
+            }
+          }
+
           if (input.includes("FAKE:ask-write")) {
             const editRes = (await client.request(acp.methods.client.session.requestPermission, {
               sessionId: sid,
@@ -187,7 +216,13 @@ const app = acp
 
             const readRes = (await client.request(acp.methods.client.session.requestPermission, {
               sessionId: sid,
-              toolCall: { toolCallId: "tool-read-1", title: "Read a file", kind: "read", status: "pending" },
+              toolCall: {
+                toolCallId: "tool-read-1",
+                title: "Read a file",
+                kind: "read",
+                locations: [{ path: "src/index.ts" }],
+                status: "pending",
+              },
               options: [
                 { optionId: "allow", name: "Allow once", kind: "allow_once" },
                 { optionId: "deny", name: "Deny", kind: "reject_once" },

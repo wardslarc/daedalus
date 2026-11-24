@@ -7,6 +7,7 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
+import { isAbsolute, relative, resolve } from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import { assertProviderAllowed } from "@daedalus/core/profiles";
@@ -126,6 +127,7 @@ export class AgentSession {
   readonly id = randomUUID();
   readonly startedAt = new Date().toISOString();
   readonly permissionPolicy: PermissionPolicy;
+  private sessionFolder: string;
   private readonly listeners = new Set<(e: AgentEvent) => void>();
   private readonly events: AgentEvent[] = [];
   private readonly pending = new Map<string, PendingPermission>();
@@ -145,6 +147,7 @@ export class AgentSession {
     private readonly opts: Required<Pick<SessionManagerOptions, "permissionTimeoutMs" | "backlogLimit" | "killGraceMs">> & { permissionPolicy?: PermissionPolicy },
     private readonly onEnd: (s: AgentSession) => void,
   ) {
+    this.sessionFolder = project.localPath;
     this.permissionPolicy = opts.permissionPolicy ?? "ask-owner";
     this.exited = new Promise((resolve) => {
       let done = false;
@@ -170,6 +173,7 @@ export class AgentSession {
 
   /** Open the ACP connection: initialize, then session/new in the project folder. */
   async open(folder: string, timeoutMs: number): Promise<void> {
+    this.sessionFolder = folder;
     const { stdin, stdout } = this.child;
     if (!stdin || !stdout) throw new SessionError("Agent process has no stdio", 502);
     const stream = acp.ndJsonStream(Writable.toWeb(stdin) as WritableStream<Uint8Array>, Readable.toWeb(stdout) as ReadableStream<Uint8Array>);
@@ -332,8 +336,20 @@ export class AgentSession {
     }
   }
 
-  private askOwner(params: acp.RequestPermissionRequest, signal: AbortSignal): Promise<acp.RequestPermissionResponse> {
-    if (this.ended || this.stopping) return Promise.resolve({ outcome: { outcome: "cancelled" } });
+  private async isLocationInsideSessionFolder(targetPath: string): Promise<boolean> {
+    try {
+      const realSession = await realpath(this.sessionFolder);
+      const absPath = resolve(realSession, targetPath);
+      const realTarget = await realpath(absPath);
+      const rel = relative(realSession, realTarget);
+      return !rel.startsWith("..") && !isAbsolute(rel);
+    } catch {
+      return false;
+    }
+  }
+
+  private async askOwner(params: acp.RequestPermissionRequest, signal: AbortSignal): Promise<acp.RequestPermissionResponse> {
+    if (this.ended || this.stopping) return { outcome: { outcome: "cancelled" } };
     const requestId = `perm-${++this.permissionSeq}`;
     const options = params.options.map((o) => ({ optionId: o.optionId, name: o.name, kind: o.kind }));
 
@@ -347,9 +363,52 @@ export class AgentSession {
       });
 
       const kind = params.toolCall.kind;
-      let outcome: acp.RequestPermissionOutcome;
+      let isAllowed = false;
 
-      if (kind === "read" || kind === "search" || kind === "think") {
+      if (kind === "think") {
+        const locs = params.toolCall.locations;
+        if (!locs || !Array.isArray(locs) || locs.length === 0) {
+          isAllowed = true;
+        } else {
+          const checks = await Promise.all(
+            locs.map(async (l) => {
+              const p =
+                typeof l === "string"
+                  ? l
+                  : l && typeof l === "object" && typeof (l as { path?: unknown }).path === "string"
+                    ? (l as { path: string }).path
+                    : null;
+              if (!p || typeof p !== "string" || p.trim() === "") return false;
+              return this.isLocationInsideSessionFolder(p);
+            }),
+          );
+          isAllowed = checks.every(Boolean);
+        }
+      } else if (kind === "read" || kind === "search") {
+        const locs = params.toolCall.locations;
+        if (Array.isArray(locs) && locs.length > 0) {
+          const checks = await Promise.all(
+            locs.map(async (l) => {
+              const p =
+                typeof l === "string"
+                  ? l
+                  : l && typeof l === "object" && typeof (l as { path?: unknown }).path === "string"
+                    ? (l as { path: string }).path
+                    : null;
+              if (!p || typeof p !== "string" || p.trim() === "") return false;
+              return this.isLocationInsideSessionFolder(p);
+            }),
+          );
+          isAllowed = checks.every(Boolean);
+        } else {
+          isAllowed = false;
+        }
+      } else {
+        isAllowed = false;
+      }
+
+      let outcome: acp.RequestPermissionOutcome;
+      if (isAllowed) {
         const allowOpt = options.find((o) => o.kind === "allow_once");
         if (allowOpt) {
           outcome = { outcome: "selected", optionId: allowOpt.optionId };
@@ -377,7 +436,7 @@ export class AgentSession {
         ...(outcome.outcome === "selected" ? { optionId: outcome.optionId } : {}),
       });
 
-      return Promise.resolve({ outcome });
+      return { outcome };
     }
 
     return new Promise((resolve) => {
