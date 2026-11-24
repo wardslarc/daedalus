@@ -1,15 +1,20 @@
 /**
  * A tiny ACP agent for tests. Behaviour is chosen by the prompt text:
- *   echo <text>      reply with <text> (in two chunks)
- *   cwd              reply with the working directory
- *   env <NAME>       reply with that variable, or "(unset)"
- *   sleep <ms>       wait (cancellable), then reply "slept"
- *   permission       ask the client for permission; reply allowed / denied / cancelled
- *   stubborn-child   start a child that ignores SIGTERM; reply with its pid
- *   flood <n>        send n message chunks
- *   exit             exit the process with code 3
+ *   echo <text>        reply with <text> (in two chunks)
+ *   cwd                reply with the working directory
+ *   env <NAME>         reply with that variable, or "(unset)"
+ *   sleep <ms>         wait (cancellable), then reply "slept"
+ *   permission         ask the client for permission; reply allowed / denied / cancelled
+ *   stubborn-child     start a child that ignores SIGTERM; reply with its pid
+ *   flood <n>          send n message chunks
+ *   exit               exit the process with code 3
+ *   [Spec interview]*  draft docs/SPEC.md from docs/INTAKE.md and ask for ## Verify criteria (T4.2)
+ *   write-spec-draft   write a draft docs/SPEC.md without ## Verify (T4.2)
+ *   write-spec-verify  update docs/SPEC.md to include ## Verify (T4.2)
  */
 import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 
@@ -87,8 +92,191 @@ const app = acp
       case "exit":
         process.exit(3);
         break;
-      default:
+      case "write-spec-draft": {
+        const docsDir = join(process.cwd(), "docs");
+        mkdirSync(docsDir, { recursive: true });
+        const draft = [
+          "# Spec — Draft",
+          "",
+          "## Overview",
+          `- ${arg || "Drafted from intake during spec interview."}`,
+          "",
+        ].join("\n");
+        writeFileSync(join(docsDir, "SPEC.md"), draft, "utf8");
+        await say(client, sid, "Drafted docs/SPEC.md without ## Verify. What checks should go into ## Verify?");
+        break;
+      }
+      case "write-spec-verify": {
+        const docsDir = join(process.cwd(), "docs");
+        mkdirSync(docsDir, { recursive: true });
+        const specPath = join(docsDir, "SPEC.md");
+        const existing = existsSync(specPath)
+          ? readFileSync(specPath, "utf8").replace(/\n*##\s+Verify[\s\S]*$/i, "")
+          : "# Spec — Approved\n\n## Overview\n- Guided project spec.";
+        const updated = [
+          existing.trimEnd(),
+          "",
+          "## Verify",
+          `- ${arg || "End-to-end test passes from intake through approval."}`,
+          "",
+        ].join("\n");
+        writeFileSync(specPath, updated, "utf8");
+        await say(client, sid, "Updated docs/SPEC.md with ## Verify section.");
+        break;
+      }
+      case "revise-mock": {
+        const docsDir = join(process.cwd(), "docs");
+        mkdirSync(docsDir, { recursive: true });
+        const mockPath = join(docsDir, "mock.html");
+        const existing = existsSync(mockPath)
+          ? readFileSync(mockPath, "utf8")
+          : "<!DOCTYPE html><html><body><h1>Mock</h1></body></html>";
+        const revisionText = arg || "Live revision";
+        const updated = existing.includes("</body>")
+          ? existing.replace("</body>", `  <p data-revision="true">${revisionText}</p>\n</body>`)
+          : `${existing}\n<p data-revision="true">${revisionText}</p>`;
+        writeFileSync(mockPath, updated, "utf8");
+        await say(client, sid, `Revised docs/mock.html: ${revisionText}`);
+        break;
+      }
+      default: {
+        if (input.startsWith("[Spec interview]")) {
+          const docsDir = join(process.cwd(), "docs");
+          mkdirSync(docsDir, { recursive: true });
+          const intakePath = join(docsDir, "INTAKE.md");
+          const intake = existsSync(intakePath) ? readFileSync(intakePath, "utf8") : input;
+          const problemMatch = intake.match(/-\s+\*\*Problem:\*\*\s*(.+)/);
+          const usersMatch = intake.match(/-\s+\*\*Users:\*\*\s*(.+)/);
+          const constraintsMatch = intake.match(/-\s+\*\*Constraints:\*\*\s*(.+)/);
+          const draft = [
+            "# Spec",
+            "",
+            "Sections are linkable as `[[SPEC#<Heading>]]`.",
+            "",
+            "## Overview",
+            `- Problem: ${problemMatch?.[1]?.trim() || "Defined in intake"}`,
+            `- Target users: ${usersMatch?.[1]?.trim() || "Project users"}`,
+            "",
+            "## Architecture & Constraints",
+            `- ${constraintsMatch?.[1]?.trim() || "Local-first TypeScript stack"}`,
+            "",
+          ].join("\n");
+          writeFileSync(join(docsDir, "SPEC.md"), draft, "utf8");
+          await say(
+            client,
+            sid,
+            "I read docs/INTAKE.md and wrote an initial draft of docs/SPEC.md. Before we finalize, what end-to-end checks should go into the ## Verify section?",
+          );
+          break;
+        }
+        if (input.startsWith("[Mock build]")) {
+          const docsDir = join(process.cwd(), "docs");
+          mkdirSync(docsDir, { recursive: true });
+          const specPath = join(docsDir, "SPEC.md");
+          const spec = existsSync(specPath) ? readFileSync(specPath, "utf8") : input;
+          const overview = spec.match(/## Overview[\s\S]*?(?=\n##|$)/)?.[0]?.trim() || "Built from docs/SPEC.md";
+          const mockContent = [
+            "<!DOCTYPE html>",
+            "<html lang=\"en\">",
+            "<head>",
+            "  <meta charset=\"UTF-8\">",
+            "  <title>Mock</title>",
+            "  <style>",
+            "    body { font-family: sans-serif; padding: 24px; background: #fafafa; color: #111; }",
+            "    .btn { padding: 8px 16px; background: #2563eb; color: #fff; border: none; border-radius: 6px; cursor: pointer; }",
+            "    .box { margin-top: 16px; padding: 16px; background: #fff; border: 1px solid #ddd; border-radius: 8px; }",
+            "  </style>",
+            "</head>",
+            "<body>",
+            "  <h1>Clickable Mock</h1>",
+            `  <p>${overview}</p>`,
+            "  <button id=\"mock-btn\" class=\"btn\" onclick=\"document.getElementById('status').innerText = 'Clicked!'\">Click me</button>",
+            "  <div class=\"box\" id=\"status\">Initial mock state</div>",
+            "</body>",
+            "</html>",
+          ].join("\n");
+          writeFileSync(join(docsDir, "mock.html"), mockContent, "utf8");
+          await say(
+            client,
+            sid,
+            "Built clickable HTML mock in docs/mock.html. Ask for revisions in chat or publish and approve when ready.",
+          );
+          break;
+        }
+        if (input.startsWith("[Plan generation]")) {
+          const docsDir = join(process.cwd(), "docs");
+          mkdirSync(docsDir, { recursive: true });
+          const planContent = [
+            "# Plan",
+            "",
+            "Status legend: `[ ]` todo · `[~]` in progress · `[x]` done.",
+            "",
+            "## M1 — v1.0 Initial Release",
+            "",
+            "Done when: the core workflow from docs/SPEC.md passes end-to-end verification.",
+            "",
+            "- [ ] **T1.1 Core implementation** `[claude]` — [[SPEC#Overview]]",
+            "  Implement the core project workflow described in the spec.",
+            "  check: `pnpm test`",
+            "- [ ] **T1.2 End-to-end verification** `[gemini]` — [[SPEC#Verify]]",
+            "  Add end-to-end verification tests covering the Verify section.",
+            "  check: `pnpm test:e2e`",
+            "",
+          ].join("\n");
+          writeFileSync(join(docsDir, "PLAN.md"), planContent, "utf8");
+          await say(
+            client,
+            sid,
+            "Generated docs/PLAN.md grouped into milestones with Done when UAT items and tasks. Ask for changes or click Approve plan.",
+          );
+          break;
+        }
+        const docsDir = join(process.cwd(), "docs");
+        const planPath = join(docsDir, "PLAN.md");
+        if (
+          existsSync(planPath) &&
+          !readFileSync(planPath, "utf8").includes("check: `<command that passes when this is done>`")
+        ) {
+          const revisionText = input.trim();
+          const existing = readFileSync(planPath, "utf8").trimEnd();
+          const updated = [
+            existing,
+            `- [ ] **T1.3 ${revisionText}** \`[claude]\` — [[SPEC#Verify]]`,
+            `  ${revisionText}`,
+            "  check: `pnpm test`",
+            "",
+          ].join("\n");
+          writeFileSync(planPath, updated, "utf8");
+          await say(client, sid, `Updated docs/PLAN.md: ${revisionText}`);
+          break;
+        }
+        const mockPath = join(docsDir, "mock.html");
+        if (existsSync(mockPath)) {
+          const revisionText = input.trim();
+          const existing = readFileSync(mockPath, "utf8");
+          const updated = existing.includes("</body>")
+            ? existing.replace("</body>", `  <p data-revision="true">${revisionText}</p>\n</body>`)
+            : `${existing}\n<p data-revision="true">${revisionText}</p>`;
+          writeFileSync(mockPath, updated, "utf8");
+          await say(client, sid, `Revised docs/mock.html: ${revisionText}`);
+          break;
+        }
+        const specPath = join(docsDir, "SPEC.md");
+        if (existsSync(specPath)) {
+          const existing = readFileSync(specPath, "utf8").replace(/\n*##\s+Verify[\s\S]*$/i, "");
+          const updated = [
+            existing.trimEnd(),
+            "",
+            "## Verify",
+            `- ${input.trim()}`,
+            "",
+          ].join("\n");
+          writeFileSync(specPath, updated, "utf8");
+          await say(client, sid, `Added ## Verify section to docs/SPEC.md: ${input.trim()}`);
+          break;
+        }
         await say(client, sid, `unknown: ${input}`);
+      }
     }
     return { stopReason: "end_turn" as const };
   });

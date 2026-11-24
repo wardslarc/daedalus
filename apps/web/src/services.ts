@@ -6,13 +6,30 @@
  * survives Next's dev reloads).
  */
 import type { DaedalusDb, projects } from "@daedalus/db";
-import type { BrowseResult, CreateInput, createProject, ImportInput, importProject, mergeKit } from "@daedalus/projects";
+import type { ApproveMockInput, ApprovePlanInput, ApproveSpecInput, BrowseResult, CreateInput, createProject, ImportInput, importProject, mergeKit, MilestoneState, MockApproval, ParsedMilestone, PipelineTask, SaveIntakeInput, ShapingState, StartMilestoneInput } from "@daedalus/projects";
+import type { ProfileRules } from "@daedalus/core/profiles";
 import type { ProviderEntry, SessionManager } from "@daedalus/providers";
 import type { SessionInfo, TerminalInfo } from "./ws/protocol.js";
 import type { TerminalManager } from "./terminal.js";
 
 export type ProjectWithKit = typeof projects.$inferSelect & {
   kitPending: boolean;
+};
+
+export type ProjectChatInfo = ShapingState & {
+  project: typeof projects.$inferSelect;
+  rules: ProfileRules & { effectiveGemini: boolean };
+};
+
+export type PipelineStage = "Intake" | "Spec" | "Mock" | "Plan" | "Build" | "Review" | "Verify" | "Ship";
+
+export type ProjectPipelineInfo = {
+  project: typeof projects.$inferSelect;
+  rules: ProfileRules & { effectiveGemini: boolean };
+  stage: PipelineStage;
+  activeMilestone: MilestoneState | null;
+  milestones: ParsedMilestone[];
+  tasks: PipelineTask[];
 };
 
 export type UpdateSettingsInput = {
@@ -40,6 +57,38 @@ export type Services = SessionServices & {
     id: number,
     input: UpdateSettingsInput,
   ): Promise<{ project: typeof projects.$inferSelect; stoppedSessions: string[] }>;
+  /** Get project chat info, profile rules and shaping state (T4.1). 404 if no such project. */
+  getProjectChat(projectId: number): Promise<ProjectChatInfo>;
+  /** Save docs/INTAKE.md safely into project docs/ (T4.1). 404 if no such project. */
+  saveIntake(projectId: number, input: SaveIntakeInput): Promise<ShapingState & { ok: true; content: string }>;
+  /** Start or resume the guided Claude Spec interview session for a project (T4.2). 404 if no such project. */
+  startSpecInterview(projectId: number): Promise<{ session: SessionInfo; prompt: string; state: ShapingState }>;
+  /** Validate and approve docs/SPEC.md (requires ## Verify) to advance to Mock (T4.2). 404 if no such project. */
+  approveSpec(projectId: number, input?: ApproveSpecInput): Promise<ShapingState & { ok: true; content: string }>;
+  /** Start or resume the Mock session with the chosen provider (T4.3). 404 if no such project; 403 profile rules. */
+  startMockSession(
+    projectId: number,
+    providerId: string,
+  ): Promise<{ session: SessionInfo; prompt: string; state: ShapingState }>;
+  /** Validate and approve docs/mock.html with published artifact link and approver (T4.3). 404 if no such project. */
+  approveMock(
+    projectId: number,
+    input: ApproveMockInput,
+  ): Promise<ShapingState & { ok: true; approval: MockApproval }>;
+  /** Start or resume the Claude Plan generation session for a project (T4.4). 404 if no such project. */
+  startPlanSession(projectId: number): Promise<{ session: SessionInfo; prompt: string; state: ShapingState }>;
+  /** Validate and save/approve docs/PLAN.md (T4.4). 404 if no such project. */
+  approvePlan(
+    projectId: number,
+    input?: ApprovePlanInput,
+  ): Promise<ShapingState & { ok: true; content: string }>;
+  /** Start a milestone: create release branch daedalus/release-<version> from defaultBranch and freeze scope (T4.4). */
+  startMilestone(
+    projectId: number,
+    input?: StartMilestoneInput,
+  ): Promise<ShapingState & { ok: true; milestone: MilestoneState }>;
+  /** Get project pipeline, milestone tasks, and stage (T5.1). 404 if no such project. */
+  getProjectPipeline(projectId: number): Promise<ProjectPipelineInfo>;
 };
 
 export type SessionServices = {

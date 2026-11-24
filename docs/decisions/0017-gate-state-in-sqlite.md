@@ -1,0 +1,6 @@
+# 0017 — Gate state in SQLite
+
+- **Status:** accepted · 2026-11-23
+- **Context:** Approvals and the milestone freeze were kept in `docs/.shaping.json` in the project repo (`readShapingMeta` / `writeShapingMeta`). Agent sessions can write to that folder, so an agent could record its own spec, mock or plan approval, or clear `activeMilestone.frozen`. The file also ended up committed in the user's repo.
+- **Decision:** ADR 0004 still holds for documents (INTAKE.md, SPEC.md, mock.html, PLAN.md stay in the repository), but gate records (who approved what and when, the milestone freeze) are server state stored in a SQLite table (`shaping_state`) with one row per project, cascading on delete. Agents can edit the repo, so a gate kept there is not a gate. [[SPEC#Profiles]] already establishes that rules are enforced on the server. Daedalus no longer reads or writes `docs/.shaping.json`. Server sets the timestamp for mock approval; client-supplied `approvedAt` is removed from `ApproveMockInput` and ignored.
+- **Consequences:** Agents cannot forge or bypass approvals by writing to the project repo. Gate enforcement is purely server-side. Deleting a project cascades cleanly to its gate records.
