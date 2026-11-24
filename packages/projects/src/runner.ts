@@ -59,7 +59,7 @@ export type TaskRunnerSessions = {
   start: (
     project: SessionProject,
     providerId: string,
-    workFolder?: string,
+    opts?: { permissionPolicy?: "ask-owner" | "read-only" },
   ) => Promise<TaskRunnerSession>;
   stopAll: () => Promise<void>;
   get?: (id: string) => TaskRunnerSession | undefined;

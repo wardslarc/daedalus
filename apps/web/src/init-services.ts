@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { openDb, projects, tasks as tasksTable, shapingState } from "@daedalus/db";
 import { branchExists } from "@daedalus/git";
 import { assertProviderAllowed, effectiveGeminiAllowed, ProfileRuleError, rulesFor, validateProjectSettings } from "@daedalus/core/profiles";
-import { ackGate, approveMockDoc, approvePlanDoc, approveSpecDoc, approveTask, beginMockSession, beginPlanSession, beginSpecInterview, createProject, discardTask, getReview, getShapingState, ImportError, importProject, listFolders, listInReviewTasks, mergeKit, realGitOps, saveIntakeDoc, sendBack, startMilestoneRelease, syncPlanTasksToDb, TaskRunner } from "@daedalus/projects";
+import { ackGate, approveMockDoc, approvePlanDoc, approveSpecDoc, approveTask, beginMockSession, beginPlanSession, beginSpecInterview, closeAllReviews, createProject, discardTask, getReview, getShapingState, ImportError, importProject, listFolders, listInReviewTasks, mergeKit, realGitOps, recoverReviewsOnStartup, saveIntakeDoc, sendBack, startCrossReview, startMilestoneRelease, syncPlanTasksToDb, TaskRunner } from "@daedalus/projects";
 import { loadProviders, repoProvidersFile, SessionManager, syncProviders } from "@daedalus/providers";
 import { SERVICES_KEY, type PipelineStage, type Services, type ServicesHolder } from "./services.js";
 import { toSessionInfo } from "./ws/channel.js";
@@ -35,6 +35,7 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
     providers,
   });
   runner.recoverOnStartup();
+  recoverReviewsOnStartup(db);
   const services: Services = {
     db,
     dataDir,
@@ -378,6 +379,21 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
       if (!project) throw new ImportError("No such project.", 404);
       return ackGate(db, project, taskCode, gateId, note);
     },
+    startCrossReview: async (projectId, taskCode) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      const res = await startCrossReview(
+        {
+          db,
+          dataDir,
+          sessions,
+          providers,
+        },
+        projectId,
+        taskCode,
+      );
+      return { reviewId: res.reviewId };
+    },
   };
   holder[SERVICES_KEY] = services;
   return services;
@@ -392,6 +408,7 @@ export async function closeServices(): Promise<void> {
     await Promise.all([
       services.terminals.closeAll(),
       services.runner.stopAll(),
+      closeAllReviews(services.db),
     ]);
   } finally {
     services.db.$client.close();

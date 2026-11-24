@@ -207,7 +207,7 @@ Status changes go through the T5.2 state machine; review and gate records are se
   for its next run; **Discard** deletes the branch and worktree and requeues. Approve stays locked while a
   must-fix finding is open or a test edit isn't acknowledged.
   check: unit + e2e tests — approve merges into `daedalus/release-v1.0` and `main` is unchanged; a planted secret and a deleted test block Approve until handled; send back requeues with notes
-- [ ] **T6.2 Cross-review by the other provider** `[claude]` — [[SPEC#Review]] [[SPEC#Profiles]]
+- [x] **T6.2 Cross-review by the other provider** `[claude]` — [[SPEC#Review]] [[SPEC#Profiles]]
   The provider that didn't write the change reviews it in a fresh session on the task worktree, read-only:
   every write or exec permission request is denied by the server. Findings come back as a JSON block in the
   final message (severity, file, line, claim, proof), are stored in `reviews`, and Claude triages each into

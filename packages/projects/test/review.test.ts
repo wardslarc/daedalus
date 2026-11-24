@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -27,7 +27,6 @@ import {
   discardTask,
   getReview,
   listInReviewTasks,
-  ReviewError,
   scanPatchAddedLinesForSecrets,
   sendBack,
 } from "../src/review.js";
@@ -363,6 +362,15 @@ describe("Review center (T6.1, SPEC#Review)", () => {
       })
       .run();
 
+    // Acknowledge cross-review gate so task can be approved without running cross-review
+    db.insert(reviewAcks)
+      .values({
+        taskId: t15!.id,
+        gate: "cross-review",
+        note: "ack cross-review for test",
+      })
+      .run();
+
     // Mock check passed in runner
     const transitionTable: Record<string, Transition> = {
       "in-review:approve": { state: { status: "done", attempts: 1 }, inbox: null },
@@ -434,6 +442,15 @@ describe("Review center (T6.1, SPEC#Review)", () => {
         checkExitCode: 0,
         checkOutput: "All tests passed",
         exitStatus: 0,
+      })
+      .run();
+
+    // Acknowledge cross-review gate so task can reach git merge
+    db.insert(reviewAcks)
+      .values({
+        taskId: t16!.id,
+        gate: "cross-review",
+        note: "ack cross-review for test",
       })
       .run();
 
@@ -587,6 +604,15 @@ describe("Review center (T6.1, SPEC#Review)", () => {
         checkExitCode: 0,
         checkOutput: "All tests passed",
         exitStatus: 0,
+      })
+      .run();
+
+    // Acknowledge cross-review gate so task can reach transition
+    db.insert(reviewAcks)
+      .values({
+        taskId: t19!.id,
+        gate: "cross-review",
+        note: "ack cross-review for test",
       })
       .run();
 
@@ -1475,5 +1501,60 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     expect(file).toBeDefined();
     expect(file?.additions).toBe(0);
     expect(file?.deletions).toBe(0);
+  });
+
+  it("T6.2: cross-review gate appears in gates, is needs-ack when unreviewed, and blocks approve until acknowledged", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-xr-gate", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "xr-file.txt"), "hello world\n");
+    git(repoDir, "add", "xr-file.txt");
+    git(repoDir, "commit", "-m", "xr test commit");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-XR-GATE",
+        title: "Cross Review Gate Task",
+        status: "in-review",
+        branch: "daedalus/t-xr-gate",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    // Verify cross-review gate is needs-ack when no review has run
+    const review = await getReview(db, projectRow, "T-XR-GATE");
+    const xrGate = review.gates.find((g) => g.id === "cross-review");
+    expect(xrGate).toBeDefined();
+    expect(xrGate?.status).toBe("needs-ack");
+    expect(xrGate?.items).toContain("no cross-review for this commit");
+    expect(xrGate?.ack).toBeNull();
+
+    // approveTask is rejected because cross-review gate requires acknowledgement
+    await expect(approveTask(db, projectRow, "T-XR-GATE", { dataDir })).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/gate 'cross-review' requires acknowledgement/i),
+    });
+
+    // Acknowledge the cross-review gate
+    const ackRes = await ackGate(db, projectRow, "T-XR-GATE", "cross-review", "Acknowledged lack of cross-review for test");
+    expect(ackRes.gate).toBe("cross-review");
+
+    // Review now reflects the acknowledgement
+    const reviewAfter = await getReview(db, projectRow, "T-XR-GATE");
+    const xrGateAfter = reviewAfter.gates.find((g) => g.id === "cross-review");
+    expect(xrGateAfter?.ack).not.toBeNull();
+    expect(xrGateAfter?.ack?.note).toBe("Acknowledged lack of cross-review for test");
   });
 });

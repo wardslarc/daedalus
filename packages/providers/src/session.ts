@@ -7,6 +7,7 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
+import { isAbsolute, relative, resolve } from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import { assertProviderAllowed } from "@daedalus/core/profiles";
@@ -29,6 +30,8 @@ export class SessionError extends Error {
 export type SessionProject = { id: number; name: string; localPath: string; profile: string; geminiAllowed: boolean };
 
 export type PermissionOption = { optionId: string; name: string; kind: acp.PermissionOptionKind };
+
+export type PermissionPolicy = "ask-owner" | "read-only";
 
 type EventBody =
   | { type: "prompt"; text: string }
@@ -123,6 +126,8 @@ type PendingPermission = {
 export class AgentSession {
   readonly id = randomUUID();
   readonly startedAt = new Date().toISOString();
+  readonly permissionPolicy: PermissionPolicy;
+  private sessionFolder: string;
   private readonly listeners = new Set<(e: AgentEvent) => void>();
   private readonly events: AgentEvent[] = [];
   private readonly pending = new Map<string, PendingPermission>();
@@ -139,9 +144,11 @@ export class AgentSession {
     readonly project: SessionProject,
     readonly providerId: string,
     private readonly child: ChildProcess,
-    private readonly opts: Required<Pick<SessionManagerOptions, "permissionTimeoutMs" | "backlogLimit" | "killGraceMs">>,
+    private readonly opts: Required<Pick<SessionManagerOptions, "permissionTimeoutMs" | "backlogLimit" | "killGraceMs">> & { permissionPolicy?: PermissionPolicy },
     private readonly onEnd: (s: AgentSession) => void,
   ) {
+    this.sessionFolder = project.localPath;
+    this.permissionPolicy = opts.permissionPolicy ?? "ask-owner";
     this.exited = new Promise((resolve) => {
       let done = false;
       const finish = (code: number | null, signal: string | null) => {
@@ -166,6 +173,7 @@ export class AgentSession {
 
   /** Open the ACP connection: initialize, then session/new in the project folder. */
   async open(folder: string, timeoutMs: number): Promise<void> {
+    this.sessionFolder = folder;
     const { stdin, stdout } = this.child;
     if (!stdin || !stdout) throw new SessionError("Agent process has no stdio", 502);
     const stream = acp.ndJsonStream(Writable.toWeb(stdin) as WritableStream<Uint8Array>, Readable.toWeb(stdout) as ReadableStream<Uint8Array>);
@@ -205,6 +213,10 @@ export class AgentSession {
 
   get pid(): number | undefined {
     return this.child.pid;
+  }
+
+  get policy(): PermissionPolicy {
+    return this.permissionPolicy;
   }
 
   get running(): boolean {
@@ -265,6 +277,9 @@ export class AgentSession {
 
   /** The owner's answer to a permission request: one of its option ids, or "cancel". */
   respondPermission(requestId: string, optionId: string): void {
+    if (this.permissionPolicy === "read-only") {
+      throw new SessionError("Cannot respond to permissions on a read-only session.", 409);
+    }
     const p = this.pending.get(requestId);
     if (!p) throw new SessionError("That permission request is no longer open.", 404);
     if (optionId === "cancel") return this.settle(requestId, { outcome: "cancelled" });
@@ -321,10 +336,109 @@ export class AgentSession {
     }
   }
 
-  private askOwner(params: acp.RequestPermissionRequest, signal: AbortSignal): Promise<acp.RequestPermissionResponse> {
-    if (this.ended || this.stopping) return Promise.resolve({ outcome: { outcome: "cancelled" } });
+  private async isLocationInsideSessionFolder(targetPath: string): Promise<boolean> {
+    try {
+      const realSession = await realpath(this.sessionFolder);
+      const absPath = resolve(realSession, targetPath);
+      const realTarget = await realpath(absPath);
+      const rel = relative(realSession, realTarget);
+      return !rel.startsWith("..") && !isAbsolute(rel);
+    } catch {
+      return false;
+    }
+  }
+
+  private async isReadOnlyToolCallAllowed(toolCall: acp.RequestPermissionRequest["toolCall"]): Promise<boolean> {
+    const kind = toolCall.kind;
+    if (kind === "think") {
+      const locs = toolCall.locations;
+      if (!locs || !Array.isArray(locs) || locs.length === 0) {
+        return true;
+      }
+      const checks = await Promise.all(
+        locs.map(async (l) => {
+          const p =
+            typeof l === "string"
+              ? l
+              : l && typeof l === "object" && typeof (l as { path?: unknown }).path === "string"
+                ? (l as { path: string }).path
+                : null;
+          if (!p || typeof p !== "string" || p.trim() === "") return false;
+          return this.isLocationInsideSessionFolder(p);
+        }),
+      );
+      return checks.every(Boolean);
+    }
+    if (kind === "read" || kind === "search") {
+      const locs = toolCall.locations;
+      if (!Array.isArray(locs) || locs.length === 0) {
+        return false;
+      }
+      const checks = await Promise.all(
+        locs.map(async (l) => {
+          const p =
+            typeof l === "string"
+              ? l
+              : l && typeof l === "object" && typeof (l as { path?: unknown }).path === "string"
+                ? (l as { path: string }).path
+                : null;
+          if (!p || typeof p !== "string" || p.trim() === "") return false;
+          return this.isLocationInsideSessionFolder(p);
+        }),
+      );
+      return checks.every(Boolean);
+    }
+    return false;
+  }
+
+  private async askOwner(params: acp.RequestPermissionRequest, signal: AbortSignal): Promise<acp.RequestPermissionResponse> {
+    if (this.ended || this.stopping) return { outcome: { outcome: "cancelled" } };
     const requestId = `perm-${++this.permissionSeq}`;
     const options = params.options.map((o) => ({ optionId: o.optionId, name: o.name, kind: o.kind }));
+
+    if (this.permissionPolicy === "read-only") {
+      this.emit({
+        type: "permission",
+        requestId,
+        title: params.toolCall.title ?? "Tool call",
+        ...(params.toolCall.kind ? { toolKind: params.toolCall.kind } : {}),
+        options,
+      });
+
+      const isAllowed = await this.isReadOnlyToolCallAllowed(params.toolCall);
+
+      let outcome: acp.RequestPermissionOutcome;
+      if (isAllowed) {
+        const allowOpt = options.find((o) => o.kind === "allow_once");
+        if (allowOpt) {
+          outcome = { outcome: "selected", optionId: allowOpt.optionId };
+        } else {
+          const rejectOpt =
+            options.find((o) => o.kind === "reject_once") ??
+            options.find((o) => o.kind === "reject_always");
+          outcome = rejectOpt
+            ? { outcome: "selected", optionId: rejectOpt.optionId }
+            : { outcome: "cancelled" };
+        }
+      } else {
+        const rejectOpt =
+          options.find((o) => o.kind === "reject_once") ??
+          options.find((o) => o.kind === "reject_always");
+        outcome = rejectOpt
+          ? { outcome: "selected", optionId: rejectOpt.optionId }
+          : { outcome: "cancelled" };
+      }
+
+      this.emit({
+        type: "permission_resolved",
+        requestId,
+        outcome: outcome.outcome,
+        ...(outcome.outcome === "selected" ? { optionId: outcome.optionId } : {}),
+      });
+
+      return { outcome };
+    }
+
     return new Promise((resolve) => {
       const timer = setTimeout(() => this.settle(requestId, { outcome: "cancelled" }), this.opts.permissionTimeoutMs);
       const onAbort = () => this.settle(requestId, { outcome: "cancelled" });
@@ -409,7 +523,11 @@ export class SessionManager {
    * Start an agent on a project. Every check runs before a process exists; any refusal
    * throws (SessionError with a status, or ProfileRuleError → 403) and starts nothing.
    */
-  async start(project: SessionProject, providerId: string): Promise<AgentSession> {
+  async start(
+    project: SessionProject,
+    providerId: string,
+    opts?: { permissionPolicy?: PermissionPolicy },
+  ): Promise<AgentSession> {
     const provider = this.opts.providers.find((p) => p.id === providerId);
     if (!provider) throw new SessionError(`No provider "${providerId}" in providers.json.`, 404);
     if (provider.kind !== "acp") throw new SessionError(`"${providerId}" isn't an ACP agent.`, 400);
@@ -432,7 +550,7 @@ export class SessionManager {
     this.starting++;
     try {
       await this.assertPinnedVersion(provider);
-      return await this.launch(project, provider, folder);
+      return await this.launch(project, provider, folder, opts?.permissionPolicy ?? "ask-owner");
     } finally {
       this.starting--;
     }
@@ -485,7 +603,12 @@ export class SessionManager {
     }
   }
 
-  private async launch(project: SessionProject, provider: ProviderEntry, folder: string): Promise<AgentSession> {
+  private async launch(
+    project: SessionProject,
+    provider: ProviderEntry,
+    folder: string,
+    permissionPolicy: PermissionPolicy = "ask-owner",
+  ): Promise<AgentSession> {
     const child = spawn(provider.command, provider.args, {
       cwd: folder,
       env: agentEnv(),
@@ -495,7 +618,7 @@ export class SessionManager {
       stdio: ["pipe", "pipe", "pipe"],
     });
     if (child.pid) trackGroup(child.pid);
-    const session = new AgentSession(project, provider.id, child, this.opts, (s) => {
+    const session = new AgentSession(project, provider.id, child, { ...this.opts, permissionPolicy }, (s) => {
       if (this.sessions.delete(s.id)) this.changed();
     });
     // Before the session does any I/O, so start-up output and failures are logged too.

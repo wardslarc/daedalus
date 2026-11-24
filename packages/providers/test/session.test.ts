@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -212,6 +212,112 @@ describe("AgentSession", () => {
     const s = await make().start(project(), "claude");
     await s.stop();
     await expect(s.prompt("echo hi")).rejects.toBeInstanceOf(SessionError);
+  });
+});
+
+describe("PermissionPolicy: read-only", () => {
+  it("read-only policy: answers edit with reject, no kind with reject", async () => {
+    const s = await make().start(project(), "claude", { permissionPolicy: "read-only" });
+    expect(s.policy).toBe("read-only");
+    expect(s.permissionPolicy).toBe("read-only");
+
+    // edit request -> denied (reject_once)
+    const doneEdit = waitFor(s, (e) => e.type === "turn_end");
+    await s.prompt("permission-kind edit");
+    expect(text(await doneEdit)).toBe("denied");
+
+    // no kind -> denied (reject_once)
+    const doneNone = waitFor(s, (e) => e.type === "turn_end");
+    await s.prompt("permission-kind none");
+    expect(text(await doneNone)).toBe("denied");
+  });
+
+  it("read-only policy: read inside allowed, read ../outside and symlink pointing outside rejected, read with no locations rejected, think with no locations allowed", async () => {
+    const p = project();
+    const insideFile = join(p.localPath, "inside.txt");
+    writeFileSync(insideFile, "inside content\n");
+
+    const outsideDir = mkdtempSync(join(tmpdir(), "outside-dir-"));
+    const outsideFile = join(outsideDir, "outside.txt");
+    writeFileSync(outsideFile, "outside content\n");
+
+    const symlinkFile = join(p.localPath, "symlink-outside");
+    symlinkSync(outsideFile, symlinkFile);
+
+    try {
+      const s = await make().start(p, "claude", { permissionPolicy: "read-only" });
+
+      // read inside -> allowed
+      const doneInside = waitFor(s, (e) => e.type === "turn_end");
+      await s.prompt(`permission-kind read ${insideFile}`);
+      expect(text(await doneInside)).toBe("allowed");
+
+      // read of ../outside -> rejected (denied)
+      const doneOutside = waitFor(s, (e) => e.type === "turn_end");
+      await s.prompt("permission-kind read ../outside");
+      expect(text(await doneOutside)).toBe("denied");
+
+      // read of symlink pointing outside -> rejected (denied)
+      const doneSymlink = waitFor(s, (e) => e.type === "turn_end");
+      await s.prompt(`permission-kind read ${symlinkFile}`);
+      expect(text(await doneSymlink)).toBe("denied");
+
+      // read with no locations -> rejected (denied)
+      const doneNoLoc = waitFor(s, (e) => e.type === "turn_end");
+      await s.prompt("permission-kind read");
+      expect(text(await doneNoLoc)).toBe("denied");
+
+      // think with no locations -> allowed
+      const doneThink = waitFor(s, (e) => e.type === "turn_end");
+      await s.prompt("permission-kind think");
+      expect(text(await doneThink)).toBe("allowed");
+    } finally {
+      try {
+        rmSync(outsideDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+      try {
+        rmSync(p.localPath, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  it("owner is never asked in read-only and respondPermission throws 409", async () => {
+    const s = await make().start(project(), "claude", { permissionPolicy: "read-only" });
+    const events: AgentEvent[] = [];
+    s.onEvent((e) => events.push(e));
+
+    const done = waitFor(s, (e) => e.type === "turn_end");
+    await s.prompt("permission-kind edit");
+    await done;
+
+    // Both permission and permission_resolved events emitted
+    expect(events.some((e) => e.type === "permission")).toBe(true);
+    expect(events.some((e) => e.type === "permission_resolved")).toBe(true);
+
+    // respondPermission throws 409
+    expect(() => s.respondPermission("perm-1", "allow")).toThrow(SessionError);
+    try {
+      s.respondPermission("perm-1", "allow");
+    } catch (err) {
+      expect((err as SessionError).status).toBe(409);
+    }
+  });
+
+  it("ask-owner policy is default and unchanged", async () => {
+    const s = await make().start(project(), "claude");
+    expect(s.policy).toBe("ask-owner");
+    expect(s.permissionPolicy).toBe("ask-owner");
+
+    const asked = waitFor(s, (e) => e.type === "permission");
+    const done = waitFor(s, (e) => e.type === "turn_end");
+    void s.prompt("permission");
+    const req = (await asked).at(-1) as Extract<AgentEvent, { type: "permission" }>;
+    s.respondPermission(req.requestId, req.options.find((o) => o.kind === "allow_once")!.optionId);
+    expect(text(await done)).toBe("allowed");
   });
 });
 
