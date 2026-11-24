@@ -348,12 +348,49 @@ export async function getReview(
       numTokens.pop();
     }
 
-    let nameIdx = 0;
-    let numIdx = 0;
+    interface NumstatEntry {
+      additions: number;
+      deletions: number;
+      binary: boolean;
+    }
+    const numstatMap = new Map<string, NumstatEntry>();
 
+    let numIdx = 0;
+    while (numIdx < numTokens.length) {
+      const token = numTokens[numIdx++];
+      if (!token) continue;
+
+      const parts = token.split("\t");
+      if (parts.length < 2) {
+        throw new Error("truncated numstat record");
+      }
+
+      const addStr = parts[0]?.trim();
+      const delStr = parts[1]?.trim();
+      const isBinary = addStr === "-" || delStr === "-";
+      const additions = isBinary ? 0 : parseInt(addStr ?? "0", 10) || 0;
+      const deletions = isBinary ? 0 : parseInt(delStr ?? "0", 10) || 0;
+
+      let newPath: string;
+      const rest = parts.slice(2).join("\t");
+      if (rest !== "") {
+        newPath = rest;
+      } else {
+        const rawOld = numTokens[numIdx++];
+        const rawNew = numTokens[numIdx++];
+        if (rawOld === undefined || rawNew === undefined) {
+          throw new Error("truncated numstat record");
+        }
+        newPath = rawNew;
+      }
+
+      numstatMap.set(newPath, { additions, deletions, binary: isBinary });
+    }
+
+    let nameIdx = 0;
     while (nameIdx < nameTokens.length) {
       const rawStatus = nameTokens[nameIdx++];
-      if (!rawStatus) break;
+      if (!rawStatus) continue;
       const statusChar = rawStatus[0];
       const isRenameOrCopy = statusChar === "R" || statusChar === "C";
 
@@ -361,36 +398,33 @@ export async function getReview(
       let filePath: string;
 
       if (isRenameOrCopy) {
-        oldPath = nameTokens[nameIdx++];
-        filePath = nameTokens[nameIdx++];
+        const rawOld = nameTokens[nameIdx++];
+        const rawNew = nameTokens[nameIdx++];
+        if (rawOld === undefined || rawNew === undefined) {
+          throw new Error("truncated name-status record");
+        }
+        oldPath = rawOld;
+        filePath = rawNew;
       } else {
-        filePath = nameTokens[nameIdx++];
+        const rawPath = nameTokens[nameIdx++];
+        if (rawPath === undefined) {
+          throw new Error("truncated name-status record");
+        }
+        filePath = rawPath;
       }
 
       let additions = 0;
       let deletions = 0;
 
-      if (numIdx < numTokens.length) {
-        const numLine = numTokens[numIdx++];
-        const numParts = numLine.split("\t");
-        const addStr = numParts[0]?.trim();
-        const delStr = numParts[1]?.trim();
-
-        if (addStr === "-" || delStr === "-") {
-          binaryPaths.add(filePath);
-          if (oldPath) binaryPaths.add(oldPath);
-          additions = 0;
-          deletions = 0;
-        } else {
-          additions = parseInt(addStr ?? "0", 10) || 0;
-          deletions = parseInt(delStr ?? "0", 10) || 0;
-        }
-
-        if (isRenameOrCopy) {
-          numIdx += 2;
-        } else {
-          numIdx += 1;
-        }
+      const numstat = numstatMap.get(filePath);
+      if (!numstat || numstat.binary) {
+        binaryPaths.add(filePath);
+        if (oldPath) binaryPaths.add(oldPath);
+        additions = 0;
+        deletions = 0;
+      } else {
+        additions = numstat.additions;
+        deletions = numstat.deletions;
       }
 
       let status: "A" | "M" | "D" | "R" = "M";
@@ -416,6 +450,7 @@ export async function getReview(
   } catch (err) {
     diffError = (err instanceof Error ? err.message : String(err)).trim();
     rawPatch = "";
+    files.length = 0;
   }
 
   // Scan added lines for secrets from the unredacted patch

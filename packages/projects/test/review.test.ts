@@ -1288,4 +1288,192 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     expect(file?.additions).toBe(2);
     expect(file?.deletions).toBe(0);
   });
+
+  it("diff with a renamed file between two modified files, plus a third modified file -> every file has the right counts", async () => {
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    const baseContent = Array.from({ length: 10 }, (_, i) => `base line ${i + 1}`).join("\n") + "\n";
+    writeFileSync(join(repoDir, "a-mod.txt"), "line 1\nline 2\nline 3\n");
+    writeFileSync(join(repoDir, "m-old.txt"), baseContent);
+    writeFileSync(join(repoDir, "s-mod.txt"), "s line 1\ns line 2\n");
+    writeFileSync(join(repoDir, "z-mod.txt"), "z line 1\nz line 2\nz line 3\nz line 4\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "setup files for rename and modified test");
+
+    git(repoDir, "checkout", "-b", "daedalus/t-rename-counts", "daedalus/release-v1.0");
+
+    // Modified file 1: a-mod.txt (2 additions, 1 deletion)
+    writeFileSync(join(repoDir, "a-mod.txt"), "line 1\nmodified line 2\nline 3\nadded line 4\n");
+
+    // Renamed file between two modified files: m-old.txt -> m-renamed.txt (3 additions, 0 deletions)
+    git(repoDir, "mv", "m-old.txt", "m-renamed.txt");
+    writeFileSync(join(repoDir, "m-renamed.txt"), baseContent + "extra 1\nextra 2\nextra 3\n");
+
+    // Modified file 2: s-mod.txt (1 addition, 0 deletions)
+    writeFileSync(join(repoDir, "s-mod.txt"), "s line 1\ns line 2\ns line 3\n");
+
+    // Modified file 3: z-mod.txt (0 additions, 2 deletions)
+    writeFileSync(join(repoDir, "z-mod.txt"), "z line 1\nz line 2\n");
+
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "task changes with rename and 3 modified files");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-RENAME-COUNTS",
+        title: "Rename Counts Task",
+        status: "in-review",
+        branch: "daedalus/t-rename-counts",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-RENAME-COUNTS");
+    expect(review.diff.files.length).toBe(4);
+
+    const aFile = review.diff.files.find((f) => f.path === "a-mod.txt");
+    expect(aFile).toBeDefined();
+    expect(aFile?.status).toBe("M");
+    expect(aFile?.additions).toBe(2);
+    expect(aFile?.deletions).toBe(1);
+
+    const mFile = review.diff.files.find((f) => f.path === "m-renamed.txt");
+    expect(mFile).toBeDefined();
+    expect(mFile?.status).toBe("R");
+    expect(mFile?.oldPath).toBe("m-old.txt");
+    expect(mFile?.additions).toBe(3);
+    expect(mFile?.deletions).toBe(0);
+
+    const sFile = review.diff.files.find((f) => f.path === "s-mod.txt");
+    expect(sFile).toBeDefined();
+    expect(sFile?.status).toBe("M");
+    expect(sFile?.additions).toBe(1);
+    expect(sFile?.deletions).toBe(0);
+
+    const zFile = review.diff.files.find((f) => f.path === "z-mod.txt");
+    expect(zFile).toBeDefined();
+    expect(zFile?.status).toBe("M");
+    expect(zFile?.additions).toBe(0);
+    expect(zFile?.deletions).toBe(2);
+  });
+
+  it("truncated name-status record makes diff unreadable and blocks secrets gate", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-trunc-name", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "trunc.txt"), "line\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "commit trunc test");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-TRUNC-NAME",
+        title: "Truncated Name Task",
+        status: "in-review",
+        branch: "daedalus/t-trunc-name",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const truncatedGitOps = {
+      execGit: async (args: string[]) => {
+        if (args.includes("--name-status")) {
+          return { stdout: "R100\0only-old-path.txt\0", stderr: "" };
+        }
+        if (args.includes("--numstat")) {
+          return { stdout: "0\t0\t\0only-old-path.txt\0dest.txt\0", stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      },
+    };
+
+    const review = await getReview(db, projectRow, "T-TRUNC-NAME", {
+      gitOps: truncatedGitOps,
+    });
+
+    const secretGate = review.gates.find((g) => g.id === "secrets");
+    expect(secretGate?.status).toBe("blocked");
+    expect(secretGate?.items[0]).toContain("diff unavailable: truncated name-status record");
+    expect(review.diff.files.length).toBe(0);
+  });
+
+  it("name-status entry missing from numstat map is treated as binary/not scanned (needs-ack)", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-missing-numstat", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "missing.txt"), "hello\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "commit missing numstat test");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-MISSING-NUMSTAT",
+        title: "Missing Numstat Task",
+        status: "in-review",
+        branch: "daedalus/t-missing-numstat",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const missingNumstatGitOps = {
+      execGit: async (args: string[]) => {
+        if (args.includes("--name-status")) {
+          return { stdout: "M\0missing.txt\0", stderr: "" };
+        }
+        if (args.includes("--numstat")) {
+          return { stdout: "", stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      },
+    };
+
+    const review = await getReview(db, projectRow, "T-MISSING-NUMSTAT", {
+      gitOps: missingNumstatGitOps,
+    });
+
+    const secretGate = review.gates.find((g) => g.id === "secrets");
+    expect(secretGate?.status).toBe("needs-ack");
+    expect(secretGate?.items).toContain("missing.txt: binary or attribute change, not scanned");
+    const file = review.diff.files.find((f) => f.path === "missing.txt");
+    expect(file).toBeDefined();
+    expect(file?.additions).toBe(0);
+    expect(file?.deletions).toBe(0);
+  });
 });
