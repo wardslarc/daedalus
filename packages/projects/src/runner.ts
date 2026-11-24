@@ -102,6 +102,23 @@ export type RunTaskResult = {
   checkResult: CheckResult;
 };
 
+export type LastCheckInfo = {
+  ok: boolean;
+  exitCode: number | null;
+  output: string;
+};
+
+export const globalCheckResults = new Map<string, LastCheckInfo>();
+
+export function recordCheckResult(projectId: number, taskCode: string, result: LastCheckInfo): void {
+  globalCheckResults.set(`${projectId}:${taskCode.toLowerCase()}`, result);
+}
+
+export function getRecordedCheckResult(projectId: number, taskCode: string): LastCheckInfo | undefined {
+  return globalCheckResults.get(`${projectId}:${taskCode.toLowerCase()}`);
+}
+
+
 const defaultGitOps: TaskRunnerGitOps = {
   validateBranchName,
   addWorktree,
@@ -122,6 +139,7 @@ const DEFAULT_PROMPT_TEMPLATE = `<!-- Placeholder task prompt until the owner's 
 ## Linked Spec Sections
 {{SPEC_LINKS}}
 
+{{REVIEW_NOTES}}
 Please implement this task in the workspace. Ensure all checks pass before finishing.
 `;
 
@@ -409,12 +427,17 @@ export class TaskRunner {
         .map((s) => `[[SPEC#${s}]]`)
         .join(" ");
 
+      const reviewNotesText = task.reviewNotes
+        ? `## Review Notes\n${task.reviewNotes}\n\n`
+        : "";
+
       const prompt = template
         .replaceAll("{{CODE}}", task.code)
         .replaceAll("{{TITLE}}", task.title)
         .replaceAll("{{DESCRIPTION}}", taskDescription)
         .replaceAll("{{CHECK_COMMAND}}", task.checkCommand)
-        .replaceAll("{{SPEC_LINKS}}", specLinks);
+        .replaceAll("{{SPEC_LINKS}}", specLinks)
+        .replaceAll("{{REVIEW_NOTES}}", reviewNotesText);
 
       await session.prompt(prompt);
 
@@ -424,6 +447,11 @@ export class TaskRunner {
       });
 
       this.lastCheckOutputs.set(runKey, checkRes.output);
+      recordCheckResult(projectId, task.code, {
+        ok: checkRes.ok,
+        exitCode: checkRes.exitCode,
+        output: checkRes.output,
+      });
 
       let currentStatus = startTrans.state.status;
       let currentAttempts = startTrans.state.attempts;
@@ -485,6 +513,11 @@ export class TaskRunner {
             timeoutMs: this.checkTimeoutMs,
           });
           this.lastCheckOutputs.set(runKey, checkRes.output);
+          recordCheckResult(projectId, task.code, {
+            ok: checkRes.ok,
+            exitCode: checkRes.exitCode,
+            output: checkRes.output,
+          });
 
           if (checkRes.ok) {
             commitSha = await this.gitOps.commitAll(

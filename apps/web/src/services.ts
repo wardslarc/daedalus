@@ -6,8 +6,9 @@
  * survives Next's dev reloads).
  */
 import type { DaedalusDb, projects } from "@daedalus/db";
-import type { ApproveMockInput, ApprovePlanInput, ApproveSpecInput, BrowseResult, CreateInput, createProject, ImportInput, importProject, mergeKit, MilestoneState, MockApproval, ParsedMilestone, PipelineTask, RunTaskResult, SaveIntakeInput, ShapingState, StartMilestoneInput, TaskRunner } from "@daedalus/projects";
+import type { ApproveMockInput, ApprovePlanInput, ApproveSpecInput, BrowseResult, CreateInput, createProject, ImportInput, importProject, mergeKit, MilestoneState, MockApproval, ParsedMilestone, PipelineTask, ReviewData, RunTaskResult, SaveIntakeInput, ShapingState, StartMilestoneInput, TaskRunner } from "@daedalus/projects";
 import type { ProfileRules } from "@daedalus/core/profiles";
+import type { TaskStatus } from "@daedalus/core/task-state";
 import type { ProviderEntry, SessionManager } from "@daedalus/providers";
 import type { SessionInfo, TerminalInfo } from "./ws/protocol.js";
 import type { TerminalManager } from "./terminal.js";
@@ -102,6 +103,23 @@ export type Services = SessionServices & {
   listRunning(): Array<{ projectId: number; taskCode: string; taskId: number }>;
   /** Task runner instance (T5.3). */
   runner: TaskRunner;
+  /** Get review data for a task (T6.1). 404 if no such project or task. */
+  getReview(projectId: number, taskCode: string): Promise<ReviewData>;
+  /** List all in-review tasks for a project (T6.1). 404 if no such project. */
+  listInReviewTasks(projectId: number): Promise<Array<typeof tasks.$inferSelect>>;
+  /** Approve task into release branch (T6.1). */
+  approveTask(projectId: number, taskCode: string): Promise<{ sha: string; status: TaskStatus }>;
+  /** Send back task with notes (T6.1). */
+  sendBack(projectId: number, taskCode: string, notes: string): Promise<{ status: TaskStatus }>;
+  /** Discard task, delete branch and worktree, clear notes (T6.1). */
+  discardTask(projectId: number, taskCode: string): Promise<{ status: TaskStatus }>;
+  /** Acknowledge a needs-ack gate (T6.1). */
+  ackGate(
+    projectId: number,
+    taskCode: string,
+    gateId: string,
+    note: string,
+  ): Promise<{ gate: string; note: string; ackedAt: string }>;
 };
 
 export type SessionServices = {

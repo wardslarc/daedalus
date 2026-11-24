@@ -70,6 +70,7 @@ export const tasks = sqliteTable(
     branch: text("branch"),
     frozenAt: text("frozen_at"),
     milestoneCode: text("milestone_code"),
+    reviewNotes: text("review_notes"),
     createdAt: text("created_at")
       .notNull()
       .default(sql`(CURRENT_TIMESTAMP)`),
@@ -122,6 +123,25 @@ export const reviews = sqliteTable("reviews", {
     .notNull()
     .default(sql`(CURRENT_TIMESTAMP)`),
 });
+
+export const reviewAcks = sqliteTable(
+  "review_acks",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    taskId: integer("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    gate: text("gate").notNull(),
+    ackedAt: text("acked_at")
+      .notNull()
+      .default(sql`(CURRENT_TIMESTAMP)`),
+    note: text("note").notNull(),
+  },
+  (table) => [
+    unique("review_acks_task_id_gate_unique").on(table.taskId, table.gate),
+  ],
+);
+
 
 export const usage = sqliteTable(
   "usage",

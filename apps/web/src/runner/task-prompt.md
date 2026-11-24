@@ -10,4 +10,5 @@
 ## Linked Spec Sections
 {{SPEC_LINKS}}
 
+{{REVIEW_NOTES}}
 Please implement this task in the workspace. Ensure all checks pass before finishing.
