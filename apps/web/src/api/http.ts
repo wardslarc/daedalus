@@ -53,12 +53,17 @@ export function toErrorResponse(err: unknown): Response {
       e.name === "ImportError" ||
       e.name === "SessionError" ||
       e.name === "TerminalError" ||
-      e.name === "ShapingError") &&
+      e.name === "ShapingError" ||
+      e.name === "TaskRunnerError" ||
+      e.name === "CheckExecError") &&
     typeof e.status === "number"
   ) {
     return jsonResponse(e.status, { error: message });
   }
   if (e.name === "ProfileRuleError") return jsonResponse(403, { error: message });
+  if (e.name === "NotImplementedError") {
+    return jsonResponse(503, { error: message || "Needs the task state machine (T5.2)" });
+  }
   console.error("[api] unexpected error:", err);
   return jsonResponse(500, { error: "Something went wrong on the Daedalus server. Check its terminal for details." });
 }

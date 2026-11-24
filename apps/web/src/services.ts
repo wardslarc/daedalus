@@ -6,7 +6,7 @@
  * survives Next's dev reloads).
  */
 import type { DaedalusDb, projects } from "@daedalus/db";
-import type { ApproveMockInput, ApprovePlanInput, ApproveSpecInput, BrowseResult, CreateInput, createProject, ImportInput, importProject, mergeKit, MilestoneState, MockApproval, ParsedMilestone, PipelineTask, SaveIntakeInput, ShapingState, StartMilestoneInput } from "@daedalus/projects";
+import type { ApproveMockInput, ApprovePlanInput, ApproveSpecInput, BrowseResult, CreateInput, createProject, ImportInput, importProject, mergeKit, MilestoneState, MockApproval, ParsedMilestone, PipelineTask, RunTaskResult, SaveIntakeInput, ShapingState, StartMilestoneInput, TaskRunner } from "@daedalus/projects";
 import type { ProfileRules } from "@daedalus/core/profiles";
 import type { ProviderEntry, SessionManager } from "@daedalus/providers";
 import type { SessionInfo, TerminalInfo } from "./ws/protocol.js";
@@ -23,13 +23,20 @@ export type ProjectChatInfo = ShapingState & {
 
 export type PipelineStage = "Intake" | "Spec" | "Mock" | "Plan" | "Build" | "Review" | "Verify" | "Ship";
 
+export type EnrichedPipelineTask = PipelineTask & {
+  lastCheckOutput?: string | null;
+  runnable?: boolean;
+  disabledReason?: string | null;
+};
+
 export type ProjectPipelineInfo = {
   project: typeof projects.$inferSelect;
   rules: ProfileRules & { effectiveGemini: boolean };
   stage: PipelineStage;
   activeMilestone: MilestoneState | null;
   milestones: ParsedMilestone[];
-  tasks: PipelineTask[];
+  tasks: EnrichedPipelineTask[];
+  runningTasksCount?: number;
 };
 
 export type UpdateSettingsInput = {
@@ -89,6 +96,12 @@ export type Services = SessionServices & {
   ): Promise<ShapingState & { ok: true; milestone: MilestoneState }>;
   /** Get project pipeline, milestone tasks, and stage (T5.1). 404 if no such project. */
   getProjectPipeline(projectId: number): Promise<ProjectPipelineInfo>;
+  /** Run a task in an isolated worktree with automated check execution (T5.3). */
+  runTask(projectId: number, taskCode: string): Promise<RunTaskResult>;
+  /** List running tasks across all projects (T5.3). */
+  listRunning(): Array<{ projectId: number; taskCode: string; taskId: number }>;
+  /** Task runner instance (T5.3). */
+  runner: TaskRunner;
 };
 
 export type SessionServices = {

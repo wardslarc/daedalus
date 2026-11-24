@@ -5,9 +5,17 @@
   "type": "module",
   "description": "Daedalus core rules: profiles (and later the queue and quota)",
   "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    },
     "./profiles": {
       "import": "./src/profiles.ts",
       "types": "./src/profiles.ts"
+    },
+    "./task-state": {
+      "import": "./src/task-state.ts",
+      "types": "./src/task-state.ts"
     }
   },
   "scripts": {

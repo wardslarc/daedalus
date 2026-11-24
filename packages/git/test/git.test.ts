@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import {
   branchExists,
   checkout,
   clone,
+  commitAll,
   commitFiles,
   createBranch,
   currentBranch,
@@ -493,6 +494,96 @@ describe("@daedalus/git", () => {
       // With noVerify: true, commit succeeds
       const sha = await commitFiles(repoDir, ["f.txt"], "bypassed hook commit", { noVerify: true });
       expect(sha).toMatch(/^[0-9a-f]{40}$/);
+    });
+  });
+
+  describe("commitAll", () => {
+    it("stages all changes, commits them, and returns commit sha", async () => {
+      const repoDir = tempDir("commit-all-repo-");
+      await init(repoDir, { initialBranch: "main" });
+      setGitUser(repoDir);
+
+      writeFileSync(join(repoDir, "a.txt"), "hello");
+      writeFileSync(join(repoDir, "b.txt"), "world");
+
+      const sha = await commitAll(repoDir, "T1.1: Core implementation (Daedalus task run)");
+      expect(sha).toMatch(/^[0-9a-f]{40}$/);
+
+      const entries = await log(repoDir, "HEAD", 1);
+      expect(entries[0]?.sha).toBe(sha);
+      expect(entries[0]?.subject).toBe("T1.1: Core implementation (Daedalus task run)");
+    });
+
+    it("returns null when nothing has changed", async () => {
+      const repoDir = tempDir("commit-all-empty-");
+      await init(repoDir, { initialBranch: "main" });
+      setGitUser(repoDir);
+
+      writeFileSync(join(repoDir, "init.txt"), "initial");
+      await commitAll(repoDir, "initial");
+
+      const sha = await commitAll(repoDir, "T1.1: Nothing changed (Daedalus task run)");
+      expect(sha).toBeNull();
+    });
+
+    it("never commits .env files even when written by agent", async () => {
+      const repoDir = tempDir("commit-all-env-");
+      await init(repoDir, { initialBranch: "main" });
+      setGitUser(repoDir);
+
+      writeFileSync(join(repoDir, "code.ts"), "export const x = 1;");
+      writeFileSync(join(repoDir, ".env"), "SECRET=planted");
+      writeFileSync(join(repoDir, ".env.local"), "SECRET_LOCAL=planted");
+
+      const subDir = join(repoDir, "subdir");
+      mkdirSync(subDir, { recursive: true });
+      writeFileSync(join(subDir, ".env.production"), "SECRET_PROD=planted");
+      writeFileSync(join(subDir, "nested.ts"), "export const y = 2;");
+
+      const sha = await commitAll(repoDir, "T1.1: Task run (Daedalus task run)");
+      expect(sha).toMatch(/^[0-9a-f]{40}$/);
+
+      // Check log files committed using git ls-tree
+      const entries = await log(repoDir, "HEAD", 1);
+      expect(entries[0]?.sha).toBe(sha);
+
+      const lsTreeRes = execFileSync("git", ["ls-tree", "-r", "--name-only", "HEAD"], {
+        cwd: repoDir,
+        encoding: "utf8",
+      });
+      const committedFiles = lsTreeRes.trim().split("\n");
+
+      expect(committedFiles).toContain("code.ts");
+      expect(committedFiles).toContain("subdir/nested.ts");
+      expect(committedFiles).not.toContain(".env");
+      expect(committedFiles).not.toContain(".env.local");
+      expect(committedFiles).not.toContain("subdir/.env.production");
+    });
+
+    it("rejects empty commit message", async () => {
+      const repoDir = tempDir("commit-all-err-");
+      await init(repoDir, { initialBranch: "main" });
+      await expect(commitAll(repoDir, "")).rejects.toThrow(GitError);
+    });
+
+    it("bypasses pre-commit hook when noVerify is true", async () => {
+      const repoDir = tempDir("commit-all-noverify-");
+      await init(repoDir, { initialBranch: "main" });
+      setGitUser(repoDir);
+
+      const markerFile = join(repoDir, "hook-marker.txt");
+      const hooksDir = join(repoDir, ".git", "hooks");
+      const hookPath = join(hooksDir, "pre-commit");
+      writeFileSync(
+        hookPath,
+        `#!/bin/sh\necho "hook ran" > "${markerFile}"\n`,
+        { mode: 0o755 },
+      );
+
+      writeFileSync(join(repoDir, "file.txt"), "hello");
+      const sha = await commitAll(repoDir, "Commit with no-verify", { noVerify: true });
+      expect(sha).toMatch(/^[0-9a-f]{40}$/);
+      expect(existsSync(markerFile)).toBe(false);
     });
   });
 });

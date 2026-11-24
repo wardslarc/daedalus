@@ -68,6 +68,8 @@ export const tasks = sqliteTable(
       .default(sql`'[]'`),
     attempts: integer("attempts").notNull().default(0),
     branch: text("branch"),
+    frozenAt: text("frozen_at"),
+    milestoneCode: text("milestone_code"),
     createdAt: text("created_at")
       .notNull()
       .default(sql`(CURRENT_TIMESTAMP)`),

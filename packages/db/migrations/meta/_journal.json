@@ -29,6 +29,13 @@
       "when": 1795421507911,
       "tag": "0003_far_supernaut",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1795487295952,
+      "tag": "0004_same_mercury",
+      "breakpoints": true
     }
   ]
 }
