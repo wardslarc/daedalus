@@ -176,7 +176,7 @@ export function isGitAttributesPath(filePath: string): boolean {
   return base === ".gitattributes";
 }
 
-export const REVIEW_GIT_ENV: NodeJS.ProcessEnv = {
+export const REVIEW_GIT_ENV: Record<string, string> = {
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_GLOBAL: "/dev/null",
 };
@@ -330,12 +330,20 @@ export async function getReview(
   try {
     const nameStatusRes = await runExecGit(
       buildReviewDiffArgs(["--name-status", "-z"], `${releaseBranch}...${taskBranch}`),
-      { cwd: project.localPath, env: REVIEW_GIT_ENV },
+      {
+        cwd: project.localPath,
+        // Cast only: Next.js types make NODE_ENV a required key of ProcessEnv.
+        env: REVIEW_GIT_ENV as NodeJS.ProcessEnv,
+      },
     );
 
     const numstatRes = await runExecGit(
       buildReviewDiffArgs(["--numstat", "-z"], `${releaseBranch}...${taskBranch}`),
-      { cwd: project.localPath, env: REVIEW_GIT_ENV },
+      {
+        cwd: project.localPath,
+        // Cast only: Next.js types make NODE_ENV a required key of ProcessEnv.
+        env: REVIEW_GIT_ENV as NodeJS.ProcessEnv,
+      },
     );
 
     const nameTokens = nameStatusRes.stdout ? nameStatusRes.stdout.split("\0") : [];
@@ -444,7 +452,12 @@ export async function getReview(
 
     const patchRes = await runExecGit(
       buildReviewDiffArgs([], `${releaseBranch}...${taskBranch}`),
-      { cwd: project.localPath, maxBuffer: SIXTY_FOUR_MIB, env: REVIEW_GIT_ENV },
+      {
+        cwd: project.localPath,
+        maxBuffer: SIXTY_FOUR_MIB,
+        // Cast only: Next.js types make NODE_ENV a required key of ProcessEnv.
+        env: REVIEW_GIT_ENV as NodeJS.ProcessEnv,
+      },
     );
     rawPatch = patchRes.stdout;
   } catch (err) {
