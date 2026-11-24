@@ -1017,4 +1017,275 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     const checkGate = review.gates.find((g) => g.id === "check");
     expect(checkGate?.status).toBe("pass");
   });
+
+  // --- Security Fix: Git config, gitattributes and renames bypass fixes ---
+
+  it(".gitattributes 'secret.txt binary' + a secret in secret.txt -> secrets gate blocked (secret found) and the .gitattributes item listed as needs-ack", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-sec-gitattr", "daedalus/release-v1.0");
+
+    const secretKey = "sk-ant-api03-plantedsecretkey1234567890abcdef";
+    writeFileSync(join(repoDir, ".gitattributes"), "secret.txt binary\n");
+    writeFileSync(join(repoDir, "secret.txt"), `export const API_KEY = "${secretKey}";\n`);
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "add secret with gitattributes");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-SEC-GA",
+        title: "Gitattributes Secret Task",
+        status: "in-review",
+        branch: "daedalus/t-sec-gitattr",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-SEC-GA");
+    const secretGate = review.gates.find((g) => g.id === "secrets");
+    expect(secretGate).toBeDefined();
+    expect(secretGate?.status).toBe("blocked");
+    expect(secretGate?.items).toContain("secret.txt:1");
+    expect(secretGate?.items).toContain(".gitattributes: changes how git shows diffs");
+
+    await expect(approveTask(db, projectRow, "T-SEC-GA", { dataDir })).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/gate 'secrets' is blocked/i),
+    });
+  });
+
+  it("repo-local git config color.diff always and diff.noprefix true -> a secret on an added line is still found with the right file and line", async () => {
+    git(repoDir, "config", "color.diff", "always");
+    git(repoDir, "config", "diff.noprefix", "true");
+
+    git(repoDir, "checkout", "-b", "daedalus/t-sec-cfg", "daedalus/release-v1.0");
+    const secretKey = "sk-ant-api03-plantedsecretkey1234567890abcdef";
+    writeFileSync(join(repoDir, "config-test.ts"), `const key = "${secretKey}";\n`);
+    git(repoDir, "add", "config-test.ts");
+    git(repoDir, "commit", "-m", "add secret under custom config");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-SEC-CFG",
+        title: "Config Secret Task",
+        status: "in-review",
+        branch: "daedalus/t-sec-cfg",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-SEC-CFG");
+    const secretGate = review.gates.find((g) => g.id === "secrets");
+    expect(secretGate).toBeDefined();
+    expect(secretGate?.status).toBe("blocked");
+    expect(secretGate?.items).toContain("config-test.ts:1");
+  });
+
+  it("a real binary file (bytes with NUL) added -> secrets gate lists it as not scanned (needs-ack), never pass", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-sec-bin", "daedalus/release-v1.0");
+    const binBuffer = Buffer.from([0x00, 0x01, 0x02, 0x03, 0xff, 0xfe, 0x00, 0xaa]);
+    writeFileSync(join(repoDir, "sample.bin"), binBuffer);
+    git(repoDir, "add", "sample.bin");
+    git(repoDir, "commit", "-m", "add binary file");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-SEC-BIN",
+        title: "Binary File Task",
+        status: "in-review",
+        branch: "daedalus/t-sec-bin",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-SEC-BIN");
+    const secretGate = review.gates.find((g) => g.id === "secrets");
+    expect(secretGate).toBeDefined();
+    expect(secretGate?.status).toBe("needs-ack");
+    expect(secretGate?.items).toContain("sample.bin: binary or attribute change, not scanned");
+
+    // Approval fails because unacknowledged
+    await expect(approveTask(db, projectRow, "T-SEC-BIN", { dataDir })).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/gate 'secrets' requires acknowledgement/i),
+    });
+
+    // Acknowledge the gate
+    await ackGate(db, projectRow, "T-SEC-BIN", "secrets", "Verified binary sample asset");
+    const reviewAfterAck = await getReview(db, projectRow, "T-SEC-BIN");
+    const secretGateAfter = reviewAfterAck.gates.find((g) => g.id === "secrets");
+    expect(secretGateAfter?.ack?.note).toBe("Verified binary sample asset");
+  });
+
+  it("git mv test/a.test.ts src/a.ts -> tests gate needs-ack listing it; file entry has oldPath", async () => {
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    mkdirSync(join(repoDir, "test"), { recursive: true });
+    writeFileSync(join(repoDir, "test", "a.test.ts"), "describe('a', () => {});\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "add a.test.ts on release branch");
+
+    git(repoDir, "checkout", "-b", "daedalus/t-mv-test", "daedalus/release-v1.0");
+    mkdirSync(join(repoDir, "src"), { recursive: true });
+    git(repoDir, "mv", "test/a.test.ts", "src/a.ts");
+    git(repoDir, "commit", "-m", "move test to src");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-MV-TEST",
+        title: "Move Test Task",
+        status: "in-review",
+        branch: "daedalus/t-mv-test",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-MV-TEST");
+    const testGate = review.gates.find((g) => g.id === "tests");
+    expect(testGate?.status).toBe("needs-ack");
+    expect(testGate?.items).toContain("src/a.ts");
+
+    const file = review.diff.files.find((f) => f.path === "src/a.ts");
+    expect(file).toBeDefined();
+    expect(file?.status).toBe("R");
+    expect(file?.oldPath).toBe("test/a.test.ts");
+  });
+
+  it("git mv package.json pkg.json -> dependencies gate needs-ack", async () => {
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "package.json"), JSON.stringify({ name: "app" }));
+    git(repoDir, "add", "package.json");
+    git(repoDir, "commit", "-m", "add package.json on release branch");
+
+    git(repoDir, "checkout", "-b", "daedalus/t-mv-dep", "daedalus/release-v1.0");
+    git(repoDir, "mv", "package.json", "pkg.json");
+    git(repoDir, "commit", "-m", "rename package.json away");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-MV-DEP",
+        title: "Move Dep Task",
+        status: "in-review",
+        branch: "daedalus/t-mv-dep",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-MV-DEP");
+    const depGate = review.gates.find((g) => g.id === "dependencies");
+    expect(depGate?.status).toBe("needs-ack");
+    expect(depGate?.items).toContain("pkg.json");
+
+    const file = review.diff.files.find((f) => f.path === "pkg.json");
+    expect(file).toBeDefined();
+    expect(file?.status).toBe("R");
+    expect(file?.oldPath).toBe("package.json");
+  });
+
+  it("a path containing a tab character -> parsed correctly (no crash, right path)", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-tab-path", "daedalus/release-v1.0");
+    const tabFileName = "tab\tfile.txt";
+    writeFileSync(join(repoDir, tabFileName), "line 1\nline 2\n");
+    git(repoDir, "add", tabFileName);
+    git(repoDir, "commit", "-m", "add file with tab in path");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-TAB",
+        title: "Tab Path Task",
+        status: "in-review",
+        branch: "daedalus/t-tab-path",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-TAB");
+    const file = review.diff.files.find((f) => f.path === tabFileName);
+    expect(file).toBeDefined();
+    expect(file?.path).toBe(tabFileName);
+    expect(file?.status).toBe("A");
+    expect(file?.additions).toBe(2);
+    expect(file?.deletions).toBe(0);
+  });
 });

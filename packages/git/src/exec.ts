@@ -28,8 +28,8 @@ export async function execGit(args: string[], options: ExecGitOptions): Promise<
       maxBuffer: options.maxBuffer ?? 10 * 1024 * 1024,
       env: {
         ...process.env,
-        GIT_TERMINAL_PROMPT: "0",
         ...options.env,
+        GIT_TERMINAL_PROMPT: "0",
       },
     });
     return {
