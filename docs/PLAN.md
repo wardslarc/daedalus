@@ -188,8 +188,8 @@ Done when: `docs/PLAN.md` tasks appear on `/projects/[id]/pipeline`, the task st
   agent session per task. Server runs the task's `check:` command itself: pass → commit and move to
   `in-review`; fail → one retry, then move to `check-failed` and create a `failed_check` inbox item.
   check: unit + e2e tests — passing task commits in worktree and moves to `in-review`; failing task retries once then lands in `check-failed` with an inbox item
-  Open question: `check:` commands and `[x]` marks come from an agent-written docs/PLAN.md; decide
-  whether the runner only runs checks frozen at Start milestone, and whether `[x]` may mark a task done.
+  Decided in ADR 0018: the runner runs only checks frozen at Start milestone; `[x]` in PLAN.md never
+  changes a task's status.
 
 ## M6–M9 (outline)
 
