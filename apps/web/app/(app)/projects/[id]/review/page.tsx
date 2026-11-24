@@ -48,6 +48,9 @@ export default function ReviewPage() {
   const [ackNotes, setAckNotes] = useState<Record<string, string>>({});
   const [ackSubmitting, setAckSubmitting] = useState<Record<string, boolean>>({});
 
+  // Cross-review state
+  const [crossReviewSubmitting, setCrossReviewSubmitting] = useState(false);
+
   const loadQueue = useCallback(
     async (preferredCode?: string) => {
       if (!id) return;
@@ -116,6 +119,15 @@ export default function ReviewPage() {
       void loadReview(selectedCode);
     }
   }, [selectedCode, loadReview]);
+
+  // Poll review GET every 3s while cross-review is running
+  useEffect(() => {
+    if (!selectedCode || review?.crossReview?.status !== "running") return;
+    const interval = setInterval(() => {
+      void loadReview(selectedCode);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [selectedCode, review?.crossReview?.status, loadReview]);
 
   const handleApprove = async () => {
     if (!id || !selectedCode || approveSubmitting) return;
@@ -217,6 +229,26 @@ export default function ReviewPage() {
     }
   };
 
+  const handleRunCrossReview = async () => {
+    if (!id || !selectedCode || crossReviewSubmitting || review?.crossReview?.status === "running") return;
+    try {
+      setCrossReviewSubmitting(true);
+      setActionError(null);
+      setActionSuccess(null);
+      const res = await postJson(`/api/projects/${id}/review/${selectedCode}/cross-review`);
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; reviewId?: number };
+      if (!res.ok) {
+        setActionError(body.error || "Failed to start cross-review.");
+      } else {
+        await loadReview(selectedCode);
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Cross-review request failed.");
+    } finally {
+      setCrossReviewSubmitting(false);
+    }
+  };
+
   // Check locking conditions for Approve button
   const blockedGate = review?.gates.find((g) => g.status === "blocked");
   const unackedGate = review?.gates.find((g) => g.status === "needs-ack" && !g.ack);
@@ -227,6 +259,23 @@ export default function ReviewPage() {
   } else if (unackedGate) {
     lockReason = `Locked: gate '${unackedGate.id}' requires acknowledgement before approval.`;
   }
+
+  const crossReview = review?.crossReview;
+  const isCrossReviewRunning = crossReview?.status === "running" || crossReviewSubmitting;
+  const isTampered = crossReview?.status === "tampered";
+  const findings = crossReview?.findings || [];
+  const mustFixFindings = findings.filter((f) => f.bucket === "must-fix");
+  const shouldFixFindings = findings.filter((f) => f.bucket === "should-fix");
+  const nitFindings = findings.filter((f) => f.bucket === "nit");
+  const untriagedFindings = findings.filter(
+    (f) => !f.bucket || (f.bucket !== "must-fix" && f.bucket !== "should-fix" && f.bucket !== "nit"),
+  );
+  const findingGroups = [
+    { title: "Must fix", bucket: "must-fix", items: mustFixFindings, badgeClass: "badge-must-fix" },
+    { title: "Should fix", bucket: "should-fix", items: shouldFixFindings, badgeClass: "badge-should-fix" },
+    { title: "Nit", bucket: "nit", items: nitFindings, badgeClass: "badge-nit" },
+    { title: "Untriaged", bucket: "untriaged", items: untriagedFindings, badgeClass: "badge-untriaged" },
+  ];
 
   return (
     <>
@@ -493,14 +542,103 @@ export default function ReviewPage() {
                   </div>
                 </div>
 
-                {/* 5. Cross-review placeholder */}
-                <div className="review-section review-cross-review-placeholder">
+                {/* 5. Cross-review */}
+                <div className="review-section review-cross-review-card">
                   <div className="review-section-header">
                     <h3>Cross-review</h3>
+                    <button
+                      type="button"
+                      className="btn-secondary-sm"
+                      disabled={isCrossReviewRunning}
+                      onClick={handleRunCrossReview}
+                    >
+                      {isCrossReviewRunning ? "Running cross-review…" : "Run cross-review"}
+                    </button>
                   </div>
-                  <div className="review-cross-review-box">
-                    <p className="review-cross-review-text">Cross-review: comes in T6.2</p>
-                  </div>
+
+                  {isTampered && (
+                    <div className="review-tampered-notice" role="alert">
+                      <p className="review-tampered-text">
+                        The reviewer changed files; its review was discarded.
+                      </p>
+                    </div>
+                  )}
+
+                  {crossReview && (
+                    <div className="review-cross-review-status-line">
+                      <span>
+                        Reviewer: <strong>{crossReview.reviewer}</strong>
+                      </span>
+                      <span> · </span>
+                      <span>
+                        Status:{" "}
+                        <strong className={`status-text-${crossReview.status}`}>
+                          {crossReview.status}
+                        </strong>
+                      </span>
+                      {crossReview.finishedAt ? (
+                        <span> · Finished {new Date(crossReview.finishedAt).toLocaleTimeString()}</span>
+                      ) : crossReview.startedAt ? (
+                        <span> · Started {new Date(crossReview.startedAt).toLocaleTimeString()}</span>
+                      ) : null}
+                    </div>
+                  )}
+
+                  {crossReview?.error && !isTampered && (
+                    <div className="review-cross-review-error">
+                      <p>{crossReview.error}</p>
+                    </div>
+                  )}
+
+                  {!crossReview ? (
+                    <p className="review-cross-review-placeholder review-muted-text">
+                      Cross-review: comes in T6.2
+                    </p>
+                  ) : findings.length === 0 ? (
+                    <p className="review-muted-text">
+                      {crossReview.status === "running"
+                        ? "Cross-review is running in a sandbox…"
+                        : "No findings reported."}
+                    </p>
+                  ) : (
+                    <div className="review-findings-groups">
+                      {findingGroups.map((group) => {
+                        if (group.items.length === 0) return null;
+                        return (
+                          <div key={group.bucket} className="review-findings-group">
+                            <div className="review-findings-group-header">
+                              <span className={`finding-group-badge ${group.badgeClass}`}>
+                                {group.title} ({group.items.length})
+                              </span>
+                            </div>
+                            <div className="review-findings-list">
+                              {group.items.map((f, idx) => (
+                                <div key={idx} className="review-finding-card">
+                                  <div className="review-finding-card-header">
+                                    <span className={`finding-severity-badge severity-${f.severity}`}>
+                                      {f.severity}
+                                    </span>
+                                    <span className="finding-location">
+                                      {f.file}
+                                      {f.line !== null && f.line !== undefined ? `:${f.line}` : ""}
+                                    </span>
+                                  </div>
+                                  <p className="finding-claim">{f.claim}</p>
+                                  {f.proof && <pre className="finding-proof">{f.proof}</pre>}
+                                  {f.reason && (
+                                    <div className="finding-triage-reason">
+                                      <span className="finding-triage-reason-label">Triage reason:</span>{" "}
+                                      {f.reason}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
                 {/* 6. Review Actions */}

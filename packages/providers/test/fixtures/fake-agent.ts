@@ -11,6 +11,10 @@
  *   [Spec interview]*  draft docs/SPEC.md from docs/INTAKE.md and ask for ## Verify criteria (T4.2)
  *   write-spec-draft   write a draft docs/SPEC.md without ## Verify (T4.2)
  *   write-spec-verify  update docs/SPEC.md to include ## Verify (T4.2)
+ *   [Cross-review]*    cross-review findings (T6.2): FAKE:ask-write requests edit & read permissions;
+ *                      FAKE:write-file writes tampered.txt; FAKE:bad-json replies without json;
+ *                      otherwise replies with 3 findings.
+ *   [Triage]*          triage findings (T6.2): first finding must-fix, others should-fix / nit.
  */
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -69,9 +73,10 @@ const app = acp
         break;
       }
       case "permission": {
+        const kind = arg === "none" ? undefined : (arg || "edit");
         const res = await client.request(acp.methods.client.session.requestPermission, {
           sessionId: sid,
-          toolCall: { toolCallId: "tool-1", title: "Write a file", kind: "edit", status: "pending" },
+          toolCall: { toolCallId: "tool-1", title: "Tool request", ...(kind ? { kind } : {}), status: "pending" },
           options: [
             { optionId: "allow", name: "Allow once", kind: "allow_once" },
             { optionId: "deny", name: "Deny", kind: "reject_once" },
@@ -140,6 +145,89 @@ const app = acp
         break;
       }
       default: {
+        if (input.startsWith("[Cross-review]")) {
+          if (input.includes("FAKE:write-file")) {
+            writeFileSync(join(process.cwd(), "tampered.txt"), "tampered by fake agent\n", "utf8");
+          }
+
+          if (input.includes("FAKE:ask-write")) {
+            const editRes = await client.request(acp.methods.client.session.requestPermission, {
+              sessionId: sid,
+              toolCall: { toolCallId: "tool-edit-1", title: "Write a file", kind: "edit", status: "pending" },
+              options: [
+                { optionId: "allow", name: "Allow once", kind: "allow_once" },
+                { optionId: "deny", name: "Deny", kind: "reject_once" },
+              ],
+            });
+            const editOutcome = editRes.outcome.outcome === "cancelled" ? "cancelled" : editRes.outcome.optionId === "allow" ? "allowed" : "denied";
+
+            const readRes = await client.request(acp.methods.client.session.requestPermission, {
+              sessionId: sid,
+              toolCall: { toolCallId: "tool-read-1", title: "Read a file", kind: "read", status: "pending" },
+              options: [
+                { optionId: "allow", name: "Allow once", kind: "allow_once" },
+                { optionId: "deny", name: "Deny", kind: "reject_once" },
+              ],
+            });
+            const readOutcome = readRes.outcome.outcome === "cancelled" ? "cancelled" : readRes.outcome.optionId === "allow" ? "allowed" : "denied";
+
+            const findings = [
+              {
+                severity: "high",
+                file: "src/index.ts",
+                line: 10,
+                claim: "Write permission test claim",
+                proof: `edit: ${editOutcome}, read: ${readOutcome}`,
+              },
+            ];
+            await say(client, sid, `\`\`\`json\n${JSON.stringify({ findings }, null, 2)}\n\`\`\``);
+            break;
+          }
+
+          if (input.includes("FAKE:bad-json")) {
+            await say(client, sid, "I found some issues, but I am not outputting valid JSON block.");
+            break;
+          }
+
+          const findings = [
+            {
+              severity: "high",
+              file: "src/index.ts",
+              line: 10,
+              claim: "Missing input validation in auth check",
+              proof: "No check on input length or shape.",
+            },
+            {
+              severity: "medium",
+              file: "src/utils.ts",
+              line: 25,
+              claim: "Possible null reference in helper function",
+              proof: "Variable can be undefined when input is empty.",
+            },
+            {
+              severity: "low",
+              file: "README.md",
+              line: null,
+              claim: "Documentation refers to deprecated configuration option",
+              proof: "Option was removed in previous milestone.",
+            },
+          ];
+          await say(client, sid, `\`\`\`json\n${JSON.stringify({ findings }, null, 2)}\n\`\`\``);
+          break;
+        }
+
+        if (input.startsWith("[Triage]")) {
+          const matches = [...input.matchAll(/Finding\s+(\d+)/gi)].map((m) => parseInt(m[1]!, 10));
+          const count = matches.length > 0 ? matches.length : 3;
+          const triage = Array.from({ length: count }, (_, idx) => ({
+            index: matches[idx] ?? idx,
+            bucket: idx === 0 ? "must-fix" : idx === 1 ? "should-fix" : "nit",
+            reason: idx === 0 ? "Critical security fix needed before merge." : idx === 1 ? "Important bug fix." : "Minor style issue.",
+          }));
+          await say(client, sid, `\`\`\`json\n${JSON.stringify({ triage }, null, 2)}\n\`\`\``);
+          break;
+        }
+
         if (input.startsWith("[Spec interview]")) {
           const docsDir = join(process.cwd(), "docs");
           mkdirSync(docsDir, { recursive: true });

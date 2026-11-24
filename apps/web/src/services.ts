@@ -120,6 +120,8 @@ export type Services = SessionServices & {
     gateId: string,
     note: string,
   ): Promise<{ gate: string; note: string; ackedAt: string; headSha?: string | null }>;
+  /** Start a cross-review on an in-review task (T6.2). */
+  startCrossReview(projectId: number, taskCode: string): Promise<{ reviewId: number }>;
 };
 
 export type SessionServices = {

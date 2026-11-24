@@ -10,6 +10,7 @@ import type { DaedalusDb } from "@daedalus/db";
 import {
   projects,
   reviewAcks,
+  reviews,
   runs,
   shapingState,
   tasks,
@@ -69,7 +70,7 @@ export type ReviewCheck = {
   output: string;
 };
 
-export type GateId = "secrets" | "dependencies" | "tests" | "check";
+export type GateId = "secrets" | "dependencies" | "tests" | "check" | "cross-review";
 
 export type Gate = {
   id: GateId;
@@ -78,12 +79,37 @@ export type Gate = {
   ack?: { id?: number; ackedAt: string; note: string } | null;
 };
 
+export type Finding = {
+  severity: "high" | "medium" | "low";
+  file: string;
+  line: number | null;
+  claim: string;
+  proof: string;
+};
+
+export type TriagedFinding = Finding & {
+  bucket?: "must-fix" | "should-fix" | "nit";
+  reason?: string;
+};
+
+export type CrossReviewData = {
+  id: number;
+  status: string;
+  reviewer: string;
+  headSha: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+  findings: TriagedFinding[];
+};
+
 export type ReviewData = {
   task: typeof tasks.$inferSelect;
   releaseBranch: string;
   diff: ReviewDiff;
   check: ReviewCheck | null;
   gates: Gate[];
+  crossReview: CrossReviewData | null;
 };
 
 export type ReviewGitOps = {
@@ -645,6 +671,114 @@ export async function getReview(
     },
   ];
 
+  // 5. cross-review gate (T6.2, ADR 0019)
+  let latestReview: typeof reviews.$inferSelect | null = null;
+  try {
+    latestReview = db
+      .select()
+      .from(reviews)
+      .where(eq(reviews.taskId, task.id))
+      .orderBy(desc(reviews.id))
+      .limit(1)
+      .get() ?? null;
+  } catch {
+    latestReview = null;
+  }
+
+  let crossReview: CrossReviewData | null = null;
+  if (latestReview) {
+    let parsedFindings: Finding[] = [];
+    try {
+      const raw = JSON.parse(latestReview.findings);
+      if (Array.isArray(raw)) parsedFindings = raw;
+    } catch {
+      parsedFindings = [];
+    }
+
+    let parsedTriage: Array<{ index: number; bucket: "must-fix" | "should-fix" | "nit"; reason: string }> = [];
+    if (latestReview.claudeTriage) {
+      try {
+        const raw = JSON.parse(latestReview.claudeTriage);
+        if (Array.isArray(raw)) parsedTriage = raw;
+      } catch {
+        parsedTriage = [];
+      }
+    }
+
+    const triageMap = new Map(parsedTriage.map((t) => [t.index, t]));
+    const triagedFindings: TriagedFinding[] = parsedFindings.map((f, i) => {
+      const t = triageMap.get(i);
+      return {
+        ...f,
+        ...(t ? { bucket: t.bucket, reason: t.reason } : {}),
+      };
+    });
+
+    crossReview = {
+      id: latestReview.id,
+      status: latestReview.status,
+      reviewer: latestReview.reviewer,
+      headSha: latestReview.headSha,
+      startedAt: latestReview.startedAt,
+      finishedAt: latestReview.finishedAt,
+      error: latestReview.error,
+      findings: triagedFindings,
+    };
+  }
+
+  let crossReviewGateStatus: "pass" | "blocked" | "needs-ack" = "pass";
+  const crossReviewGateItems: string[] = [];
+
+  if (!latestReview || !currentHeadSha || latestReview.headSha !== currentHeadSha) {
+    crossReviewGateStatus = "needs-ack";
+    crossReviewGateItems.push("no cross-review for this commit");
+  } else if (latestReview.status === "running") {
+    crossReviewGateStatus = "blocked";
+    crossReviewGateItems.push("cross-review running");
+  } else if (latestReview.status === "tampered") {
+    crossReviewGateStatus = "blocked";
+    crossReviewGateItems.push("The reviewer changed files; its review was discarded.");
+  } else if (latestReview.status === "timed-out") {
+    crossReviewGateStatus = "needs-ack";
+    crossReviewGateItems.push(latestReview.error || "Cross-review timed out");
+  } else if (latestReview.status === "failed") {
+    crossReviewGateStatus = "needs-ack";
+    crossReviewGateItems.push(latestReview.error || "Cross-review failed");
+  } else if (latestReview.status === "done") {
+    const findingsList = crossReview?.findings ?? [];
+    const isUntriaged = findingsList.length > 0 && (!latestReview.claudeTriage || findingsList.some((f) => !f.bucket));
+    if (isUntriaged) {
+      crossReviewGateStatus = "needs-ack";
+      crossReviewGateItems.push("Cross-review findings are untriaged");
+    } else {
+      const mustFixList = findingsList.filter((f) => f.bucket === "must-fix");
+      if (mustFixList.length > 0) {
+        crossReviewGateStatus = "needs-ack";
+        for (const mf of mustFixList) {
+          crossReviewGateItems.push(`must-fix: ${mf.file}${mf.line ? `:${mf.line}` : ""}: ${mf.claim}`);
+        }
+      } else {
+        crossReviewGateStatus = "pass";
+      }
+    }
+  } else {
+    crossReviewGateStatus = "needs-ack";
+    crossReviewGateItems.push(latestReview.error || `Cross-review status: ${latestReview.status}`);
+  }
+
+  gates.push({
+    id: "cross-review",
+    status: crossReviewGateStatus,
+    items: crossReviewGateItems,
+    ack: ackMap.get("cross-review")
+      ? {
+          id: ackMap.get("cross-review")!.id,
+          ackedAt: ackMap.get("cross-review")!.ackedAt,
+          note: ackMap.get("cross-review")!.note,
+        }
+      : null,
+  });
+
   return {
     task,
     releaseBranch,
@@ -654,6 +788,7 @@ export async function getReview(
     },
     check,
     gates,
+    crossReview,
   };
 }
 

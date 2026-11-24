@@ -173,6 +173,27 @@ export async function addWorktree(
   );
 }
 
+/** Adds a new detached worktree at commitSha. */
+export async function addDetachedWorktree(
+  repoDir: string,
+  worktreeDir: string,
+  commitSha: string,
+): Promise<void> {
+  if (!worktreeDir || !isAbsolute(worktreeDir)) {
+    throw new GitError(`Worktree directory '${stripUserInfo(worktreeDir ?? "")}' must be an absolute path`);
+  }
+  const resolvedWorktreeDir = resolve(worktreeDir);
+  if (existsSync(resolvedWorktreeDir)) {
+    throw new GitError(`Worktree directory '${stripUserInfo(resolvedWorktreeDir)}' already exists`);
+  }
+  await validateRef(commitSha, repoDir);
+
+  await execGit(
+    ["worktree", "add", "--detach", "--", resolvedWorktreeDir, commitSha],
+    { cwd: repoDir },
+  );
+}
+
 /** Removes a worktree and prunes worktree administrative files. */
 export async function removeWorktree(repoDir: string, worktreeDir: string): Promise<void> {
   const resolved = resolve(worktreeDir);

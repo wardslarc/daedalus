@@ -118,9 +118,14 @@ export const reviews = sqliteTable("reviews", {
     .notNull()
     .references(() => tasks.id, { onDelete: "cascade" }),
   reviewer: text("reviewer").notNull(),
-  findings: text("findings").notNull(),
+  status: text("status").notNull().default("running"),
+  headSha: text("head_sha"),
+  findings: text("findings").notNull().default(sql`'[]'`),
   claudeTriage: text("claude_triage"),
   ownerDecision: text("owner_decision"),
+  startedAt: text("started_at"),
+  finishedAt: text("finished_at"),
+  error: text("error"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`(CURRENT_TIMESTAMP)`),

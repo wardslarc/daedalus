@@ -9,4 +9,6 @@ export * from "./pipeline.js";
 export * from "./check-exec.js";
 export * from "./runner.js";
 export * from "./review.js";
+export * from "./review-prompts.js";
+export * from "./cross-review.js";
 

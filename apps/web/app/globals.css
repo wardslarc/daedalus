@@ -3217,6 +3217,180 @@ dialog.modal-dialog::backdrop {
   font-size: 14px;
 }
 
+/* Cross-review card (T6.2) */
+.review-cross-review-card {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.review-cross-review-status-line {
+  font-size: 13px;
+  color: var(--ink-2);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.review-tampered-notice {
+  background-color: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.review-tampered-text {
+  color: var(--danger);
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.review-cross-review-error {
+  background-color: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: var(--danger);
+  font-size: 12.5px;
+}
+
+.review-findings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.review-findings-group-header {
+  display: flex;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.finding-group-badge {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+
+.badge-must-fix {
+  background-color: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid var(--danger-border);
+}
+
+.badge-should-fix {
+  background-color: var(--warn-bg);
+  color: var(--warn);
+  border: 1px solid var(--warn-border);
+}
+
+.badge-nit {
+  background-color: var(--surface-2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+.badge-untriaged {
+  background-color: var(--surface-2);
+  color: var(--warn-ink);
+  border: 1px dashed var(--border-2);
+}
+
+.review-findings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.review-finding-card {
+  background-color: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.review-finding-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.finding-severity-badge {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.severity-high {
+  background-color: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid var(--danger-border);
+}
+
+.severity-medium {
+  background-color: var(--warn-bg);
+  color: var(--warn);
+  border: 1px solid var(--warn-border);
+}
+
+.severity-low {
+  background-color: var(--surface);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+.finding-location {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.finding-claim {
+  font-size: 13px;
+  color: var(--ink);
+  line-height: 1.4;
+}
+
+.finding-proof {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background-color: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  padding: 8px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.finding-triage-reason {
+  font-size: 12px;
+  color: var(--ink-2);
+  background-color: var(--surface);
+  border-radius: 6px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--border-2);
+}
+
+.finding-triage-reason-label {
+  font-weight: 600;
+  color: var(--muted);
+}
+
+
 
 
 
