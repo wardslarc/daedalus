@@ -14,8 +14,9 @@
   - **Where.** Not the task worktree: a fresh detached worktree at the task branch head under
     `<dataDir>/worktrees/review-…`, removed afterwards (also on failure and on server shutdown).
   - **Permission policy.** `SessionManager.start` takes a per-session policy. `read-only` answers every request
-    itself, never asking the owner: tool kinds `read`, `search`, `think` get an allow-once option; every other
-    kind, and a missing kind, gets a reject option (or `cancelled` if the request offers none). Owner sessions
+    itself, never asking the owner: tool kinds `read` and `search` get an allow-once option only when every
+    location they name resolves inside the review worktree; every other kind (including `think`, since the kind is
+    a label the agent side chooses), and a missing kind, gets a reject option (or `cancelled` if the request offers none). Owner sessions
     keep today's "ask the owner" behaviour. Both answers are logged as events.
   - **Tamper check.** Before and after each session Daedalus records the task branch SHA and the review
     worktree's HEAD and `git status --porcelain --ignored --untracked-files=all`. Any difference marks the
@@ -30,6 +31,9 @@
     earlier reviews stale.
   - **Started by the owner.** A "Run cross-review" button, one review per task at a time, using the normal
     session slots; it never starts by itself.
+- **Amended 2026-11-24:** acknowledgements of every review gate are bound to the task head SHA *and* a hash of
+    the gate's items at the time (for cross-review: the review id and its findings/triage), and are invalid when
+    either is unknown or differs — a re-run review or new findings need a new acknowledgement.
 - **Consequences:** A reviewer that ignores its sandbox can't change the approved code unnoticed, and the
   owner sees it was blocked. A prompt-injected reviewer can still under-report; the automatic gates (secrets,
   tests, dependencies, checks) don't depend on it, and T6.3's security checks add more. Reviews cost two
