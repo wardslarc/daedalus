@@ -5,7 +5,7 @@
  * handlers reach them through this object on globalThis (Symbol.for key, so it also
  * survives Next's dev reloads).
  */
-import type { DaedalusDb, projects } from "@daedalus/db";
+import type { DaedalusDb, projects, tasks } from "@daedalus/db";
 import type { ApproveMockInput, ApprovePlanInput, ApproveSpecInput, BrowseResult, CreateInput, createProject, ImportInput, importProject, mergeKit, MilestoneState, MockApproval, ParsedMilestone, PipelineTask, ReviewData, RunTaskResult, SaveIntakeInput, ShapingState, StartMilestoneInput, TaskRunner } from "@daedalus/projects";
 import type { ProfileRules } from "@daedalus/core/profiles";
 import type { TaskStatus } from "@daedalus/core/task-state";
@@ -119,7 +119,7 @@ export type Services = SessionServices & {
     taskCode: string,
     gateId: string,
     note: string,
-  ): Promise<{ gate: string; note: string; ackedAt: string }>;
+  ): Promise<{ gate: string; note: string; ackedAt: string; headSha?: string | null }>;
 };
 
 export type SessionServices = {

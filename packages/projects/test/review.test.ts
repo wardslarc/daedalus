@@ -7,12 +7,14 @@ import { eq } from "drizzle-orm";
 import {
   openDb,
   projects,
+  providers,
   reviewAcks,
   runs,
   shapingState,
   tasks,
   type DaedalusDb,
 } from "@daedalus/db";
+import { GitError } from "@daedalus/git";
 import {
   NotImplementedError,
   type TaskEvent,
@@ -26,8 +28,10 @@ import {
   getReview,
   listInReviewTasks,
   ReviewError,
+  scanPatchAddedLinesForSecrets,
   sendBack,
 } from "../src/review.js";
+import { TaskRunner } from "../src/runner.js";
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -38,6 +42,7 @@ describe("Review center (T6.1, SPEC#Review)", () => {
   let repoDir: string;
   let db: DaedalusDb;
   let projectRow: typeof projects.$inferSelect;
+  let providerRow: typeof providers.$inferSelect;
 
   beforeEach(() => {
     testDir = mkdtempSync(join(tmpdir(), "daedalus-review-test-"));
@@ -72,6 +77,20 @@ describe("Review center (T6.1, SPEC#Review)", () => {
       .returning()
       .all();
     projectRow = p!;
+
+    // Seed provider in DB
+    const [prov] = db
+      .insert(providers)
+      .values({
+        name: "claude",
+        kind: "acp",
+        launchCommand: "claude-agent-acp",
+        roles: ["coder"],
+        allowedProfiles: ["personal"],
+      })
+      .returning()
+      .all();
+    providerRow = prov!;
 
     // Shaping state with active release branch
     db.insert(shapingState)
@@ -163,13 +182,25 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     git(repoDir, "commit", "-m", "added secret");
     git(repoDir, "checkout", "main");
 
-    db.insert(tasks)
+    const [t12] = db.insert(tasks)
       .values({
         projectId: projectRow.id,
         code: "T1.2",
         title: "Secret Task",
         status: "in-review",
         branch: "daedalus/t1.2",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t12!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
       })
       .run();
 
@@ -210,13 +241,25 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     git(repoDir, "commit", "-m", "delete test");
     git(repoDir, "checkout", "main");
 
-    db.insert(tasks)
+    const [t13] = db.insert(tasks)
       .values({
         projectId: projectRow.id,
         code: "T1.3",
         title: "Delete Test Task",
         status: "in-review",
         branch: "daedalus/t1.3",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t13!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
       })
       .run();
 
@@ -255,13 +298,25 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     git(repoDir, "commit", "-m", "update dependencies");
     git(repoDir, "checkout", "main");
 
-    db.insert(tasks)
+    const [t14] = db.insert(tasks)
       .values({
         projectId: projectRow.id,
         code: "T1.4",
         title: "Dependency Task",
         status: "in-review",
         branch: "daedalus/t1.4",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t14!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
       })
       .run();
 
@@ -286,13 +341,25 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     const mainShaBefore = git(repoDir, "rev-parse", "main");
     writeFileSync(join(repoDir, "owner-scratch.txt"), "working on main\n");
 
-    db.insert(tasks)
+    const [t15] = db.insert(tasks)
       .values({
         projectId: projectRow.id,
         code: "T1.5",
         title: "Feature Approve Task",
         status: "in-review",
         branch: "daedalus/t1.5",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t15!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "All tests passed",
+        exitStatus: 0,
       })
       .run();
 
@@ -348,13 +415,25 @@ describe("Review center (T6.1, SPEC#Review)", () => {
 
     git(repoDir, "checkout", "main");
 
-    db.insert(tasks)
+    const [t16] = db.insert(tasks)
       .values({
         projectId: projectRow.id,
         code: "T1.6",
         title: "Conflict Task",
         status: "in-review",
         branch: "daedalus/t1.6",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t16!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "All tests passed",
+        exitStatus: 0,
       })
       .run();
 
@@ -382,13 +461,25 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     git(repoDir, "commit", "-m", "has bug");
     git(repoDir, "checkout", "main");
 
-    db.insert(tasks)
+    const [t17] = db.insert(tasks)
       .values({
         projectId: projectRow.id,
         code: "T1.7",
         title: "Send Back Task",
         status: "in-review",
         branch: "daedalus/t1.7",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t17!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "All tests passed",
+        exitStatus: 0,
       })
       .run();
 
@@ -423,7 +514,7 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     git(repoDir, "commit", "-m", "bad commit");
     git(repoDir, "checkout", "main");
 
-    db.insert(tasks)
+    const [t18] = db.insert(tasks)
       .values({
         projectId: projectRow.id,
         code: "T1.8",
@@ -431,6 +522,18 @@ describe("Review center (T6.1, SPEC#Review)", () => {
         status: "in-review",
         branch: "daedalus/t1.8",
         reviewNotes: "previous notes",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t18!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "All tests passed",
+        exitStatus: 0,
       })
       .run();
 
@@ -465,13 +568,25 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     git(repoDir, "commit", "-m", "changes");
     git(repoDir, "checkout", "main");
 
-    db.insert(tasks)
+    const [t19] = db.insert(tasks)
       .values({
         projectId: projectRow.id,
         code: "T1.9",
         title: "State Machine Test",
         status: "in-review",
         branch: "daedalus/t1.9",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t19!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "All tests passed",
+        exitStatus: 0,
       })
       .run();
 
@@ -537,5 +652,375 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     const inReview = listInReviewTasks(db, projectRow.id);
     expect(inReview.length).toBe(2);
     expect(inReview.map((t) => t.code).sort()).toEqual(["T2.1", "T2.3"]);
+  });
+
+  // --- Round 2 Findings Tests (S1, S2, S3, P1) ---
+
+  it("S1: git ops stub whose diff throws -> gate blocked with 'diff unavailable', approve refused (409)", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-s1", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "s1.txt"), "hello\n");
+    git(repoDir, "add", "s1.txt");
+    git(repoDir, "commit", "-m", "s1 commit");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-S1",
+        title: "Diff Throw Task",
+        status: "in-review",
+        branch: "daedalus/t-s1",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const throwingGitOps = {
+      execGit: async (args: string[]) => {
+        if (args.includes("diff")) {
+          throw new GitError("diff buffer overflow");
+        }
+        return { stdout: "", stderr: "" };
+      },
+    };
+
+    const review = await getReview(db, projectRow, "T-S1", {
+      gitOps: throwingGitOps,
+    });
+    const secretGate = review.gates.find((g) => g.id === "secrets");
+    expect(secretGate?.status).toBe("blocked");
+    expect(secretGate?.items[0]).toContain("diff unavailable: diff buffer overflow");
+
+    await expect(
+      approveTask(db, projectRow, "T-S1", {
+        dataDir,
+        gitOps: throwingGitOps,
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/gate 'secrets' is blocked/i),
+    });
+  });
+
+  it("S2: secret scanner reports added line starting with '++' inside a hunk with the right line", () => {
+    const rawPatch = [
+      "diff --git a/app.ts b/app.ts",
+      "index 0000000..1111111 100644",
+      "--- a/app.ts",
+      "+++ b/app.ts",
+      "@@ -5,3 +5,4 @@",
+      " const x = 1;",
+      "+++ b/x sk-ant-api03-plantedsecretkey1234567890abcdef",
+      " const y = 2;",
+      " const z = 3;",
+    ].join("\n");
+
+    const hits = scanPatchAddedLinesForSecrets(rawPatch);
+    expect(hits).toEqual(["app.ts:6"]);
+  });
+
+  it("S2 integration: task diff containing '+++ b/x sk-...' inside hunk blocks secrets gate", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-s2", "daedalus/release-v1.0");
+    writeFileSync(
+      join(repoDir, "app.ts"),
+      "line1\n++ b/x sk-ant-api03-plantedsecretkey1234567890abcdef\nline3\n",
+    );
+    git(repoDir, "add", "app.ts");
+    git(repoDir, "commit", "-m", "add line with ++ prefix");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-S2",
+        title: "Secret Plus Plus Task",
+        status: "in-review",
+        branch: "daedalus/t-s2",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-S2");
+    const secretGate = review.gates.find((g) => g.id === "secrets");
+    expect(secretGate?.status).toBe("blocked");
+    expect(secretGate?.items).toContain("app.ts:2");
+  });
+
+  it("S3: ackGate refuses with 409 when task status is not in-review", async () => {
+    db.insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-S3-QUEUED",
+        title: "Queued Task Ack",
+        status: "queued",
+      })
+      .run();
+
+    await expect(
+      ackGate(db, projectRow, "T-S3-QUEUED", "dependencies", "Ack attempt on queued task"),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/expected "in-review"/i),
+    });
+  });
+
+  it("S3: ack is ignored when task branch head SHA changes", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-s3-sha", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "package.json"), JSON.stringify({ name: "app", version: "1.0.0" }));
+    git(repoDir, "add", "package.json");
+    git(repoDir, "commit", "-m", "initial dep change");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-S3-SHA",
+        title: "Ack Head SHA Task",
+        status: "in-review",
+        branch: "daedalus/t-s3-sha",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    // Verify gate needs-ack
+    const r1 = await getReview(db, projectRow, "T-S3-SHA");
+    const depGate1 = r1.gates.find((g) => g.id === "dependencies");
+    expect(depGate1?.status).toBe("needs-ack");
+    expect(depGate1?.ack).toBeNull();
+
+    // Acknowledge the gate
+    const ackRes = await ackGate(db, projectRow, "T-S3-SHA", "dependencies", "Verified v1.0.0");
+    expect(ackRes.gate).toBe("dependencies");
+
+    const r2 = await getReview(db, projectRow, "T-S3-SHA");
+    const depGate2 = r2.gates.find((g) => g.id === "dependencies");
+    expect(depGate2?.ack).not.toBeNull();
+    expect(depGate2?.ack?.note).toBe("Verified v1.0.0");
+
+    // Add a new commit to task branch
+    git(repoDir, "checkout", "daedalus/t-s3-sha");
+    writeFileSync(join(repoDir, "package.json"), JSON.stringify({ name: "app", version: "1.0.1" }));
+    git(repoDir, "add", "package.json");
+    git(repoDir, "commit", "-m", "new commit updating dep again");
+    git(repoDir, "checkout", "main");
+
+    // Review should now ignore the old ack because the head SHA changed
+    const r3 = await getReview(db, projectRow, "T-S3-SHA");
+    const depGate3 = r3.gates.find((g) => g.id === "dependencies");
+    expect(depGate3?.status).toBe("needs-ack");
+    expect(depGate3?.ack).toBeNull();
+
+    // Approve must be refused because needs-ack gate is unacknowledged
+    await expect(
+      approveTask(db, projectRow, "T-S3-SHA", { dataDir }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/gate 'dependencies' requires acknowledgement/i),
+    });
+  });
+
+  it("S3: ack -> send back -> re-run -> gate needs-ack again", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-s3-sb", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "package.json"), JSON.stringify({ name: "app", version: "2.0.0" }));
+    git(repoDir, "add", "package.json");
+    git(repoDir, "commit", "-m", "dep v2");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-S3-SB",
+        title: "Send Back Clears Ack Task",
+        status: "in-review",
+        branch: "daedalus/t-s3-sb",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    // Acknowledge the dependencies gate
+    await ackGate(db, projectRow, "T-S3-SB", "dependencies", "Acked before send-back");
+
+    const rBefore = await getReview(db, projectRow, "T-S3-SB");
+    expect(rBefore.gates.find((g) => g.id === "dependencies")?.ack).not.toBeNull();
+
+    // Send back
+    await sendBack(db, projectRow, "T-S3-SB", "Need fix", {
+      dataDir,
+      transition: () => ({ state: { status: "queued", attempts: 1 }, inbox: null }),
+    });
+
+    // Check review_acks table has no rows for this task
+    const remainingAcks = db.select().from(reviewAcks).where(eq(reviewAcks.taskId, t!.id)).all();
+    expect(remainingAcks).toHaveLength(0);
+
+    // Now re-run task to in-review
+    git(repoDir, "checkout", "-b", "daedalus/t-s3-sb", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "package.json"), JSON.stringify({ name: "app", version: "2.0.1" }));
+    git(repoDir, "add", "package.json");
+    git(repoDir, "commit", "-m", "dep v2.0.1 re-run");
+    git(repoDir, "checkout", "main");
+
+    db.update(tasks)
+      .set({ status: "in-review", branch: "daedalus/t-s3-sb" })
+      .where(eq(tasks.id, t!.id))
+      .run();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const rAfter = await getReview(db, projectRow, "T-S3-SB");
+    const depGateAfter = rAfter.gates.find((g) => g.id === "dependencies");
+    expect(depGateAfter?.status).toBe("needs-ack");
+    expect(depGateAfter?.ack).toBeNull();
+  });
+
+  it("P1: run a task, create fresh services/runner, getReview still returns check output from DB", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-p1", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "p1.txt"), "p1 content\n");
+    git(repoDir, "add", "p1.txt");
+    git(repoDir, "commit", "-m", "p1 commit");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-P1",
+        title: "P1 Test Task",
+        tag: "claude",
+        checkCommand: "pnpm test:p1",
+        status: "queued",
+        milestoneCode: "M1",
+        frozenAt: new Date().toISOString(),
+      })
+      .returning()
+      .all();
+
+    const checkOutputText = "Test run passed! 42 tests executed.";
+
+    class FakeSession {
+      prompts: string[] = [];
+      stopped = false;
+      async start() {
+        return {
+          id: "fake-s1",
+          startedAt: new Date().toISOString(),
+          prompt: async (text: string) => {
+            this.prompts.push(text);
+            return "end_turn";
+          },
+          stop: async () => {
+            this.stopped = true;
+          },
+        };
+      }
+      async stopAll() {
+        this.stopped = true;
+      }
+      get() {
+        return undefined;
+      }
+      list() {
+        return [];
+      }
+    }
+
+    const fakeSessions = new FakeSession();
+    const runner1 = new TaskRunner({
+      db,
+      dataDir,
+      sessions: fakeSessions,
+      transition: () => ({ state: { status: "in-review", attempts: 1 }, inbox: null }),
+      runCheck: async () => ({
+        ok: true,
+        exitCode: 0,
+        timedOut: false,
+        output: checkOutputText,
+      }),
+    });
+
+    const runRes = await runner1.runTask(projectRow.id, "T-P1");
+    expect(runRes.ok).toBe(true);
+    expect(runRes.status).toBe("in-review");
+
+    // Verify DB runs row has check_exit_code and check_output
+    const runRow = db.select().from(runs).where(eq(runs.taskId, t!.id)).get();
+    expect(runRow).toBeDefined();
+    expect(runRow?.checkExitCode).toBe(0);
+    expect(runRow?.checkOutput).toContain(checkOutputText);
+
+    // Now instantiate a FRESH TaskRunner (simulating service restart / fresh instance)
+    const freshSessions = new FakeSession();
+    const freshRunner = new TaskRunner({
+      db,
+      dataDir,
+      sessions: freshSessions,
+    });
+    expect(freshRunner.listRunning()).toHaveLength(0);
+
+    // getReview reads ONLY from the database
+    const review = await getReview(db, projectRow, "T-P1");
+    expect(review.check).not.toBeNull();
+    expect(review.check?.ok).toBe(true);
+    expect(review.check?.exitCode).toBe(0);
+    expect(review.check?.output).toContain(checkOutputText);
+
+    const checkGate = review.gates.find((g) => g.id === "check");
+    expect(checkGate?.status).toBe("pass");
   });
 });

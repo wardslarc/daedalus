@@ -252,6 +252,8 @@ describe("TaskRunner (T5.3, ADR 0018)", () => {
     const runRows = db.select().from(runs).where(eq(runs.taskId, updatedTask.id)).all();
     expect(runRows).toHaveLength(1);
     expect(runRows[0]?.exitStatus).toBe(0);
+    expect(runRows[0]?.checkExitCode).toBe(0);
+    expect(runRows[0]?.checkOutput).toBe("Tests passed successfully!");
     expect(runRows[0]?.end).not.toBeNull();
 
     // Session stopped
@@ -331,6 +333,8 @@ describe("TaskRunner (T5.3, ADR 0018)", () => {
     // Runs row closed with non-zero exit status
     const runRows = db.select().from(runs).where(eq(runs.taskId, taskRow.id)).all();
     expect(runRows[0]?.exitStatus).toBe(1);
+    expect(runRows[0]?.checkExitCode).toBe(1);
+    expect(runRows[0]?.checkOutput).toBe("Error encountered during test run #2");
   });
 
   it("Work project [gemini] → 403 before any branch/worktree exists", async () => {

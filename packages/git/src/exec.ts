@@ -8,6 +8,7 @@ export interface ExecGitOptions {
   cwd: string;
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  maxBuffer?: number;
 }
 
 export interface ExecGitResult {
@@ -24,7 +25,7 @@ export async function execGit(args: string[], options: ExecGitOptions): Promise<
     const { stdout, stderr } = await execFileAsync("git", args, {
       cwd: options.cwd,
       timeout,
-      maxBuffer: 10 * 1024 * 1024,
+      maxBuffer: options.maxBuffer ?? 10 * 1024 * 1024,
       env: {
         ...process.env,
         GIT_TERMINAL_PROMPT: "0",

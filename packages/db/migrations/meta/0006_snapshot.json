@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "0fb47b6f-45c1-418b-86ee-4099a713eddd",
+  "id": "1db1c74b-93cc-4f92-a798-99425e2e9ef6",
   "prevId": "85dbc68f-23e5-48db-85ab-b7a1cfb5b43f",
   "tables": {
     "doc_links": {
@@ -448,6 +448,13 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        },
+        "head_sha": {
+          "name": "head_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         }
       },
       "indexes": {
@@ -615,6 +622,20 @@
         },
         "usage_estimate": {
           "name": "usage_estimate",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "check_exit_code": {
+          "name": "check_exit_code",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "check_output": {
+          "name": "check_output",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

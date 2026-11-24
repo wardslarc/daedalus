@@ -98,6 +98,8 @@ export const runs = sqliteTable(
     exitStatus: integer("exit_status"),
     logPath: text("log_path"),
     usageEstimate: text("usage_estimate", { mode: "json" }),
+    checkExitCode: integer("check_exit_code"),
+    checkOutput: text("check_output"),
     createdAt: text("created_at")
       .notNull()
       .default(sql`(CURRENT_TIMESTAMP)`),
@@ -136,6 +138,7 @@ export const reviewAcks = sqliteTable(
       .notNull()
       .default(sql`(CURRENT_TIMESTAMP)`),
     note: text("note").notNull(),
+    headSha: text("head_sha"),
   },
   (table) => [
     unique("review_acks_task_id_gate_unique").on(table.taskId, table.gate),

@@ -34,7 +34,6 @@ import {
 } from "@daedalus/core/task-state";
 import type { ProjectLike } from "@daedalus/core/profiles";
 import { redact } from "@daedalus/providers";
-import { getRecordedCheckResult } from "./runner.js";
 
 export type ReviewProject = ProjectLike & {
   id: number;
@@ -86,10 +85,15 @@ export type ReviewData = {
   gates: Gate[];
 };
 
+export type ReviewGitOps = {
+  execGit?: typeof execGit;
+};
+
 export type ReviewOptions = {
   dataDir?: string;
   checkResult?: ReviewCheck | null;
   releaseBranch?: string;
+  gitOps?: ReviewGitOps;
 };
 
 export type ApproveOptions = {
@@ -101,6 +105,13 @@ export type ApproveOptions = {
     addWorktreeForBranch?: typeof addWorktreeForBranch;
     mergeNoFf?: typeof mergeNoFf;
     removeWorktree?: typeof removeWorktree;
+    execGit?: typeof execGit;
+  };
+};
+
+export type AckGateOptions = {
+  gitOps?: {
+    execGit?: typeof execGit;
   };
 };
 
@@ -123,31 +134,7 @@ export type DiscardOptions = {
 };
 
 const ONE_MIB = 1024 * 1024;
-
-/**
- * Defensive schema bootstrap in case reviewer migrations haven't run yet.
- */
-export function ensureReviewSchema(db: DaedalusDb): void {
-  try {
-    db.$client.exec(`
-      CREATE TABLE IF NOT EXISTS review_acks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-        gate TEXT NOT NULL,
-        acked_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-        note TEXT NOT NULL,
-        UNIQUE(task_id, gate)
-      );
-    `);
-  } catch {
-    // ignore
-  }
-  try {
-    db.$client.exec(`ALTER TABLE tasks ADD COLUMN review_notes TEXT;`);
-  } catch {
-    // column already exists
-  }
-}
+const SIXTY_FOUR_MIB = 64 * 1024 * 1024;
 
 /** Check if a file path is considered a dependency manifest or lock file. */
 export function isDependencyPath(filePath: string): boolean {
@@ -189,32 +176,49 @@ export function scanPatchAddedLinesForSecrets(rawPatch: string): string[] {
   const hits: string[] = [];
   let currentFile = "";
   let currentNewLine = 0;
+  let remainingNewLines = 0;
+  let inHunk = false;
 
   for (const line of rawPatch.split("\n")) {
     if (line.startsWith("diff --git ")) {
+      inHunk = false;
+      remainingNewLines = 0;
       const match = /diff --git a\/(.+) b\/(.+)/.exec(line);
       if (match) {
         currentFile = match[2]!;
       }
-    } else if (line.startsWith("+++ b/")) {
+    } else if (!inHunk && line.startsWith("+++ b/")) {
       currentFile = line.slice("+++ b/".length);
     } else if (line.startsWith("@@ ")) {
-      const match = /@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+      const match = /@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
       if (match) {
         currentNewLine = parseInt(match[1]!, 10);
+        const countStr = match[2];
+        remainingNewLines = countStr !== undefined ? parseInt(countStr, 10) : 1;
+        inHunk = remainingNewLines > 0;
       }
-    } else if (line.startsWith("+") && !line.startsWith("+++")) {
-      const addedContent = line.slice(1);
-      const redactedContent = redact(addedContent);
-      if (redactedContent !== addedContent || redactedContent.includes("[REDACTED:")) {
-        hits.push(`${currentFile}:${currentNewLine}`);
+    } else if (inHunk) {
+      if (line.startsWith("+")) {
+        const addedContent = line.slice(1);
+        const redactedContent = redact(addedContent);
+        if (redactedContent !== addedContent || redactedContent.includes("[REDACTED:")) {
+          hits.push(`${currentFile}:${currentNewLine}`);
+        }
+        currentNewLine++;
+        remainingNewLines--;
+        if (remainingNewLines <= 0) {
+          inHunk = false;
+        }
+      } else if (line.startsWith("-")) {
+        // deleted line from old file, does not affect new line count or number
+      } else if (line.startsWith(" ") || (line === "" && remainingNewLines > 0)) {
+        // context line
+        currentNewLine++;
+        remainingNewLines--;
+        if (remainingNewLines <= 0) {
+          inHunk = false;
+        }
       }
-      currentNewLine++;
-    } else if (line.startsWith("-") && !line.startsWith("---")) {
-      // deleted line, do not advance target line number
-    } else {
-      // context line
-      currentNewLine++;
     }
   }
 
@@ -230,8 +234,6 @@ export async function getReview(
   taskCode: string,
   options?: ReviewOptions,
 ): Promise<ReviewData> {
-  ensureReviewSchema(db);
-
   const task = db
     .select()
     .from(tasks)
@@ -258,14 +260,26 @@ export async function getReview(
     }
   }
 
+  const runExecGit = options?.gitOps?.execGit ?? execGit;
   const taskBranch = task.branch || `daedalus/${task.code.toLowerCase()}`;
+
+  let currentHeadSha: string | null = null;
+  try {
+    const revRes = await runExecGit(["rev-parse", "--verify", `${taskBranch}^{commit}`], {
+      cwd: project.localPath,
+    });
+    currentHeadSha = revRes.stdout.trim() || null;
+  } catch {
+    currentHeadSha = null;
+  }
 
   // Execute git diff <release>...daedalus/<task> with --no-ext-diff --no-textconv
   let rawPatch = "";
+  let diffError: string | null = null;
   const files: ReviewDiffFile[] = [];
 
   try {
-    const nameStatusRes = await execGit(
+    const nameStatusRes = await runExecGit(
       [
         "diff",
         "--name-status",
@@ -277,7 +291,7 @@ export async function getReview(
       { cwd: project.localPath },
     );
 
-    const numstatRes = await execGit(
+    const numstatRes = await runExecGit(
       [
         "diff",
         "--numstat",
@@ -329,7 +343,7 @@ export async function getReview(
       });
     });
 
-    const patchRes = await execGit(
+    const patchRes = await runExecGit(
       [
         "diff",
         "--no-ext-diff",
@@ -337,19 +351,16 @@ export async function getReview(
         "--end-of-options",
         `${releaseBranch}...${taskBranch}`,
       ],
-      { cwd: project.localPath },
+      { cwd: project.localPath, maxBuffer: SIXTY_FOUR_MIB },
     );
     rawPatch = patchRes.stdout;
   } catch (err) {
-    if (err instanceof GitError) {
-      rawPatch = "";
-    } else {
-      throw err;
-    }
+    diffError = (err instanceof Error ? err.message : String(err)).trim();
+    rawPatch = "";
   }
 
   // Scan added lines for secrets from the unredacted patch
-  const secretHits = scanPatchAddedLinesForSecrets(rawPatch);
+  const secretHits = diffError ? [] : scanPatchAddedLinesForSecrets(rawPatch);
 
   // Cap patch at 1 MiB
   let patch = rawPatch;
@@ -364,30 +375,34 @@ export async function getReview(
   if (options?.checkResult !== undefined) {
     check = options.checkResult;
   } else {
-    const recorded = getRecordedCheckResult(project.id, task.code);
-    if (recorded) {
-      check = {
-        ok: recorded.ok,
-        exitCode: recorded.exitCode,
-        output: redact(recorded.output),
-      };
-    } else {
-      const lastRun = db
-        .select()
-        .from(runs)
-        .where(eq(runs.taskId, task.id))
-        .orderBy(desc(runs.id))
-        .limit(1)
-        .get();
+    const lastRun = db
+      .select()
+      .from(runs)
+      .where(eq(runs.taskId, task.id))
+      .orderBy(desc(runs.id))
+      .limit(1)
+      .get();
 
-      if (lastRun) {
-        const ok = lastRun.exitStatus === 0;
-        check = {
-          ok,
-          exitCode: lastRun.exitStatus,
-          output: ok ? "Check passed" : `Check failed with exit code ${lastRun.exitStatus ?? 1}`,
-        };
-      }
+    if (lastRun && lastRun.checkExitCode !== null && lastRun.checkExitCode !== undefined) {
+      const ok = lastRun.checkExitCode === 0;
+      check = {
+        ok,
+        exitCode: lastRun.checkExitCode,
+        output: redact(
+          lastRun.checkOutput ??
+            (ok ? "Check passed" : `Check failed with exit code ${lastRun.checkExitCode}`),
+        ),
+      };
+    } else if (lastRun && lastRun.exitStatus !== null && lastRun.exitStatus !== undefined) {
+      const ok = lastRun.exitStatus === 0;
+      check = {
+        ok,
+        exitCode: lastRun.exitStatus,
+        output: redact(
+          lastRun.checkOutput ??
+            (ok ? "Check passed" : `Check failed with exit code ${lastRun.exitStatus}`),
+        ),
+      };
     }
   }
 
@@ -397,7 +412,12 @@ export async function getReview(
 
   // Gates
   // 1. secrets
-  const secretItems = secretHits;
+  const secretItems: string[] = [];
+  if (diffError) {
+    secretItems.push(`diff unavailable: ${diffError}`);
+  } else {
+    secretItems.push(...secretHits);
+  }
 
   // 2. dependencies
   const depItems = files
@@ -435,7 +455,14 @@ export async function getReview(
     // ignore
   }
 
-  const ackMap = new Map(acks.map((a) => [a.gate, a]));
+  const validAcks = acks.filter((ack) => {
+    if (ack.headSha && currentHeadSha && ack.headSha !== currentHeadSha) {
+      return false;
+    }
+    return true;
+  });
+
+  const ackMap = new Map(validAcks.map((a) => [a.gate, a]));
 
   const gates: Gate[] = [
     {
@@ -507,7 +534,6 @@ export function listInReviewTasks(
   db: DaedalusDb,
   projectId: number,
 ): Array<typeof tasks.$inferSelect> {
-  ensureReviewSchema(db);
   return db
     .select()
     .from(tasks)
@@ -527,9 +553,10 @@ export async function approveTask(
   taskCode: string,
   options?: ApproveOptions,
 ): Promise<{ sha: string; status: TaskStatus }> {
-  ensureReviewSchema(db);
-
-  const review = await getReview(db, project, taskCode, { dataDir: options?.dataDir });
+  const review = await getReview(db, project, taskCode, {
+    dataDir: options?.dataDir,
+    gitOps: options?.gitOps ? { execGit: options.gitOps.execGit } : undefined,
+  });
   const task = review.task;
 
   if (task.status !== "in-review") {
@@ -642,6 +669,12 @@ export async function approveTask(
       .where(eq(tasks.id, task.id))
       .run();
 
+    try {
+      db.delete(reviewAcks).where(eq(reviewAcks.taskId, task.id)).run();
+    } catch {
+      // ignore
+    }
+
     // Remove task worktree, keep branch
     const dataDir = options?.dataDir ?? resolve(repo, ".daedalus-data");
     const taskWorktreeDir = resolve(dataDir, "worktrees", String(project.id), task.code.toLowerCase());
@@ -686,8 +719,6 @@ export async function sendBack(
   notes: string,
   options?: SendBackOptions,
 ): Promise<{ status: TaskStatus }> {
-  ensureReviewSchema(db);
-
   if (typeof notes !== "string" || notes.trim().length < 1 || notes.length > 4000) {
     throw new ReviewError("Review notes must be between 1 and 4000 characters.", 400);
   }
@@ -726,6 +757,12 @@ export async function sendBack(
     })
     .where(eq(tasks.id, task.id))
     .run();
+
+  try {
+    db.delete(reviewAcks).where(eq(reviewAcks.taskId, task.id)).run();
+  } catch {
+    // ignore
+  }
 
   // Remove worktree and delete branch
   const repo = project.localPath;
@@ -766,8 +803,6 @@ export async function discardTask(
   taskCode: string,
   options?: DiscardOptions,
 ): Promise<{ status: TaskStatus }> {
-  ensureReviewSchema(db);
-
   const task = db
     .select()
     .from(tasks)
@@ -848,9 +883,8 @@ export async function ackGate(
   taskCode: string,
   gateId: string,
   note: string,
-): Promise<{ gate: string; note: string; ackedAt: string }> {
-  ensureReviewSchema(db);
-
+  options?: AckGateOptions,
+): Promise<{ gate: string; note: string; ackedAt: string; headSha?: string | null }> {
   if (typeof note !== "string" || note.trim().length < 1 || note.length > 1000) {
     throw new ReviewError("Acknowledgement note must be between 1 and 1000 characters.", 400);
   }
@@ -866,7 +900,16 @@ export async function ackGate(
     throw new ReviewError(`Task ${taskCode} not found in project ${project.id}`, 404);
   }
 
-  const review = await getReview(db, project, taskCode);
+  if (task.status !== "in-review") {
+    throw new ReviewError(
+      `Task ${task.code} is "${task.status}", expected "in-review" to acknowledge gates.`,
+      409,
+    );
+  }
+
+  const review = await getReview(db, project, taskCode, {
+    gitOps: options?.gitOps,
+  });
   const gate = review.gates.find((g) => g.id === gateId);
   if (!gate) {
     throw new ReviewError(`Unknown gate '${gateId}'.`, 404);
@@ -879,6 +922,18 @@ export async function ackGate(
     );
   }
 
+  const runExecGit = options?.gitOps?.execGit ?? execGit;
+  const taskBranch = task.branch || `daedalus/${task.code.toLowerCase()}`;
+  let headSha: string | null = null;
+  try {
+    const revRes = await runExecGit(["rev-parse", "--verify", `${taskBranch}^{commit}`], {
+      cwd: project.localPath,
+    });
+    headSha = revRes.stdout.trim() || null;
+  } catch {
+    headSha = null;
+  }
+
   const ackedAt = new Date().toISOString();
   db.insert(reviewAcks)
     .values({
@@ -886,12 +941,14 @@ export async function ackGate(
       gate: gateId,
       note: note.trim(),
       ackedAt,
+      headSha,
     })
     .onConflictDoUpdate({
       target: [reviewAcks.taskId, reviewAcks.gate],
       set: {
         note: note.trim(),
         ackedAt,
+        headSha,
       },
     })
     .run();
@@ -900,5 +957,6 @@ export async function ackGate(
     gate: gateId,
     note: note.trim(),
     ackedAt,
+    headSha,
   };
 }

@@ -6,6 +6,7 @@ import {
   inbox,
   projects,
   providers as providersTable,
+  reviewAcks,
   runs,
   shapingState,
   tasks,
@@ -27,7 +28,7 @@ import {
   type TaskStatus,
   type Transition,
 } from "@daedalus/core/task-state";
-import type { AgentSession, ProviderEntry, SessionProject } from "@daedalus/providers";
+import { redact, type AgentSession, type ProviderEntry, type SessionProject } from "@daedalus/providers";
 import {
   killAllRunningChecks,
   runCheck as defaultRunCheck,
@@ -102,20 +103,15 @@ export type RunTaskResult = {
   checkResult: CheckResult;
 };
 
-export type LastCheckInfo = {
-  ok: boolean;
-  exitCode: number | null;
-  output: string;
-};
+const SIXTY_FOUR_KIB = 64 * 1024;
 
-export const globalCheckResults = new Map<string, LastCheckInfo>();
-
-export function recordCheckResult(projectId: number, taskCode: string, result: LastCheckInfo): void {
-  globalCheckResults.set(`${projectId}:${taskCode.toLowerCase()}`, result);
-}
-
-export function getRecordedCheckResult(projectId: number, taskCode: string): LastCheckInfo | undefined {
-  return globalCheckResults.get(`${projectId}:${taskCode.toLowerCase()}`);
+function formatCheckOutputForDb(output: string): string {
+  let redacted = redact(output);
+  if (Buffer.byteLength(redacted, "utf8") > SIXTY_FOUR_KIB) {
+    const buf = Buffer.from(redacted, "utf8");
+    redacted = buf.subarray(0, SIXTY_FOUR_KIB).toString("utf8");
+  }
+  return redacted;
 }
 
 
@@ -357,6 +353,7 @@ export class TaskRunner {
       this.db.update(tasks).set({ branch }).where(eq(tasks.id, task.id)).run();
 
       // 4. Persist status + attempts now that worktree exists. Insert runs row
+      this.db.delete(reviewAcks).where(eq(reviewAcks.taskId, task.id)).run();
       this.db
         .update(tasks)
         .set({
@@ -447,11 +444,18 @@ export class TaskRunner {
       });
 
       this.lastCheckOutputs.set(runKey, checkRes.output);
-      recordCheckResult(projectId, task.code, {
-        ok: checkRes.ok,
-        exitCode: checkRes.exitCode,
-        output: checkRes.output,
-      });
+
+      const checkExitCode1 = checkRes.ok ? 0 : (checkRes.exitCode ?? (checkRes.timedOut ? null : 1));
+      const checkOutput1 = formatCheckOutputForDb(checkRes.output);
+
+      this.db
+        .update(runs)
+        .set({
+          checkExitCode: checkExitCode1,
+          checkOutput: checkOutput1,
+        })
+        .where(eq(runs.id, runId))
+        .run();
 
       let currentStatus = startTrans.state.status;
       let currentAttempts = startTrans.state.attempts;
@@ -513,11 +517,18 @@ export class TaskRunner {
             timeoutMs: this.checkTimeoutMs,
           });
           this.lastCheckOutputs.set(runKey, checkRes.output);
-          recordCheckResult(projectId, task.code, {
-            ok: checkRes.ok,
-            exitCode: checkRes.exitCode,
-            output: checkRes.output,
-          });
+
+          const checkExitCode2 = checkRes.ok ? 0 : (checkRes.exitCode ?? (checkRes.timedOut ? null : 1));
+          const checkOutput2 = formatCheckOutputForDb(checkRes.output);
+
+          this.db
+            .update(runs)
+            .set({
+              checkExitCode: checkExitCode2,
+              checkOutput: checkOutput2,
+            })
+            .where(eq(runs.id, runId))
+            .run();
 
           if (checkRes.ok) {
             commitSha = await this.gitOps.commitAll(
@@ -597,12 +608,17 @@ export class TaskRunner {
         }
       }
 
+      const finalExitCode = checkRes.ok ? 0 : (checkRes.exitCode ?? (checkRes.timedOut ? null : 1));
+      const finalOutput = formatCheckOutputForDb(checkRes.output);
+
       this.db
         .update(runs)
         .set({
           end: this.now(),
           exitStatus: checkRes.ok ? 0 : (checkRes.exitCode ?? 1),
           logPath,
+          checkExitCode: finalExitCode,
+          checkOutput: finalOutput,
         })
         .where(eq(runs.id, runId))
         .run();
