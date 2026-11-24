@@ -270,17 +270,52 @@ export function hashGitCommonDir(commonDir: string): string {
     }
   }
 
-  // 3. info/attributes
-  const infoAttrFile = join(commonDir, "info", "attributes");
-  if (existsSync(infoAttrFile)) {
-    hash.update("info/attributes:exists\0");
+  // 3. info/ (hash every file under info/, not only info/attributes)
+  const infoDir = join(commonDir, "info");
+  const infoFiles = getFilesRecursive(infoDir);
+  infoFiles.sort((a, b) => a.relPath.localeCompare(b.relPath));
+  hash.update(`info:${infoFiles.length}\0`);
+  for (const f of infoFiles) {
+    hash.update(`info:${f.relPath}\0`);
     try {
-      hash.update(readFileSync(infoAttrFile));
+      hash.update(readFileSync(f.fullPath));
     } catch {
       hash.update("unreadable\0");
     }
+  }
+
+  // 4. worktrees/*/config.worktree
+  const worktreesDir = join(commonDir, "worktrees");
+  if (existsSync(worktreesDir)) {
+    try {
+      const entries = readdirSync(worktreesDir, { withFileTypes: true });
+      const wtConfigFiles: Array<{ relPath: string; fullPath: string }> = [];
+      for (const entry of entries) {
+        if (entry.isDirectory() || entry.isSymbolicLink()) {
+          const cfgPath = join(worktreesDir, entry.name, "config.worktree");
+          if (existsSync(cfgPath)) {
+            wtConfigFiles.push({
+              relPath: `${entry.name}/config.worktree`,
+              fullPath: cfgPath,
+            });
+          }
+        }
+      }
+      wtConfigFiles.sort((a, b) => a.relPath.localeCompare(b.relPath));
+      hash.update(`worktrees_config:${wtConfigFiles.length}\0`);
+      for (const wt of wtConfigFiles) {
+        hash.update(`wt_config:${wt.relPath}\0`);
+        try {
+          hash.update(readFileSync(wt.fullPath));
+        } catch {
+          hash.update("unreadable\0");
+        }
+      }
+    } catch {
+      hash.update("worktrees:unreadable\0");
+    }
   } else {
-    hash.update("info/attributes:missing\0");
+    hash.update("worktrees:missing\0");
   }
 
   return hash.digest("hex");

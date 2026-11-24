@@ -226,7 +226,7 @@ const app = acp
                 toolCallId: "tool-read-1",
                 title: "Read a file",
                 kind: "read",
-                locations: [{ path: "src/index.ts" }],
+                locations: [{ path: join(process.cwd(), "README.md") }],
                 status: "pending",
               },
               options: [
@@ -239,7 +239,7 @@ const app = acp
             const findings = [
               {
                 severity: "high",
-                file: "src/index.ts",
+                file: "README.md",
                 line: 10,
                 claim: "Write permission test claim",
                 proof: `edit: ${editOutcome}, read: ${readOutcome}`,

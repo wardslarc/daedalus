@@ -17,6 +17,7 @@ import {
 } from "@daedalus/db";
 import { SessionManager, syncProviders, type AgentSession, type ProviderEntry } from "@daedalus/providers";
 import {
+  hashGitCommonDir,
   parseFindings,
   parseTriage,
   recoverReviewsOnStartup,
@@ -944,6 +945,57 @@ And then final response:
       const updatedRun = db.select().from(runs).where(eq(runs.id, run!.id)).get();
       expect(updatedRun?.end).not.toBeNull();
       expect(updatedRun?.exitStatus).toBe(1);
+    });
+  });
+
+  describe("hashGitCommonDir", () => {
+    it("hashes every file under info/ and changes when any info file changes", () => {
+      const gitDir = join(repoDir, ".git");
+      const initialHash = hashGitCommonDir(gitDir);
+
+      const infoDir = join(gitDir, "info");
+      mkdirSync(infoDir, { recursive: true });
+      writeFileSync(join(infoDir, "exclude"), "# custom exclude\n*.tmp\n");
+
+      const afterExcludeHash = hashGitCommonDir(gitDir);
+      expect(afterExcludeHash).not.toBe(initialHash);
+
+      writeFileSync(join(infoDir, "attributes"), "* text=auto\n");
+      const afterAttrHash = hashGitCommonDir(gitDir);
+      expect(afterAttrHash).not.toBe(afterExcludeHash);
+    });
+
+    it("hashes every worktrees/*/config.worktree and changes when config.worktree is added or modified", () => {
+      const gitDir = join(repoDir, ".git");
+      const initialHash = hashGitCommonDir(gitDir);
+
+      const wt1 = join(gitDir, "worktrees", "wt-test-1");
+      mkdirSync(wt1, { recursive: true });
+      // creating worktree dir without config.worktree does not change hash
+      expect(hashGitCommonDir(gitDir)).toBe(initialHash);
+
+      // adding config.worktree changes hash
+      const wtConfig = join(wt1, "config.worktree");
+      writeFileSync(wtConfig, "[core]\n\tcheckStat = minimal\n");
+      const withConfigHash = hashGitCommonDir(gitDir);
+      expect(withConfigHash).not.toBe(initialHash);
+
+      // modifying config.worktree changes hash
+      writeFileSync(wtConfig, "[core]\n\tcheckStat = default\n");
+      expect(hashGitCommonDir(gitDir)).not.toBe(withConfigHash);
+    });
+
+    it("refs other than the task branch stay out of commonDirHash on purpose", () => {
+      const gitDir = join(repoDir, ".git");
+      const hashBefore = hashGitCommonDir(gitDir);
+
+      // Commit to main (moves refs/heads/main)
+      writeFileSync(join(repoDir, "other.txt"), "owner commit during review\n");
+      git(repoDir, "add", ".");
+      git(repoDir, "commit", "-m", "owner commit on main");
+
+      const hashAfter = hashGitCommonDir(gitDir);
+      expect(hashAfter).toBe(hashBefore);
     });
   });
 });
