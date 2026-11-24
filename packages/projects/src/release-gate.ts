@@ -17,7 +17,6 @@ import {
   shapingState,
   shipChecklistTicks,
   tasks,
-  type GateCheckStatus,
   type GateRunChecks,
 } from "@daedalus/db";
 import { execGit } from "@daedalus/git";
@@ -56,6 +55,7 @@ export type ReleaseGateData = {
   verifyStartedAt: string | null;
   stage: "build" | "verify";
   status: ReleaseGateStatus;
+  blockedReason?: string;
   latestRun: typeof gateRuns.$inferSelect | null;
   checks: GateRunChecks | null;
   findings: Array<typeof gateFindings.$inferSelect>;
@@ -446,33 +446,39 @@ export async function getReleaseGate(
   if (releaseBranch && existsSync(project.localPath)) {
     try {
       const gitCmd = options?.execGit ?? execGit;
-      const res = await gitCmd(["rev-parse", releaseBranch], {
-        cwd: project.localPath,
-      });
-      currentHeadSha = res.stdout.trim();
+      const res = await gitCmd(
+        ["rev-parse", "--verify", "--end-of-options", `${releaseBranch}^{commit}`],
+        {
+          cwd: project.localPath,
+        },
+      );
+      currentHeadSha = res.stdout.trim() || null;
     } catch {
       currentHeadSha = null;
     }
   }
 
   // Determine gate status
-  let status: ReleaseGateStatus = "not-ready";
+  let status: ReleaseGateStatus;
+  let blockedReason: string | undefined;
 
   if (!verifyStartedAt) {
     status = "not-ready";
+  } else if (!releaseBranch || !currentHeadSha) {
+    status = "blocked";
+    blockedReason = `Could not resolve head for release branch ${releaseBranch ?? "(none)"}: head unknown.`;
   } else if (latestRun?.status === "running") {
     status = "running";
   } else if (
     !latestRun ||
     latestRun.status !== "done" ||
-    (currentHeadSha && latestRun.headSha !== currentHeadSha)
+    latestRun.headSha !== currentHeadSha
   ) {
     status = "needs-run";
   } else {
     // A finished run for the current head exists
     const checks = latestRun.checks as GateRunChecks | null;
     const anyCheckError =
-      latestRun.status === "error" ||
       checks?.secrets?.status === "error" ||
       checks?.dependencies?.status === "error" ||
       checks?.securityTests?.status === "error" ||
@@ -502,6 +508,7 @@ export async function getReleaseGate(
     verifyStartedAt,
     stage,
     status,
+    ...(blockedReason ? { blockedReason } : {}),
     latestRun,
     checks: latestRun?.checks ?? null,
     findings,
@@ -547,12 +554,18 @@ export async function startGateRun(
 
   // 1. Resolve release branch head SHA first
   const gitCmd = deps.execGit ?? execGit;
-  let headSha = "";
+  let headSha: string;
   try {
-    const headRes = await gitCmd(["rev-parse", releaseBranch], {
-      cwd: project.localPath,
-    });
+    const headRes = await gitCmd(
+      ["rev-parse", "--verify", "--end-of-options", `${releaseBranch}^{commit}`],
+      {
+        cwd: project.localPath,
+      },
+    );
     headSha = headRes.stdout.trim();
+    if (!headSha) {
+      throw new Error("Empty head SHA");
+    }
   } catch (err) {
     throw new ReleaseGateError(
       `Could not resolve head for release branch ${releaseBranch}: ${err instanceof Error ? err.message : String(err)}`,
@@ -730,21 +743,69 @@ async function executeGateRun(
           detail: "No pnpm-lock.yaml or package-lock.json found",
         };
       } else {
-        const cmd = hasPnpmLock ? "pnpm" : "npm";
-        const args = ["audit", "--json", "--registry=https://registry.npmjs.org/"];
-        const auditEnv = buildAuditEnv(process.env);
-        const runner = deps.auditRunner ?? defaultAuditRunner;
+        const pkgJsonPath = join(worktreeDir, "package.json");
+        let disallowedAuditConfig = false;
+        if (existsSync(pkgJsonPath)) {
+          try {
+            const pkgRaw = JSON.parse(readFileSync(pkgJsonPath, "utf8")) as Record<string, unknown>;
+            if (
+              pkgRaw &&
+              typeof pkgRaw === "object" &&
+              "pnpm" in pkgRaw &&
+              pkgRaw.pnpm &&
+              typeof pkgRaw.pnpm === "object" &&
+              "auditConfig" in (pkgRaw.pnpm as Record<string, unknown>) &&
+              (pkgRaw.pnpm as Record<string, unknown>).auditConfig !== null &&
+              (pkgRaw.pnpm as Record<string, unknown>).auditConfig !== undefined
+            ) {
+              disallowedAuditConfig = true;
+            }
+          } catch (err) {
+            checks.dependencies = {
+              status: "error",
+              detail: `Could not parse package.json: ${err instanceof Error ? err.message : String(err)}`,
+            };
+            disallowedAuditConfig = true;
+          }
+        }
 
-        const auditRes = await runner(
-          cmd,
-          args,
-          {
-            cwd: worktreeDir,
-            env: auditEnv,
-            timeoutMs: 5 * 60 * 1000,
-          },
-          (pid) => activeRecord.pids.add(pid),
-        );
+        if (disallowedAuditConfig) {
+          if (!checks.dependencies) {
+            checks.dependencies = {
+              status: "error",
+              detail:
+                "package.json pnpm.auditConfig is not allowed: the gate decides which advisories are accepted",
+            };
+          }
+        } else {
+          const cmd = hasPnpmLock ? "pnpm" : "npm";
+          const args = hasPnpmLock
+            ? [
+                "audit",
+                "--json",
+                "--registry=https://registry.npmjs.org/",
+                "--audit-level=low",
+              ]
+            : [
+                "audit",
+                "--json",
+                "--registry=https://registry.npmjs.org/",
+                "--audit-level=low",
+                "--include=dev",
+              ];
+          const auditEnv = buildAuditEnv(process.env);
+          const runner = deps.auditRunner ?? defaultAuditRunner;
+
+          const auditRes = await runner(
+            cmd,
+            args,
+            {
+              cwd: worktreeDir,
+              env: auditEnv,
+              timeoutMs: 5 * 60 * 1000,
+            },
+            (pid) => activeRecord.pids.add(pid),
+          );
 
         if (auditRes.timedOut) {
           checks.dependencies = {

@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -13,7 +13,6 @@ import {
   providers,
   securityTests,
   shapingState,
-  shipChecklistTicks,
   tasks,
   type DaedalusDb,
   type GateRunChecks,
@@ -28,90 +27,14 @@ import {
   setChecklistItem,
   startGateRun,
   syncPlanTasksToDb,
+  type AuditRunner,
 } from "../src/index.js";
+import { shipChecklist } from "@daedalus/core/profiles";
 import { TaskRunner } from "../src/runner.js";
-import { SessionManager } from "@daedalus/providers";
+import { SessionManager, type ProviderEntry } from "@daedalus/providers";
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
-
-function ensureGateTables(db: DaedalusDb) {
-  try {
-    db.$client.exec(`
-      ALTER TABLE shaping_state ADD COLUMN active_milestone_verify_started_at text;
-    `);
-  } catch {
-    // column may already exist
-  }
-  try {
-    db.$client.exec(`
-      ALTER TABLE tasks ADD COLUMN description text;
-    `);
-  } catch {
-    // column may already exist
-  }
-  db.$client.exec(`
-    CREATE TABLE IF NOT EXISTS gate_runs (
-      id integer PRIMARY KEY AUTOINCREMENT NOT NULL,
-      project_id integer NOT NULL,
-      release_version text NOT NULL,
-      head_sha text NOT NULL,
-      status text NOT NULL,
-      checks text,
-      error text,
-      started_at text DEFAULT (CURRENT_TIMESTAMP) NOT NULL,
-      finished_at text,
-      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE cascade
-    );
-
-    CREATE TABLE IF NOT EXISTS gate_findings (
-      id integer PRIMARY KEY AUTOINCREMENT NOT NULL,
-      project_id integer NOT NULL,
-      release_version text NOT NULL,
-      check text NOT NULL,
-      fingerprint text NOT NULL,
-      severity text NOT NULL,
-      title text NOT NULL,
-      detail text,
-      location text,
-      blocking integer NOT NULL,
-      state text DEFAULT 'open' NOT NULL,
-      outcome text,
-      reason text,
-      fix_task_id integer,
-      decided_at text,
-      first_seen_run_id integer,
-      last_seen_run_id integer,
-      created_at text DEFAULT (CURRENT_TIMESTAMP) NOT NULL,
-      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE cascade,
-      FOREIGN KEY (fix_task_id) REFERENCES tasks(id) ON DELETE set null,
-      FOREIGN KEY (first_seen_run_id) REFERENCES gate_runs(id) ON DELETE set null,
-      FOREIGN KEY (last_seen_run_id) REFERENCES gate_runs(id) ON DELETE set null
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS gate_findings_project_id_release_version_fingerprint_unique ON gate_findings (project_id, release_version, fingerprint);
-
-    CREATE TABLE IF NOT EXISTS security_tests (
-      id integer PRIMARY KEY AUTOINCREMENT NOT NULL,
-      project_id integer NOT NULL,
-      name text NOT NULL,
-      path text NOT NULL,
-      sha256 text NOT NULL,
-      command text NOT NULL,
-      created_at text DEFAULT (CURRENT_TIMESTAMP) NOT NULL,
-      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE cascade
-    );
-
-    CREATE TABLE IF NOT EXISTS ship_checklist_ticks (
-      id integer PRIMARY KEY AUTOINCREMENT NOT NULL,
-      project_id integer NOT NULL,
-      release_version text NOT NULL,
-      item_id text NOT NULL,
-      ticked_at text DEFAULT (CURRENT_TIMESTAMP) NOT NULL,
-      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE cascade
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS ship_checklist_ticks_project_id_release_version_item_id_unique ON ship_checklist_ticks (project_id, release_version, item_id);
-  `);
-}
 
 describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)", () => {
   let testDir: string;
@@ -126,7 +49,6 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
     dataDir = join(testDir, "data");
     mkdirSync(dataDir, { recursive: true });
     db = openDb(join(dataDir, "test.db"));
-    ensureGateTables(db);
 
     repoDir = join(testDir, "repo");
     mkdirSync(repoDir, { recursive: true });
@@ -156,10 +78,10 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
     const [prov] = db
       .insert(providers)
       .values({
-        name: "claude-test",
+        name: "claude",
         kind: "cli",
         launchCommand: "echo",
-        roles: ["implement", "review"],
+        roles: ["coder"],
         allowedProfiles: ["work", "client", "personal"],
       })
       .returning()
@@ -202,8 +124,7 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
       })
       .run();
 
-    const [t2] = db
-      .insert(tasks)
+    db.insert(tasks)
       .values({
         projectId: projectRow.id,
         code: "T1.2",
@@ -213,8 +134,7 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
         frozenAt: now,
         branch: "daedalus/t1.2",
       })
-      .returning()
-      .all();
+      .run();
 
     // Verify stage should be null because T1.2 is not done
     const refreshedBefore = refreshVerifyStage(db, projectRow.id);
@@ -234,7 +154,7 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
     // Approve the last task (T1.2)
     const approveResult = await approveTask(db, projectRow, "T1.2", {
       dataDir,
-      transition: (s) => ({ state: { ...s, status: "done" }, actions: [] }),
+      transition: (s) => ({ state: { ...s, status: "done" }, inbox: null }),
     });
     expect(approveResult.status).toBe("done");
 
@@ -830,17 +750,40 @@ Done when: all tasks pass.
     expect(fix1InDb?.checkCommand).toBe("echo check-fix-1");
 
     // Task runner acceptance
-    const sessions = new SessionManager({ providers: [providerRow] });
+    const providerEntry: ProviderEntry = {
+      id: "claude",
+      kind: "cli",
+      command: "echo",
+      args: [],
+      roles: ["coder"],
+      allowedProfiles: ["work", "client", "personal"],
+      version: "1.0.0",
+    };
+    const sessions = new SessionManager({ providers: [providerEntry] });
+    sessions.start = async () => ({
+      id: "fake-session",
+      startedAt: new Date().toISOString(),
+      prompt: async () => "end_turn",
+      stop: async () => {},
+    });
     const runner = new TaskRunner({
       db,
       dataDir,
       sessions,
-      providers: [providerRow],
+      providers: [providerEntry],
+      transition: (state, event) => ({
+        state: {
+          status: event.type === "start" ? "running" : "in-review",
+          attempts: state.attempts,
+        },
+        inbox: null,
+      }),
       checkTimeoutMs: 5000,
     });
 
     const runResult = await runner.runTask(projectRow.id, "FIX-1");
-    expect(runResult.exitCode).toBe(0);
+    expect(runResult.ok).toBe(true);
+    expect(runResult.checkResult.exitCode).toBe(0);
     expect(runResult.status).toBe("in-review");
   });
 
@@ -885,5 +828,148 @@ Done when: all tasks pass.
 
     const gate = await getReleaseGate(db, projectRow);
     expect(gate.checklist.every((i) => i.ticked)).toBe(true);
+  });
+
+  it("delete the release branch after a passing run → gate is not pass (blocked with unknown head)", async () => {
+    db.update(shapingState)
+      .set({ activeMilestoneVerifyStartedAt: new Date().toISOString() })
+      .where(eq(shapingState.projectId, projectRow.id))
+      .run();
+
+    const { runId } = await startGateRun({ db, dataDir }, projectRow.id);
+
+    let attempts = 0;
+    let run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    while (run?.status === "running" && attempts < 30) {
+      await new Promise((r) => setTimeout(r, 100));
+      run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+      attempts++;
+    }
+
+    const items = shipChecklist(projectRow.profile);
+    for (const item of items) {
+      await setChecklistItem(db, projectRow.id, item.id, true);
+    }
+
+    const gatePassing = await getReleaseGate(db, projectRow);
+    expect(gatePassing.status).toBe("pass");
+
+    git(repoDir, "branch", "-D", "daedalus/release-v1.0");
+
+    const gateAfterDelete = await getReleaseGate(db, projectRow);
+    expect(gateAfterDelete.status).toBe("blocked");
+    expect(gateAfterDelete.status).not.toBe("pass");
+  });
+
+  it("package.json with pnpm.auditConfig → dependencies check error", async () => {
+    db.update(shapingState)
+      .set({ activeMilestoneVerifyStartedAt: new Date().toISOString() })
+      .where(eq(shapingState.projectId, projectRow.id))
+      .run();
+
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    writeFileSync(
+      join(repoDir, "package.json"),
+      JSON.stringify({
+        name: "test-pkg",
+        pnpm: {
+          auditConfig: {
+            ignoreCves: ["CVE-2023-1234"],
+          },
+        },
+      }),
+    );
+    writeFileSync(join(repoDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    git(repoDir, "add", "package.json", "pnpm-lock.yaml");
+    git(repoDir, "commit", "-m", "add auditConfig and lockfile");
+    git(repoDir, "checkout", "main");
+
+    const { runId } = await startGateRun({ db, dataDir }, projectRow.id);
+
+    let attempts = 0;
+    let run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    while (run?.status === "running" && attempts < 30) {
+      await new Promise((r) => setTimeout(r, 100));
+      run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+      attempts++;
+    }
+
+    const checks = run?.checks as GateRunChecks | null;
+    expect(checks?.dependencies?.status).toBe("error");
+    expect(checks?.dependencies?.detail).toBe(
+      "package.json pnpm.auditConfig is not allowed: the gate decides which advisories are accepted",
+    );
+
+    const gate = await getReleaseGate(db, projectRow);
+    expect(gate.status).toBe("blocked");
+  });
+
+  it("audit command receives --audit-level=low and --include=dev (for npm) and forced registry", async () => {
+    db.update(shapingState)
+      .set({ activeMilestoneVerifyStartedAt: new Date().toISOString() })
+      .where(eq(shapingState.projectId, projectRow.id))
+      .run();
+
+    let capturedCmd = "";
+    let capturedArgs: string[] = [];
+    const stubRunner: AuditRunner = async (cmd, args) => {
+      capturedCmd = cmd;
+      capturedArgs = [...args];
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ vulnerabilities: {} }),
+        stderr: "",
+        timedOut: false,
+      };
+    };
+
+    // 1. With package-lock.json (npm)
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "package-lock.json"), "{}");
+    git(repoDir, "add", "package-lock.json");
+    git(repoDir, "commit", "-m", "add package-lock.json");
+    git(repoDir, "checkout", "main");
+
+    const { runId: runId1 } = await startGateRun(
+      { db, dataDir, auditRunner: stubRunner },
+      projectRow.id,
+    );
+    let attempts = 0;
+    let run = db.select().from(gateRuns).where(eq(gateRuns.id, runId1)).get();
+    while (run?.status === "running" && attempts < 30) {
+      await new Promise((r) => setTimeout(r, 100));
+      run = db.select().from(gateRuns).where(eq(gateRuns.id, runId1)).get();
+      attempts++;
+    }
+
+    expect(capturedCmd).toBe("npm");
+    expect(capturedArgs).toContain("--audit-level=low");
+    expect(capturedArgs).toContain("--include=dev");
+    expect(capturedArgs).toContain("--registry=https://registry.npmjs.org/");
+
+    // 2. With pnpm-lock.yaml (pnpm)
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    rmSync(join(repoDir, "package-lock.json"), { force: true });
+    writeFileSync(join(repoDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    git(repoDir, "add", "package-lock.json", "pnpm-lock.yaml");
+    git(repoDir, "commit", "-m", "switch to pnpm-lock.yaml");
+    git(repoDir, "checkout", "main");
+
+    const { runId: runId2 } = await startGateRun(
+      { db, dataDir, auditRunner: stubRunner },
+      projectRow.id,
+    );
+    attempts = 0;
+    run = db.select().from(gateRuns).where(eq(gateRuns.id, runId2)).get();
+    while (run?.status === "running" && attempts < 30) {
+      await new Promise((r) => setTimeout(r, 100));
+      run = db.select().from(gateRuns).where(eq(gateRuns.id, runId2)).get();
+      attempts++;
+    }
+
+    expect(capturedCmd).toBe("pnpm");
+    expect(capturedArgs).toContain("--audit-level=low");
+    expect(capturedArgs).not.toContain("--include=dev");
+    expect(capturedArgs).toContain("--registry=https://registry.npmjs.org/");
   });
 });

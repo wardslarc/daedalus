@@ -219,7 +219,7 @@ export default function ReleaseGatePage() {
           <div className={`release-banner banner-${gate.status}`} role="status">
             <div>
               <div className="release-banner-title">{formatStatusTitle(gate.status)}</div>
-              <div className="release-banner-subtitle">{formatStatusSubtitle(gate.status)}</div>
+              <div className="release-banner-subtitle">{gate.blockedReason ?? formatStatusSubtitle(gate.status)}</div>
             </div>
             <div className="release-banner-status-badge">{gate.status}</div>
           </div>

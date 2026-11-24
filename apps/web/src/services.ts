@@ -5,7 +5,7 @@
  * handlers reach them through this object on globalThis (Symbol.for key, so it also
  * survives Next's dev reloads).
  */
-import type { DaedalusDb, gateFindings, gateRuns, projects, tasks } from "@daedalus/db";
+import type { DaedalusDb, gateFindings, projects, tasks } from "@daedalus/db";
 import type { ApproveMockInput, ApprovePlanInput, ApproveSpecInput, BrowseResult, CreateInput, createProject, ImportInput, importProject, mergeKit, MilestoneState, MockApproval, ParsedMilestone, PipelineTask, ReleaseGateData, ReviewData, RunTaskResult, SaveIntakeInput, ShapingState, StartMilestoneInput, TaskRunner } from "@daedalus/projects";
 import type { ProfileRules } from "@daedalus/core/profiles";
 import type { TaskStatus } from "@daedalus/core/task-state";
