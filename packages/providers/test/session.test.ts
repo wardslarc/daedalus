@@ -232,7 +232,7 @@ describe("PermissionPolicy: read-only", () => {
     expect(text(await doneNone)).toBe("denied");
   });
 
-  it("read-only policy: read inside allowed, read ../outside and symlink pointing outside rejected, read with no locations rejected, think with no locations allowed", async () => {
+  it("read-only policy: read inside allowed, read ../outside and symlink pointing outside rejected, read with no locations rejected, think rejected", async () => {
     const p = project();
     const insideFile = join(p.localPath, "inside.txt");
     writeFileSync(insideFile, "inside content\n");
@@ -267,10 +267,15 @@ describe("PermissionPolicy: read-only", () => {
       await s.prompt("permission-kind read");
       expect(text(await doneNoLoc)).toBe("denied");
 
-      // think with no locations -> allowed
+      // think with no locations -> rejected (denied)
       const doneThink = waitFor(s, (e) => e.type === "turn_end");
       await s.prompt("permission-kind think");
-      expect(text(await doneThink)).toBe("allowed");
+      expect(text(await doneThink)).toBe("denied");
+
+      // think with locations inside -> rejected (denied)
+      const doneThinkLoc = waitFor(s, (e) => e.type === "turn_end");
+      await s.prompt(`permission-kind think ${insideFile}`);
+      expect(text(await doneThinkLoc)).toBe("denied");
     } finally {
       try {
         rmSync(outsideDir, { recursive: true, force: true });

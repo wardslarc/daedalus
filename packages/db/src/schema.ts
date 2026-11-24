@@ -144,6 +144,7 @@ export const reviewAcks = sqliteTable(
       .default(sql`(CURRENT_TIMESTAMP)`),
     note: text("note").notNull(),
     headSha: text("head_sha"),
+    itemsSha256: text("items_sha256"),
   },
   (table) => [
     unique("review_acks_task_id_gate_unique").on(table.taskId, table.gate),

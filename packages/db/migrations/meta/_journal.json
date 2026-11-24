@@ -57,6 +57,13 @@
       "when": 1795505638043,
       "tag": "0007_slow_rocket_racer",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1795511174855,
+      "tag": "0008_jazzy_living_lightning",
+      "breakpoints": true
     }
   ]
 }
