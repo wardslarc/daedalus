@@ -42,7 +42,6 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
   let repoDir: string;
   let db: DaedalusDb;
   let projectRow: typeof projects.$inferSelect;
-  let providerRow: typeof providers.$inferSelect;
 
   beforeEach(() => {
     testDir = mkdtempSync(join(tmpdir(), "daedalus-gate-test-"));
@@ -75,8 +74,7 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
       .all();
     projectRow = proj!;
 
-    const [prov] = db
-      .insert(providers)
+    db.insert(providers)
       .values({
         name: "claude",
         kind: "cli",
@@ -84,9 +82,7 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
         roles: ["coder"],
         allowedProfiles: ["work", "client", "personal"],
       })
-      .returning()
-      .all();
-    providerRow = prov!;
+      .run();
 
     db.insert(shapingState)
       .values({
@@ -946,6 +942,7 @@ Done when: all tasks pass.
     expect(capturedArgs).toContain("--audit-level=low");
     expect(capturedArgs).toContain("--include=dev");
     expect(capturedArgs).toContain("--registry=https://registry.npmjs.org/");
+    expect(capturedArgs.some((a) => a.startsWith("--userconfig="))).toBe(true);
 
     // 2. With pnpm-lock.yaml (pnpm)
     git(repoDir, "checkout", "daedalus/release-v1.0");
@@ -970,6 +967,163 @@ Done when: all tasks pass.
     expect(capturedCmd).toBe("pnpm");
     expect(capturedArgs).toContain("--audit-level=low");
     expect(capturedArgs).not.toContain("--include=dev");
+    expect(capturedArgs).toContain("--ignore-pnpmfile");
     expect(capturedArgs).toContain("--registry=https://registry.npmjs.org/");
+    expect(capturedArgs.some((a) => a.startsWith("--userconfig="))).toBe(true);
+  });
+
+  it("dependency audit runner cwd has no .pnpmfile.cjs or .npmrc even when repo has them, and args include --ignore-pnpmfile and --userconfig", async () => {
+    db.update(shapingState)
+      .set({ activeMilestoneVerifyStartedAt: new Date().toISOString() })
+      .where(eq(shapingState.projectId, projectRow.id))
+      .run();
+
+    // Plant .pnpmfile.cjs and .npmrc in release branch
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, ".pnpmfile.cjs"), "throw new Error('pnpmfile executed');\n");
+    writeFileSync(join(repoDir, ".npmrc"), "registry=http://malicious.local\n");
+    writeFileSync(join(repoDir, "pnpm-workspace.yaml"), "packages:\n  - 'packages/*'\n");
+    writeFileSync(join(repoDir, "package.json"), JSON.stringify({ name: "audit-test-pkg" }));
+    writeFileSync(join(repoDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    git(repoDir, "add", ".pnpmfile.cjs", ".npmrc", "pnpm-workspace.yaml", "package.json", "pnpm-lock.yaml");
+    git(repoDir, "commit", "-m", "add config files and lockfile");
+    git(repoDir, "checkout", "main");
+
+    let capturedCwd = "";
+    let capturedArgs: string[] = [];
+    let capturedEnv: NodeJS.ProcessEnv = {};
+    let cwdHasPnpmfile = true;
+    let cwdHasNpmrc = true;
+    let cwdHasPkgJson = false;
+    let cwdHasLockfile = false;
+    let cwdHasWorkspace = false;
+
+    const stubRunner: AuditRunner = async (_cmd, args, opts) => {
+      capturedCwd = opts.cwd;
+      capturedArgs = [...args];
+      capturedEnv = { ...opts.env };
+      cwdHasPnpmfile = existsSync(join(opts.cwd, ".pnpmfile.cjs"));
+      cwdHasNpmrc = existsSync(join(opts.cwd, ".npmrc"));
+      cwdHasPkgJson = existsSync(join(opts.cwd, "package.json"));
+      cwdHasLockfile = existsSync(join(opts.cwd, "pnpm-lock.yaml"));
+      cwdHasWorkspace = existsSync(join(opts.cwd, "pnpm-workspace.yaml"));
+
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ advisories: {} }),
+        stderr: "",
+        timedOut: false,
+      };
+    };
+
+    const { runId } = await startGateRun(
+      { db, dataDir, auditRunner: stubRunner },
+      projectRow.id,
+    );
+
+    let attempts = 0;
+    let run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    while (run?.status === "running" && attempts < 30) {
+      await new Promise((r) => setTimeout(r, 100));
+      run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+      attempts++;
+    }
+
+    expect(run?.status).toBe("done");
+    // Verify isolated directory properties
+    expect(cwdHasPnpmfile).toBe(false);
+    expect(cwdHasNpmrc).toBe(false);
+    expect(cwdHasPkgJson).toBe(true);
+    expect(cwdHasLockfile).toBe(true);
+    expect(cwdHasWorkspace).toBe(true);
+
+    // Verify flags
+    expect(capturedArgs).toContain("--ignore-pnpmfile");
+    const userConfigArg = capturedArgs.find((a) => a.startsWith("--userconfig="));
+    expect(userConfigArg).toBeDefined();
+    const emptyConfigPath = userConfigArg!.slice("--userconfig=".length);
+    expect(capturedEnv.npm_config_globalconfig).toBe(emptyConfigPath);
+
+    // Verify temp directory removed afterwards
+    expect(existsSync(capturedCwd)).toBe(false);
+  });
+
+  it("secret introduced only in a merge commit resolution → blocking finding", async () => {
+    db.update(shapingState)
+      .set({ activeMilestoneVerifyStartedAt: new Date().toISOString() })
+      .where(eq(shapingState.projectId, projectRow.id))
+      .run();
+
+    const secretKey = "ghp_MergeConflictSecret9999999999999999";
+
+    // Base file on release branch
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "conflict-target.ts"), "export const value = 'base';\n");
+    git(repoDir, "add", "conflict-target.ts");
+    git(repoDir, "commit", "-m", "base commit on release");
+
+    // Feature branch modifies conflict-target.ts
+    git(repoDir, "checkout", "-b", "feat/conflict-branch");
+    writeFileSync(join(repoDir, "conflict-target.ts"), "export const value = 'from-feature';\n");
+    git(repoDir, "add", "conflict-target.ts");
+    git(repoDir, "commit", "-m", "feature change");
+
+    // Release branch also modifies conflict-target.ts
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "conflict-target.ts"), "export const value = 'from-release';\n");
+    git(repoDir, "add", "conflict-target.ts");
+    git(repoDir, "commit", "-m", "release change");
+
+    // Merge feature branch into release branch -> conflicts
+    try {
+      execFileSync("git", ["merge", "feat/conflict-branch"], { cwd: repoDir, stdio: "pipe" });
+    } catch {
+      // Conflict expected
+    }
+
+    // Resolve conflict by introducing a secret into conflict-target.ts
+    writeFileSync(
+      join(repoDir, "conflict-target.ts"),
+      `export const value = 'resolved';\nconst token = "${secretKey}";\n`,
+    );
+    git(repoDir, "add", "conflict-target.ts");
+    git(repoDir, "commit", "-m", "resolve conflict with secret");
+
+    // Remove the secret in a follow-up commit so HEAD release diff has no secret;
+    // secret exists only in the merge commit resolution!
+    writeFileSync(
+      join(repoDir, "conflict-target.ts"),
+      "export const value = 'resolved-no-secret';\n",
+    );
+    git(repoDir, "add", "conflict-target.ts");
+    git(repoDir, "commit", "-m", "remove secret from head");
+
+    git(repoDir, "checkout", "main");
+
+    const { runId } = await startGateRun({ db, dataDir }, projectRow.id);
+
+    let attempts = 0;
+    let run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    while (run?.status === "running" && attempts < 30) {
+      await new Promise((r) => setTimeout(r, 100));
+      run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+      attempts++;
+    }
+
+    expect(run?.status).toBe("done");
+
+    const findings = db
+      .select()
+      .from(gateFindings)
+      .where(eq(gateFindings.projectId, projectRow.id))
+      .all();
+
+    const secretFinding = findings.find((f) => f.check === "secrets");
+    expect(secretFinding).toBeDefined();
+    expect(secretFinding?.blocking).toBe(true);
+    expect(secretFinding?.location).toContain("conflict-target.ts");
+
+    const gate = await getReleaseGate(db, projectRow);
+    expect(gate.status).toBe("blocked");
   });
 });

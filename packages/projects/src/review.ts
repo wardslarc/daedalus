@@ -239,6 +239,7 @@ export function buildReviewLogArgs(extraArgs: string[], range: string): string[]
     "diff.external=",
     "log",
     "-p",
+    "--diff-merges=first-parent",
     "--no-color",
     "--no-ext-diff",
     "--no-textconv",

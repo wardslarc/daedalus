@@ -5,7 +5,7 @@
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import type { DaedalusDb } from "@daedalus/db";
@@ -82,6 +82,7 @@ export type ReleaseGateDeps = {
 type ActiveRunRecord = {
   projectId: number;
   worktreeDir: string | null;
+  auditDir?: string | null;
   repoPath: string;
   pids: Set<number>;
   killAll: () => void;
@@ -92,8 +93,12 @@ const activeRuns = new Map<number, ActiveRunRecord>();
 /**
  * Filter and sanitize environment variables for dependency audits (ADR 0020).
  * Strips secrets via scrubEnv, and additionally removes all npm_config_*, NPM_CONFIG_*, and COREPACK_* vars.
+ * Sets npm_config_globalconfig if emptyConfigPath is provided.
  */
-export function buildAuditEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function buildAuditEnv(
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  emptyConfigPath?: string,
+): NodeJS.ProcessEnv {
   const clean = scrubEnv(baseEnv);
   const out: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(clean)) {
@@ -101,6 +106,9 @@ export function buildAuditEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.
       continue;
     }
     out[k] = v;
+  }
+  if (emptyConfigPath) {
+    out.npm_config_globalconfig = emptyConfigPath;
   }
   return out;
 }
@@ -603,6 +611,7 @@ export async function startGateRun(
   const activeRecord: ActiveRunRecord = {
     projectId,
     worktreeDir: null,
+    auditDir: null,
     repoPath: project.localPath,
     pids,
     killAll: () => {
@@ -653,6 +662,7 @@ async function executeGateRun(
   const reportedFindings: InternalFinding[] = [];
   let unhandledError: string | null = null;
   let worktreeDir: string | null = null;
+  let auditDir: string | null = null;
 
   try {
     // ----------------------------------------------------
@@ -743,11 +753,38 @@ async function executeGateRun(
           detail: "No pnpm-lock.yaml or package-lock.json found",
         };
       } else {
-        const pkgJsonPath = join(worktreeDir, "package.json");
+        auditDir = join(deps.dataDir, "tmp", `audit-${runId}`);
+        activeRecord.auditDir = auditDir;
+        mkdirSync(auditDir, { recursive: true });
+
+        // Copy lockfile
+        if (hasPnpmLock) {
+          copyFileSync(pnpmLockPath, join(auditDir, "pnpm-lock.yaml"));
+        } else if (hasNpmLock) {
+          copyFileSync(npmLockPath, join(auditDir, "package-lock.json"));
+        }
+
+        // Copy root package.json if present
+        const srcPkgJson = join(worktreeDir, "package.json");
+        const copiedPkgJson = join(auditDir, "package.json");
+        if (existsSync(srcPkgJson)) {
+          copyFileSync(srcPkgJson, copiedPkgJson);
+        }
+
+        // Copy pnpm-workspace.yaml if present
+        const srcWorkspace = join(worktreeDir, "pnpm-workspace.yaml");
+        if (existsSync(srcWorkspace)) {
+          copyFileSync(srcWorkspace, join(auditDir, "pnpm-workspace.yaml"));
+        }
+
+        // Point both at an empty config: empty file in that folder
+        const emptyConfigPath = join(auditDir, "empty.npmrc");
+        writeFileSync(emptyConfigPath, "");
+
         let disallowedAuditConfig = false;
-        if (existsSync(pkgJsonPath)) {
+        if (existsSync(copiedPkgJson)) {
           try {
-            const pkgRaw = JSON.parse(readFileSync(pkgJsonPath, "utf8")) as Record<string, unknown>;
+            const pkgRaw = JSON.parse(readFileSync(copiedPkgJson, "utf8")) as Record<string, unknown>;
             if (
               pkgRaw &&
               typeof pkgRaw === "object" &&
@@ -785,6 +822,8 @@ async function executeGateRun(
                 "--json",
                 "--registry=https://registry.npmjs.org/",
                 "--audit-level=low",
+                "--ignore-pnpmfile",
+                `--userconfig=${emptyConfigPath}`,
               ]
             : [
                 "audit",
@@ -792,67 +831,69 @@ async function executeGateRun(
                 "--registry=https://registry.npmjs.org/",
                 "--audit-level=low",
                 "--include=dev",
+                `--userconfig=${emptyConfigPath}`,
               ];
-          const auditEnv = buildAuditEnv(process.env);
+          const auditEnv = buildAuditEnv(process.env, emptyConfigPath);
           const runner = deps.auditRunner ?? defaultAuditRunner;
 
           const auditRes = await runner(
             cmd,
             args,
             {
-              cwd: worktreeDir,
+              cwd: auditDir,
               env: auditEnv,
               timeoutMs: 5 * 60 * 1000,
             },
             (pid) => activeRecord.pids.add(pid),
           );
 
-        if (auditRes.timedOut) {
-          checks.dependencies = {
-            status: "error",
-            detail: "Dependency audit timed out after 5 minutes",
-          };
-        } else if (!auditRes.stdout.trim()) {
-          checks.dependencies = {
-            status: "error",
-            detail: redact(auditRes.stderr || "Audit command produced no output"),
-          };
-        } else {
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(auditRes.stdout.trim());
-          } catch {
-            parsed = null;
-          }
-
-          if (parsed === null || typeof parsed !== "object") {
+          if (auditRes.timedOut) {
             checks.dependencies = {
               status: "error",
-              detail: "Could not parse audit output as JSON",
+              detail: "Dependency audit timed out after 5 minutes",
+            };
+          } else if (!auditRes.stdout.trim()) {
+            checks.dependencies = {
+              status: "error",
+              detail: redact(auditRes.stderr || "Audit command produced no output"),
             };
           } else {
-            const rawFindings = parseAuditJson(parsed);
-            for (const rf of rawFindings) {
-              const fp = `dependencies:${rf.package}:${rf.advisoryId}`;
-              reportedFindings.push({
-                check: "dependencies",
-                fingerprint: fp,
-                severity: rf.severity,
-                title: rf.title,
-                detail: rf.detail,
-                location: rf.location,
-                blocking: rf.blocking,
-              });
+            let parsed: unknown;
+            try {
+              parsed = JSON.parse(auditRes.stdout.trim());
+            } catch {
+              parsed = null;
             }
 
-            const depHits = reportedFindings.filter((f) => f.check === "dependencies");
-            if (depHits.length > 0) {
+            if (parsed === null || typeof parsed !== "object") {
               checks.dependencies = {
-                status: "fail",
-                detail: `${depHits.length} advisory/ies found`,
+                status: "error",
+                detail: "Could not parse audit output as JSON",
               };
             } else {
-              checks.dependencies = { status: "pass" };
+              const rawFindings = parseAuditJson(parsed);
+              for (const rf of rawFindings) {
+                const fp = `dependencies:${rf.package}:${rf.advisoryId}`;
+                reportedFindings.push({
+                  check: "dependencies",
+                  fingerprint: fp,
+                  severity: rf.severity,
+                  title: rf.title,
+                  detail: rf.detail,
+                  location: rf.location,
+                  blocking: rf.blocking,
+                });
+              }
+
+              const depHits = reportedFindings.filter((f) => f.check === "dependencies");
+              if (depHits.length > 0) {
+                checks.dependencies = {
+                  status: "fail",
+                  detail: `${depHits.length} advisory/ies found`,
+                };
+              } else {
+                checks.dependencies = { status: "pass" };
+              }
             }
           }
         }
@@ -862,6 +903,14 @@ async function executeGateRun(
         status: "error",
         detail: redact(err instanceof Error ? err.message : String(err)),
       };
+    } finally {
+      if (auditDir) {
+        try {
+          rmSync(auditDir, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
     }
 
     // ----------------------------------------------------
@@ -1086,8 +1135,15 @@ async function executeGateRun(
     unhandledError = err instanceof Error ? err.message : String(err);
   } finally {
     // ----------------------------------------------------
-    // Cleanup worktree and finalize run row
+    // Cleanup audit dir, worktree and finalize run row
     // ----------------------------------------------------
+    if (auditDir && existsSync(auditDir)) {
+      try {
+        rmSync(auditDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    }
     if (worktreeDir && existsSync(worktreeDir)) {
       try {
         await gitCmd(["worktree", "remove", "--force", worktreeDir], {
@@ -1362,6 +1418,13 @@ export function recoverGateRunsOnStartup(db: DaedalusDb): void {
 export async function stopAllGateRuns(db: DaedalusDb, dataDir: string): Promise<void> {
   for (const [, rec] of activeRuns) {
     rec.killAll();
+    if (rec.auditDir && existsSync(rec.auditDir)) {
+      try {
+        rmSync(rec.auditDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    }
     if (rec.worktreeDir && existsSync(rec.worktreeDir)) {
       try {
         await execGit(["worktree", "remove", "--force", rec.worktreeDir], {
@@ -1387,6 +1450,14 @@ export async function stopAllGateRuns(db: DaedalusDb, dataDir: string): Promise<
 
   const now = new Date().toISOString();
   for (const r of runningRuns) {
+    const auditPath = join(dataDir, "tmp", `audit-${r.id}`);
+    if (existsSync(auditPath)) {
+      try {
+        rmSync(auditPath, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    }
     const worktreePath = join(dataDir, "worktrees", `gate-${r.projectId}-${r.id}`);
     if (existsSync(worktreePath)) {
       try {
