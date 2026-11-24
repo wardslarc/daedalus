@@ -4,8 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { ProjectTabs } from "../../../../components/project-tabs";
 import { postJson } from "../../../../csrf-fetch";
-import type { Gate, ReviewData, ReviewDiffFile } from "@daedalus/projects";
-import type { TaskStatus } from "@daedalus/core/task-state";
+import type { ReviewData } from "@daedalus/projects";
 
 type InReviewTask = {
   id: number;

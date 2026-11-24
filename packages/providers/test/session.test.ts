@@ -223,17 +223,17 @@ describe("PermissionPolicy: read-only", () => {
 
     // edit request -> denied (reject_once)
     const doneEdit = waitFor(s, (e) => e.type === "turn_end");
-    await s.prompt("permission edit");
+    await s.prompt("permission-kind edit");
     expect(text(await doneEdit)).toBe("denied");
 
     // read request -> allowed (allow_once)
     const doneRead = waitFor(s, (e) => e.type === "turn_end");
-    await s.prompt("permission read");
+    await s.prompt("permission-kind read");
     expect(text(await doneRead)).toBe("allowed");
 
     // no kind -> denied (reject_once)
     const doneNone = waitFor(s, (e) => e.type === "turn_end");
-    await s.prompt("permission none");
+    await s.prompt("permission-kind none");
     expect(text(await doneNone)).toBe("denied");
   });
 
@@ -243,7 +243,7 @@ describe("PermissionPolicy: read-only", () => {
     s.onEvent((e) => events.push(e));
 
     const done = waitFor(s, (e) => e.type === "turn_end");
-    await s.prompt("permission edit");
+    await s.prompt("permission-kind edit");
     await done;
 
     // Both permission and permission_resolved events emitted

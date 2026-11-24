@@ -120,7 +120,7 @@ export const reviews = sqliteTable("reviews", {
   reviewer: text("reviewer").notNull(),
   status: text("status").notNull().default("running"),
   headSha: text("head_sha"),
-  findings: text("findings").notNull().default(sql`'[]'`),
+  findings: text("findings").notNull(),
   claudeTriage: text("claude_triage"),
   ownerDecision: text("owner_decision"),
   startedAt: text("started_at"),

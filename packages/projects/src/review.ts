@@ -8,7 +8,6 @@ import { dirname, join, resolve } from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import type { DaedalusDb } from "@daedalus/db";
 import {
-  projects,
   reviewAcks,
   reviews,
   runs,
@@ -348,7 +347,7 @@ export async function getReview(
   }
 
   // Execute git diff <release>...daedalus/<task> with review safety flags
-  let rawPatch = "";
+  let rawPatch: string;
   let diffError: string | null = null;
   const files: ReviewDiffFile[] = [];
   const binaryPaths = new Set<string>();
@@ -672,7 +671,7 @@ export async function getReview(
   ];
 
   // 5. cross-review gate (T6.2, ADR 0019)
-  let latestReview: typeof reviews.$inferSelect | null = null;
+  let latestReview: typeof reviews.$inferSelect | null;
   try {
     latestReview = db
       .select()
@@ -726,7 +725,7 @@ export async function getReview(
     };
   }
 
-  let crossReviewGateStatus: "pass" | "blocked" | "needs-ack" = "pass";
+  let crossReviewGateStatus: "pass" | "blocked" | "needs-ack";
   const crossReviewGateItems: string[] = [];
 
   if (!latestReview || !currentHeadSha || latestReview.headSha !== currentHeadSha) {
@@ -1189,7 +1188,7 @@ export async function ackGate(
 
   const runExecGit = options?.gitOps?.execGit ?? execGit;
   const taskBranch = task.branch || `daedalus/${task.code.toLowerCase()}`;
-  let headSha: string | null = null;
+  let headSha: string | null;
   try {
     const revRes = await runExecGit(["rev-parse", "--verify", `${taskBranch}^{commit}`], {
       cwd: project.localPath,

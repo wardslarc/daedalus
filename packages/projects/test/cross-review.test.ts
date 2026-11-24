@@ -12,15 +12,16 @@ import {
   providers,
   reviews,
   runs,
-  shapingState,
   tasks,
   type DaedalusDb,
 } from "@daedalus/db";
-import { SessionManager, type ProviderEntry } from "@daedalus/providers";
+import { SessionManager, type AgentSession, type ProviderEntry } from "@daedalus/providers";
 import {
   parseFindings,
   parseTriage,
+  recoverReviewsOnStartup,
   startCrossReview,
+  type StartCrossReviewResult,
 } from "../src/cross-review.js";
 import { getReview } from "../src/review.js";
 
@@ -117,7 +118,7 @@ And then final response:
         claim: "Missing authorization check on admin endpoint",
         proof: "No user role validation before running admin action.",
       });
-      expect((findings[0] as any).ignoredExtraField).toBeUndefined();
+      expect((findings[0] as unknown as Record<string, unknown>).ignoredExtraField).toBeUndefined();
     });
 
     it("redacts secrets inside claim and proof", () => {
@@ -145,7 +146,7 @@ And then final response:
 
     it("rejects path traversal (../x, /etc/passwd)", () => {
       const makeBlock = (file: string) =>
-        `\`\`\`json\n{"findings":[{"severity":"low","file":"${file}","line":1,"claim":"c","proof":"p"}]}\n\`\`\``;
+        `\`\`\`json\n${JSON.stringify({ findings: [{ severity: "low", file, line: 1, claim: "c", proof: "p" }] })}\n\`\`\``;
 
       expect(() => parseFindings(makeBlock("../x"))).toThrow();
       expect(() => parseFindings(makeBlock("/etc/passwd"))).toThrow();
@@ -344,7 +345,11 @@ And then final response:
 
       let startedWith: string[] = [];
       const spyManager = {
-        start: async (p: any, provId: string, opts: any) => {
+        start: async (
+          p: Parameters<SessionManager["start"]>[0],
+          provId: string,
+          opts?: Parameters<SessionManager["start"]>[2],
+        ) => {
           startedWith.push(provId);
           return manager.start(p, provId, opts);
         },
@@ -501,6 +506,100 @@ And then final response:
       const gate = reviewData.gates.find((g) => g.id === "cross-review");
       expect(gate?.status).toBe("blocked");
       expect(gate?.items[0]).toContain("The reviewer changed files; its review was discarded.");
+    });
+
+    it("FAKE:write-and-stall with timeout -> status tampered, gate blocked", async () => {
+      git(repoDir, "checkout", "-b", "daedalus/t-stall", "daedalus/release-v1.0");
+      writeFileSync(join(repoDir, "file.txt"), "original\n");
+      git(repoDir, "add", ".");
+      git(repoDir, "commit", "-m", "original commit");
+      git(repoDir, "checkout", "main");
+
+      const [t] = db.insert(tasks).values({
+        projectId: projId,
+        code: "T-STALL",
+        title: "Test FAKE:write-and-stall timeout tampering",
+        status: "in-review",
+        branch: "daedalus/t-stall",
+      }).returning().all();
+
+      db.insert(runs).values({
+        taskId: t!.id,
+        providerId: provClaudeId,
+        role: "implement",
+        start: new Date().toISOString(),
+      }).run();
+
+      const proj = db.select().from(projects).where(eq(projects.id, projId)).get()!;
+
+      const res = await startCrossReview(
+        {
+          db,
+          dataDir,
+          sessions: manager,
+          providers: testProviders,
+          reviewTimeoutMs: 300,
+        },
+        projId,
+        "T-STALL",
+      );
+      await res.promise;
+
+      const review = db.select().from(reviews).where(eq(reviews.id, res.reviewId)).get();
+      expect(review?.status).toBe("tampered");
+
+      const reviewData = await getReview(db, proj, "T-STALL");
+      const xrGate = reviewData.gates.find((g) => g.id === "cross-review");
+      expect(xrGate?.status).toBe("blocked");
+      expect(xrGate?.items).toContain("The reviewer changed files; its review was discarded.");
+    });
+
+    it("two startCrossReview calls started together -> one succeeds, the other is 409", async () => {
+      git(repoDir, "checkout", "-b", "daedalus/t-race", "daedalus/release-v1.0");
+      writeFileSync(join(repoDir, "race.txt"), "race test\n");
+      git(repoDir, "add", ".");
+      git(repoDir, "commit", "-m", "race commit");
+      git(repoDir, "checkout", "main");
+
+      const [t] = db.insert(tasks).values({
+        projectId: projId,
+        code: "T-RACE",
+        title: "Race test",
+        status: "in-review",
+        branch: "daedalus/t-race",
+      }).returning().all();
+
+      db.insert(runs).values({
+        taskId: t!.id,
+        providerId: provClaudeId,
+        role: "implement",
+        start: new Date().toISOString(),
+      }).run();
+
+      const p1 = startCrossReview(
+        { db, dataDir, sessions: manager, providers: testProviders },
+        projId,
+        "T-RACE",
+      );
+      const p2 = startCrossReview(
+        { db, dataDir, sessions: manager, providers: testProviders },
+        projId,
+        "T-RACE",
+      );
+
+      const results = await Promise.allSettled([p1, p2]);
+      const fulfilled = results.filter((r): r is PromiseFulfilledResult<StartCrossReviewResult> => r.status === "fulfilled");
+      const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0]?.reason).toMatchObject({
+        status: 409,
+        message: expect.stringMatching(/already running/i),
+      });
+
+      // Await background promise of the successful review
+      await fulfilled[0]!.value.promise;
     });
 
     it("FAKE:bad-json -> status failed, gate needs-ack", async () => {
@@ -680,7 +779,11 @@ And then final response:
       }).run();
 
       const timeoutSessions = {
-        start: async (p: any, provId: string, opts: any) => {
+        start: async (
+          p: Parameters<SessionManager["start"]>[0],
+          provId: string,
+          opts?: Parameters<SessionManager["start"]>[2],
+        ) => {
           const s = await manager.start(p, provId, opts);
           return {
             id: s.id,
@@ -692,7 +795,7 @@ And then final response:
             },
             cancel: () => s.cancel(),
             stop: () => s.stop(),
-            onEvent: (l: any) => s.onEvent(l),
+            onEvent: (l: Parameters<AgentSession["onEvent"]>[0]) => s.onEvent(l),
           };
         },
       };
@@ -714,6 +817,44 @@ And then final response:
       expect(r3?.status).toBe("timed-out");
       const wt3 = join(dataDir, "worktrees", `review-${projId}-t-clean3-${res3.reviewId}`);
       expect(existsSync(wt3)).toBe(false);
+    });
+
+    it("recoverReviewsOnStartup marks running review failed and closes open review run with end set", () => {
+      const [t] = db.insert(tasks).values({
+        projectId: projId,
+        code: "T-RECOVER",
+        title: "Recover test",
+        status: "in-review",
+        branch: "daedalus/t-recover",
+      }).returning().all();
+
+      const [r] = db.insert(reviews).values({
+        taskId: t!.id,
+        reviewer: "claude",
+        status: "running",
+        headSha: "abcdef1234567890",
+        findings: "[]",
+        startedAt: new Date().toISOString(),
+      }).returning().all();
+
+      const [run] = db.insert(runs).values({
+        taskId: t!.id,
+        providerId: provClaudeId,
+        role: "review",
+        start: new Date().toISOString(),
+      }).returning().all();
+
+      expect(run?.end).toBeNull();
+
+      recoverReviewsOnStartup(db);
+
+      const updatedReview = db.select().from(reviews).where(eq(reviews.id, r!.id)).get();
+      expect(updatedReview?.status).toBe("failed");
+      expect(updatedReview?.error).toBe("server stopped");
+
+      const updatedRun = db.select().from(runs).where(eq(runs.id, run!.id)).get();
+      expect(updatedRun?.end).not.toBeNull();
+      expect(updatedRun?.exitStatus).toBe(1);
     });
   });
 });

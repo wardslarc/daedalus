@@ -4,8 +4,8 @@
  * triages them with Claude, validates output strictly, and enforces tamper detection.
  */
 import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { dirname, isAbsolute, posix, resolve } from "node:path";
-import { and, desc, eq } from "drizzle-orm";
+import { dirname, posix, resolve } from "node:path";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import type { DaedalusDb } from "@daedalus/db";
 import {
   projects,
@@ -296,7 +296,7 @@ const activeReviews = new Map<number, ActiveReview>();
 
 /** Stop all active cross-reviews and remove their worktrees (server shutdown). */
 export async function closeAllReviews(db: DaedalusDb): Promise<void> {
-  for (const [reviewId, active] of activeReviews.entries()) {
+  for (const active of activeReviews.values()) {
     for (const s of active.getSessions()) {
       try {
         await s.stop();
@@ -337,7 +337,7 @@ export async function closeAllReviews(db: DaedalusDb): Promise<void> {
     const runningRuns = db
       .select()
       .from(runs)
-      .where(and(eq(runs.role, "review"), eq(runs.end, null as unknown as string)))
+      .where(and(eq(runs.role, "review"), isNull(runs.end)))
       .all();
     for (const r of runningRuns) {
       db.update(runs)
@@ -373,7 +373,7 @@ export function recoverReviewsOnStartup(db: DaedalusDb): void {
     const runningRuns = db
       .select()
       .from(runs)
-      .where(and(eq(runs.role, "review"), eq(runs.end, null as unknown as string)))
+      .where(and(eq(runs.role, "review"), isNull(runs.end)))
       .all();
     for (const r of runningRuns) {
       db.update(runs)
@@ -392,6 +392,12 @@ export function recoverReviewsOnStartup(db: DaedalusDb): void {
 export type StartCrossReviewResult = {
   reviewId: number;
   promise: Promise<void>;
+};
+
+type ReviewSession = Pick<AgentSession, "startedAt" | "prompt" | "stop"> & {
+  id: string;
+  cancel?: () => Promise<void>;
+  onEvent?: (listener: (e: AgentEvent) => void) => () => void;
 };
 
 /**
@@ -425,19 +431,6 @@ export async function startCrossReview(
   if (task.status !== "in-review") {
     throw new ReviewError(
       `Task ${task.code} is "${task.status}", expected "in-review" to start cross-review`,
-      409,
-    );
-  }
-
-  const existingRunning = db
-    .select()
-    .from(reviews)
-    .where(and(eq(reviews.taskId, task.id), eq(reviews.status, "running")))
-    .get();
-
-  if (existingRunning) {
-    throw new ReviewError(
-      `A cross-review is already running for task ${task.code}`,
       409,
     );
   }
@@ -489,7 +482,18 @@ export async function startCrossReview(
     reviewer = otherAllowed ? other : "claude";
   }
 
-  // 3. Insert reviews and runs row
+  // Look up reviewer provider row BEFORE inserting anything (Item 5)
+  const reviewerProvRow = db
+    .select()
+    .from(providersTable)
+    .where(eq(providersTable.name, reviewer))
+    .get();
+
+  if (!reviewerProvRow) {
+    throw new ReviewError(`Provider ${reviewer} not found in database`, 409);
+  }
+
+  // 3. Get the head SHA first (Item 7)
   const runExecGit = deps.gitOps?.execGit ?? execGit;
   const taskBranch = task.branch || `daedalus/${task.code.toLowerCase()}`;
   const revRes = await runExecGit(["rev-parse", "--verify", `${taskBranch}^{commit}`], {
@@ -502,54 +506,47 @@ export async function startCrossReview(
 
   const now = deps.now ? deps.now() : new Date().toISOString();
 
-  const [insertedReview] = db
-    .insert(reviews)
-    .values({
-      taskId: task.id,
-      reviewer,
-      status: "running",
-      headSha,
-      findings: "[]",
-      startedAt: now,
-    })
-    .returning()
-    .all();
+  // Atomically check already running and insert reviews & runs rows (Item 7)
+  const { reviewId, runId } = db.transaction((tx) => {
+    const existingRunning = tx
+      .select()
+      .from(reviews)
+      .where(and(eq(reviews.taskId, task.id), eq(reviews.status, "running")))
+      .get();
 
-  const reviewId = insertedReview!.id;
+    if (existingRunning) {
+      throw new ReviewError(
+        `A cross-review is already running for task ${task.code}`,
+        409,
+      );
+    }
 
-  let reviewerProvRow = db
-    .select()
-    .from(providersTable)
-    .where(eq(providersTable.name, reviewer))
-    .get();
-
-  if (!reviewerProvRow) {
-    const [createdProv] = db
-      .insert(providersTable)
+    const [insertedReview] = tx
+      .insert(reviews)
       .values({
-        name: reviewer,
-        kind: "acp",
-        launchCommand: reviewer === "claude" ? "claude-agent-acp" : "agy",
-        roles: ["reviewer"],
-        allowedProfiles: [project.profile],
+        taskId: task.id,
+        reviewer,
+        status: "running",
+        headSha,
+        findings: "[]",
+        startedAt: now,
       })
       .returning()
       .all();
-    reviewerProvRow = createdProv!;
-  }
 
-  const [insertedRun] = db
-    .insert(runs)
-    .values({
-      taskId: task.id,
-      providerId: reviewerProvRow.id,
-      role: "review",
-      start: now,
-    })
-    .returning()
-    .all();
+    const [insertedRun] = tx
+      .insert(runs)
+      .values({
+        taskId: task.id,
+        providerId: reviewerProvRow.id,
+        role: "review",
+        start: now,
+      })
+      .returning()
+      .all();
 
-  const runId = insertedRun!.id;
+    return { reviewId: insertedReview!.id, runId: insertedRun!.id };
+  });
 
   // 4. Background execution
   const backgroundPromise = (async () => {
@@ -559,17 +556,18 @@ export async function startCrossReview(
       `review-${project.id}-${task.code.toLowerCase()}-${reviewId}`,
     );
 
-    let reviewerSession: any = null;
-    let triageSession: any = null;
+    let reviewerSession: ReviewSession | null = null;
+    let triageSession: ReviewSession | null = null;
     let reviewStatus: "done" | "failed" | "timed-out" | "tampered" = "done";
     let reviewError: string | null = null;
     let findings: Finding[] = [];
     let claudeTriage: TriageItem[] | null = null;
+    let initialSnapshot: { commitSha: string; headSha: string; statusPorcelain: string } | null = null;
 
     activeReviews.set(reviewId, {
       worktreeDir,
       repoDir: project.localPath,
-      getSessions: () => [reviewerSession, triageSession].filter(Boolean),
+      getSessions: () => [reviewerSession, triageSession].filter((s): s is ReviewSession => s !== null),
     });
 
     try {
@@ -579,7 +577,7 @@ export async function startCrossReview(
       await addDetached(project.localPath, worktreeDir, headSha);
 
       // 4.b Initial snapshot
-      const initialSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch);
+      initialSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch);
 
       // 4.c Start reviewer session with read-only
       try {
@@ -588,9 +586,9 @@ export async function startCrossReview(
           reviewer,
           { permissionPolicy: "read-only" },
         );
-      } catch (err: any) {
+      } catch (err: unknown) {
         reviewStatus = "failed";
-        reviewError = err?.message || "2 sessions are already running. Stop one first.";
+        reviewError = err instanceof Error ? err.message : "2 sessions are already running. Stop one first.";
         return;
       }
 
@@ -672,9 +670,9 @@ export async function startCrossReview(
       // 4.e Parse findings
       try {
         findings = parseFindings(reviewerMessageText);
-      } catch (err: any) {
+      } catch (err: unknown) {
         reviewStatus = "failed";
-        reviewError = err?.message || "Invalid findings JSON output";
+        reviewError = err instanceof Error ? err.message : "Invalid findings JSON output";
         return;
       }
 
@@ -735,17 +733,85 @@ export async function startCrossReview(
       } catch {
         claudeTriage = null;
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       reviewStatus = "failed";
-      reviewError = err?.message || String(err);
+      reviewError = err instanceof Error ? err.message : String(err);
     } finally {
-      // 4.g Final cleanup
+      // 4.g Final cleanup & tamper verification
       if (reviewerSession) {
+        await reviewerSession.cancel?.().catch(() => {});
         await reviewerSession.stop().catch(() => {});
+        reviewerSession = null;
       }
       if (triageSession) {
+        await triageSession.cancel?.().catch(() => {});
         await triageSession.stop().catch(() => {});
+        triageSession = null;
       }
+
+      // Once the initial snapshot exists, every exit path stops the sessions first,
+      // then takes the after-snapshot and compares; any difference -> tampered,
+      // which wins over every other status.
+      if (initialSnapshot && existsSync(worktreeDir)) {
+        try {
+          const finalSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch);
+          if (!isSameSnapshot(initialSnapshot, finalSnapshot)) {
+            reviewStatus = "tampered";
+            reviewError = "The reviewer changed files; its review was discarded.";
+          }
+        } catch {
+          if (reviewStatus !== "tampered") {
+            reviewStatus = "failed";
+            reviewError = reviewError || "Failed to verify worktree snapshot";
+          }
+        }
+      }
+
+      if (existsSync(worktreeDir)) {
+        const remove = deps.gitOps?.removeWorktree ?? defaultRemoveWorktree;
+        try {
+          await remove(project.localPath, worktreeDir);
+        } catch {
+          // ignore
+        }
+        try {
+          rmSync(worktreeDir, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
+
+      activeReviews.delete(reviewId);
+
+      const finishedAt = deps.now ? deps.now() : new Date().toISOString();
+
+      try {
+        db.update(reviews)
+          .set({
+            status: reviewStatus,
+            findings: JSON.stringify(findings),
+            claudeTriage: claudeTriage ? JSON.stringify(claudeTriage) : null,
+            finishedAt,
+            error: reviewError,
+          })
+          .where(eq(reviews.id, reviewId))
+          .run();
+      } catch {
+        // ignore
+      }
+
+      try {
+        db.update(runs)
+          .set({
+            end: finishedAt,
+            exitStatus: reviewStatus === "done" ? 0 : 1,
+          })
+          .where(eq(runs.id, runId))
+          .run();
+      } catch {
+        // ignore
+      }
+    }
 
       if (existsSync(worktreeDir)) {
         const remove = deps.gitOps?.removeWorktree ?? defaultRemoveWorktree;

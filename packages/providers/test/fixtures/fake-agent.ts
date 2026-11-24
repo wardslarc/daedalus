@@ -5,6 +5,7 @@
  *   env <NAME>         reply with that variable, or "(unset)"
  *   sleep <ms>         wait (cancellable), then reply "slept"
  *   permission         ask the client for permission; reply allowed / denied / cancelled
+ *   permission-kind    ask the client for permission with a specific kind (e.g. read, edit, none)
  *   stubborn-child     start a child that ignores SIGTERM; reply with its pid
  *   flood <n>          send n message chunks
  *   exit               exit the process with code 3
@@ -12,8 +13,8 @@
  *   write-spec-draft   write a draft docs/SPEC.md without ## Verify (T4.2)
  *   write-spec-verify  update docs/SPEC.md to include ## Verify (T4.2)
  *   [Cross-review]*    cross-review findings (T6.2): FAKE:ask-write requests edit & read permissions;
- *                      FAKE:write-file writes tampered.txt; FAKE:bad-json replies without json;
- *                      otherwise replies with 3 findings.
+ *                      FAKE:write-file writes tampered.txt; FAKE:write-and-stall writes tampered.txt and stalls;
+ *                      FAKE:bad-json replies without json; otherwise replies with 3 findings.
  *   [Triage]*          triage findings (T6.2): first finding must-fix, others should-fix / nit.
  */
 import { spawn } from "node:child_process";
@@ -73,15 +74,28 @@ const app = acp
         break;
       }
       case "permission": {
+        const res = (await client.request(acp.methods.client.session.requestPermission, {
+          sessionId: sid,
+          toolCall: { toolCallId: "tool-1", title: "Write a file", kind: "edit", status: "pending" },
+          options: [
+            { optionId: "allow", name: "Allow once", kind: "allow_once" },
+            { optionId: "deny", name: "Deny", kind: "reject_once" },
+          ],
+        })) as acp.RequestPermissionResponse;
+        const outcome = res.outcome.outcome === "cancelled" ? "cancelled" : res.outcome.optionId === "allow" ? "allowed" : "denied";
+        await say(client, sid, outcome);
+        break;
+      }
+      case "permission-kind": {
         const kind = arg === "none" ? undefined : (arg || "edit");
-        const res = await client.request(acp.methods.client.session.requestPermission, {
+        const res = (await client.request(acp.methods.client.session.requestPermission, {
           sessionId: sid,
           toolCall: { toolCallId: "tool-1", title: "Tool request", ...(kind ? { kind } : {}), status: "pending" },
           options: [
             { optionId: "allow", name: "Allow once", kind: "allow_once" },
             { optionId: "deny", name: "Deny", kind: "reject_once" },
           ],
-        });
+        })) as acp.RequestPermissionResponse;
         const outcome = res.outcome.outcome === "cancelled" ? "cancelled" : res.outcome.optionId === "allow" ? "allowed" : "denied";
         await say(client, sid, outcome);
         break;
@@ -146,29 +160,39 @@ const app = acp
       }
       default: {
         if (input.startsWith("[Cross-review]")) {
+          if (input.includes("FAKE:write-and-stall")) {
+            writeFileSync(join(process.cwd(), "tampered.txt"), "tampered and stalled\n", "utf8");
+            const cancelled = await new Promise<boolean>((resolve) => {
+              cancel = () => resolve(true);
+            });
+            cancel = null;
+            if (cancelled) return { stopReason: "cancelled" as const };
+            break;
+          }
+
           if (input.includes("FAKE:write-file")) {
             writeFileSync(join(process.cwd(), "tampered.txt"), "tampered by fake agent\n", "utf8");
           }
 
           if (input.includes("FAKE:ask-write")) {
-            const editRes = await client.request(acp.methods.client.session.requestPermission, {
+            const editRes = (await client.request(acp.methods.client.session.requestPermission, {
               sessionId: sid,
               toolCall: { toolCallId: "tool-edit-1", title: "Write a file", kind: "edit", status: "pending" },
               options: [
                 { optionId: "allow", name: "Allow once", kind: "allow_once" },
                 { optionId: "deny", name: "Deny", kind: "reject_once" },
               ],
-            });
+            })) as acp.RequestPermissionResponse;
             const editOutcome = editRes.outcome.outcome === "cancelled" ? "cancelled" : editRes.outcome.optionId === "allow" ? "allowed" : "denied";
 
-            const readRes = await client.request(acp.methods.client.session.requestPermission, {
+            const readRes = (await client.request(acp.methods.client.session.requestPermission, {
               sessionId: sid,
               toolCall: { toolCallId: "tool-read-1", title: "Read a file", kind: "read", status: "pending" },
               options: [
                 { optionId: "allow", name: "Allow once", kind: "allow_once" },
                 { optionId: "deny", name: "Deny", kind: "reject_once" },
               ],
-            });
+            })) as acp.RequestPermissionResponse;
             const readOutcome = readRes.outcome.outcome === "cancelled" ? "cancelled" : readRes.outcome.optionId === "allow" ? "allowed" : "denied";
 
             const findings = [
