@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -101,6 +101,7 @@ export type ShapingState = {
     valid: boolean;
     approved: boolean;
     approvedAt: string | null;
+    approvedSha256?: string | null;
     activeMilestone: MilestoneState | null;
   };
 };
@@ -111,6 +112,7 @@ export type ShapingMeta = {
   mockApproval?: MockApproval | null;
   mockProviderId?: "claude" | "antigravity" | null;
   planApprovedAt?: string | null;
+  planApprovedSha256?: string | null;
   activeMilestone?: MilestoneState | null;
 };
 
@@ -576,6 +578,7 @@ export function getShapingState(
       valid: planValid,
       approved: planApproved,
       approvedAt: planApproved ? (row?.planApprovedAt ?? null) : null,
+      approvedSha256: planApproved ? (row?.planApprovedSha256 ?? null) : null,
       activeMilestone,
     },
   };
@@ -643,6 +646,7 @@ export function beginSpecInterview(
     mockApprovedBy: null,
     mockApprovedAt: null,
     planApprovedAt: null,
+    planApprovedSha256: null,
   });
   return {
     prompt: buildSpecInterviewPrompt(project.name, intakeDoc.content),
@@ -749,6 +753,7 @@ export function beginMockSession(
     mockApprovedAt: null,
     mockProviderId: providerId,
     planApprovedAt: null,
+    planApprovedSha256: null,
   });
 
   return {
@@ -897,6 +902,7 @@ export function beginPlanSession(
 
   writeShapingStateRow(db, projectId, {
     planApprovedAt: null,
+    planApprovedSha256: null,
   });
 
   return {
@@ -952,8 +958,10 @@ export function approvePlanDoc(
   }
 
   writeShapingDoc(localPath, SHAPING_DOCS.plan, planDoc.content);
+  const planApprovedSha256 = createHash("sha256").update(planDoc.content, "utf8").digest("hex");
   writeShapingStateRow(db, projectId, {
     planApprovedAt: new Date().toISOString(),
+    planApprovedSha256,
   });
 
   const state = getShapingState(db, projectId, localPath, project);
@@ -1004,25 +1012,35 @@ export async function startMilestoneRelease(
     throw new ShapingError("Approve docs/PLAN.md before starting a milestone.", 400);
   }
 
+  const shapingRow = readShapingStateRow(db, projectId);
+
+  // 1. Refuse when shaping_state already has an active frozen milestone.
+  // Nothing clears it yet; Ship (T6.8) will.
+  if (shapingRow?.activeMilestoneFrozen) {
+    const code = shapingRow.activeMilestoneCode ?? shapingRow.activeMilestoneVersion ?? "";
+    const version = shapingRow.activeMilestoneVersion ?? "";
+    throw new ShapingError(
+      `Milestone ${code} (${version}) is still active; ship it first`,
+      409,
+    );
+  }
+
+  // 2. Hash the PLAN.md it reads and refuse if it differs or stored hash is missing.
+  // Use the bytes it hashed for parsing, not a second read.
+  const planDoc = readShapingDoc(localPath, SHAPING_DOCS.plan);
+  if (!planDoc.exists || planDoc.content === null) {
+    throw new ShapingError("docs/PLAN.md changed since you approved it; approve it again", 409);
+  }
+  const currentPlanSha256 = createHash("sha256").update(planDoc.content, "utf8").digest("hex");
+  if (!shapingRow?.planApprovedSha256 || currentPlanSha256 !== shapingRow.planApprovedSha256) {
+    throw new ShapingError("docs/PLAN.md changed since you approved it; approve it again", 409);
+  }
+
+  const parsed = parsePlanMarkdown(planDoc.content);
+
   const version = normalizeReleaseVersion(input?.version);
   const branch = `daedalus/release-${version}`;
   const fromBranch = (input?.defaultBranch ?? "").trim() || "main";
-
-  if (await gitOps.branchExists(localPath, branch)) {
-    throw new ShapingError(`Release branch ${branch} already exists.`, 409);
-  }
-
-  await gitOps.createBranch(localPath, branch, { from: fromBranch });
-
-  const milestone: MilestoneState = {
-    version,
-    branch,
-    startedAt: new Date().toISOString(),
-    frozen: true,
-  };
-
-  const planDoc = readShapingDoc(localPath, SHAPING_DOCS.plan);
-  const parsed = planDoc.content ? parsePlanMarkdown(planDoc.content) : { milestones: [], tasks: [] };
 
   const matchedMilestone =
     (input?.milestoneCode
@@ -1036,6 +1054,42 @@ export async function startMilestoneRelease(
 
   const milestoneCode = matchedMilestone?.code ?? input?.milestoneCode ?? null;
 
+  // 3. Before writing anything, check every task of the milestone being started:
+  // if any already has frozenAt set, refuse with 409 naming the task codes.
+  const existingRows = db.select().from(tasks).where(eq(tasks.projectId, projectId)).all();
+  const existingByCode = new Map(existingRows.map((r) => [r.code, r]));
+
+  const milestoneTasks = matchedMilestone?.tasks ?? [];
+  const frozenCodes: string[] = [];
+  for (const t of milestoneTasks) {
+    const prev = existingByCode.get(t.code);
+    if (prev?.frozenAt) {
+      frozenCodes.push(t.code);
+    }
+  }
+
+  if (frozenCodes.length > 0) {
+    const noun = frozenCodes.length === 1 ? "task" : "tasks";
+    throw new ShapingError(
+      `Cannot start milestone: ${noun} ${frozenCodes.join(", ")} already frozen`,
+      409,
+    );
+  }
+
+  // 4. Existing branch check
+  if (await gitOps.branchExists(localPath, branch)) {
+    throw new ShapingError(`Release branch ${branch} already exists.`, 409);
+  }
+
+  await gitOps.createBranch(localPath, branch, { from: fromBranch });
+
+  const milestone: MilestoneState = {
+    version,
+    branch,
+    startedAt: new Date().toISOString(),
+    frozen: true,
+  };
+
   writeShapingStateRow(db, projectId, {
     activeMilestoneVersion: version,
     activeMilestoneCode: milestoneCode,
@@ -1044,11 +1098,12 @@ export async function startMilestoneRelease(
     activeMilestoneFrozen: true,
   });
 
-  const existingRows = db.select().from(tasks).where(eq(tasks.projectId, projectId)).all();
-  const existingByCode = new Map(existingRows.map((r) => [r.code, r]));
-
-  for (const t of matchedMilestone?.tasks ?? []) {
+  for (const t of milestoneTasks) {
     const prev = existingByCode.get(t.code);
+    if (prev?.frozenAt) {
+      // Never update a frozen row in startMilestoneRelease
+      continue;
+    }
     const taskMilestoneCode = t.milestoneCode ?? milestoneCode;
     if (prev) {
       db.update(tasks)

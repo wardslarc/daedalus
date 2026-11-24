@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,16 +46,17 @@ describe("Milestone freeze and ADR 0018 rules", () => {
       "<!DOCTYPE html><html><body>Mock</body></html>",
       "utf8",
     );
-    writeFileSync(
-      join(testDir, "docs", "PLAN.md"),
-      `# Plan
+    const planContent = `# Plan
 ## M1 — v1.0 Initial
 Done when: It works.
 - [ ] **T1.1 Build feature** \`[claude]\` — [[SPEC#Overview]]
   check: pnpm test
 - [ ] **T1.2 Owner feature** \`[you]\` — [[SPEC#Verify]]
   check: pnpm test:owner
-`,
+`;
+    writeFileSync(
+      join(testDir, "docs", "PLAN.md"),
+      planContent,
       "utf8",
     );
 
@@ -67,6 +69,7 @@ Done when: It works.
         mockArtifactUrl: "https://example.com/mock",
         mockApprovedBy: "Tester",
         planApprovedAt: new Date().toISOString(),
+        planApprovedSha256: createHash("sha256").update(planContent, "utf8").digest("hex"),
       })
       .run();
   });

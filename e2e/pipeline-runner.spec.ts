@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -116,10 +117,11 @@ Done when: Task passes.
       // Record approvals & start milestone
       const db = new DatabaseSync(join(E2E_DATA_DIR, "daedalus.db"), { timeout: 5000 });
       const now = new Date().toISOString();
+      const planSha = createHash("sha256").update(readFileSync(join(docsDir, "PLAN.md"))).digest("hex");
       db.prepare(
-        `INSERT OR REPLACE INTO shaping_state (project_id, spec_approved_at, mock_approved_at, mock_artifact_url, mock_approved_by, plan_approved_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run(projectId, now, now, "https://example.com/mock", "Tester", now);
+        `INSERT OR REPLACE INTO shaping_state (project_id, spec_approved_at, mock_approved_at, mock_artifact_url, mock_approved_by, plan_approved_at, plan_approved_sha256)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(projectId, now, now, "https://example.com/mock", "Tester", now, planSha);
       db.close();
 
       const startRes = await post(page, `/api/projects/${projectId}/chat/start-milestone`, {
@@ -203,10 +205,11 @@ Done when: Task fails.
     try {
       const db = new DatabaseSync(join(E2E_DATA_DIR, "daedalus.db"), { timeout: 5000 });
       const now = new Date().toISOString();
+      const planSha = createHash("sha256").update(readFileSync(join(docsDir, "PLAN.md"))).digest("hex");
       db.prepare(
-        `INSERT OR REPLACE INTO shaping_state (project_id, spec_approved_at, mock_approved_at, mock_artifact_url, mock_approved_by, plan_approved_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run(projectId, now, now, "https://example.com/mock", "Tester", now);
+        `INSERT OR REPLACE INTO shaping_state (project_id, spec_approved_at, mock_approved_at, mock_artifact_url, mock_approved_by, plan_approved_at, plan_approved_sha256)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(projectId, now, now, "https://example.com/mock", "Tester", now, planSha);
       db.close();
 
       const startRes = await post(page, `/api/projects/${projectId}/chat/start-milestone`, {

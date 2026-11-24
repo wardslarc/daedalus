@@ -1,0 +1,1 @@
+ALTER TABLE `shaping_state` ADD `plan_approved_sha256` text;
