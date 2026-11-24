@@ -16,6 +16,7 @@ export {
   type TriageItem,
 } from "./review-prompts.js";
 export {
+  extractWorktreeNameFromGitFile,
   ParseError,
   parseFindings,
   parseTriage,

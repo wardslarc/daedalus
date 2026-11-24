@@ -318,7 +318,35 @@ export function hashGitCommonDir(commonDir: string): string {
     hash.update("worktrees_config:0\0");
   }
 
+  // 5. objects/info/alternates
+  const alternatesFile = join(commonDir, "objects", "info", "alternates");
+  if (existsSync(alternatesFile)) {
+    hash.update("alternates:exists\0");
+    try {
+      hash.update(readFileSync(alternatesFile));
+    } catch {
+      hash.update("unreadable\0");
+    }
+  } else {
+    hash.update("alternates:absent\0");
+  }
+
   return hash.digest("hex");
+}
+
+/**
+ * Extracts the worktree admin directory name from the content of a worktree .git file.
+ * The .git file contains "gitdir: <path-to-admin-dir>".
+ */
+export function extractWorktreeNameFromGitFile(gitFileContent: string): string | null {
+  const match = gitFileContent.match(/^gitdir:\s*(.+)$/m);
+  if (!match) return null;
+  const rawPath = match[1]!.trim();
+  const normalized = rawPath.replace(/[/\\]+$/, "");
+  const parts = normalized.split(/[/\\]/).filter(Boolean);
+  const name = parts.length > 0 ? parts[parts.length - 1]! : null;
+  if (!name || name === "." || name === "..") return null;
+  return name;
 }
 
 export type Snapshot = {
@@ -327,6 +355,10 @@ export type Snapshot = {
   statusOutput: string;
   commonDirHash: string;
   worktreeGitFile: string;
+  worktreeAdminCommondir: string;
+  worktreeAdminGitdir: string;
+  worktreeAdminConfig: string | null;
+  objectsInfoAlternates: string;
 };
 
 export async function takeSnapshot(
@@ -335,6 +367,7 @@ export async function takeSnapshot(
   worktreeDir: string,
   taskBranch: string,
   commonDir?: string,
+  worktreeName?: string,
 ): Promise<Snapshot> {
   let resolvedCommonDir = commonDir;
   if (!resolvedCommonDir) {
@@ -355,12 +388,63 @@ export async function takeSnapshot(
   const gitFilePath = join(worktreeDir, ".git");
   const worktreeGitFile = readFileSync(gitFilePath, "utf8");
 
+  const resolvedWorktreeName =
+    worktreeName ?? extractWorktreeNameFromGitFile(worktreeGitFile) ?? undefined;
+
+  let worktreeAdminCommondir = "absent";
+  let worktreeAdminGitdir = "absent";
+  let worktreeAdminConfig: string | null = null;
+
+  if (resolvedWorktreeName) {
+    const adminDir = join(resolvedCommonDir, "worktrees", resolvedWorktreeName);
+    const commondirFile = join(adminDir, "commondir");
+    if (existsSync(commondirFile)) {
+      try {
+        worktreeAdminCommondir = readFileSync(commondirFile, "utf8");
+      } catch {
+        worktreeAdminCommondir = "unreadable";
+      }
+    }
+
+    const gitdirFile = join(adminDir, "gitdir");
+    if (existsSync(gitdirFile)) {
+      try {
+        worktreeAdminGitdir = readFileSync(gitdirFile, "utf8");
+      } catch {
+        worktreeAdminGitdir = "unreadable";
+      }
+    }
+
+    const configFile = join(adminDir, "config.worktree");
+    if (existsSync(configFile)) {
+      try {
+        worktreeAdminConfig = readFileSync(configFile, "utf8");
+      } catch {
+        worktreeAdminConfig = "unreadable";
+      }
+    }
+  }
+
+  const alternatesFile = join(resolvedCommonDir, "objects", "info", "alternates");
+  let objectsInfoAlternates = "absent";
+  if (existsSync(alternatesFile)) {
+    try {
+      objectsInfoAlternates = readFileSync(alternatesFile, "utf8");
+    } catch {
+      objectsInfoAlternates = "unreadable";
+    }
+  }
+
   return {
     taskBranchSha: branchRes.stdout.trim(),
     worktreeHeadSha: headRes.stdout.trim(),
     statusOutput: statusRes.stdout,
     commonDirHash,
     worktreeGitFile,
+    worktreeAdminCommondir,
+    worktreeAdminGitdir,
+    worktreeAdminConfig,
+    objectsInfoAlternates,
   };
 }
 
@@ -370,7 +454,11 @@ export function isSameSnapshot(a: Snapshot, b: Snapshot): boolean {
     a.worktreeHeadSha === b.worktreeHeadSha &&
     a.statusOutput === b.statusOutput &&
     a.commonDirHash === b.commonDirHash &&
-    a.worktreeGitFile === b.worktreeGitFile
+    a.worktreeGitFile === b.worktreeGitFile &&
+    a.worktreeAdminCommondir === b.worktreeAdminCommondir &&
+    a.worktreeAdminGitdir === b.worktreeAdminGitdir &&
+    a.worktreeAdminConfig === b.worktreeAdminConfig &&
+    a.objectsInfoAlternates === b.objectsInfoAlternates
   );
 }
 
@@ -697,6 +785,7 @@ export async function startCrossReview(
 
       // 4.b Initial snapshot
       initialSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch, commonDir);
+      const reviewWorktreeName = extractWorktreeNameFromGitFile(initialSnapshot.worktreeGitFile) ?? undefined;
 
       // 4.c Start reviewer session with read-only
       try {
@@ -776,7 +865,7 @@ export async function startCrossReview(
 
       let postReviewerSnapshot: Snapshot;
       try {
-        postReviewerSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch, commonDir);
+        postReviewerSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch, commonDir, reviewWorktreeName);
       } catch {
         reviewStatus = "tampered";
         reviewError = "The reviewer changed files; its review was discarded.";
@@ -810,7 +899,7 @@ export async function startCrossReview(
       // 4.f Triage with Claude (read-only)
       let preTriageSnapshot: Snapshot;
       try {
-        preTriageSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch, commonDir);
+        preTriageSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch, commonDir, reviewWorktreeName);
       } catch {
         reviewStatus = "tampered";
         reviewError = "The reviewer changed files; its review was discarded.";
@@ -861,7 +950,7 @@ export async function startCrossReview(
 
       let postTriageSnapshot: Snapshot;
       try {
-        postTriageSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch, commonDir);
+        postTriageSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch, commonDir, reviewWorktreeName);
       } catch {
         reviewStatus = "tampered";
         reviewError = "The reviewer changed files; its review was discarded.";
@@ -905,7 +994,7 @@ export async function startCrossReview(
             reviewStatus = "tampered";
             reviewError = "The reviewer changed files; its review was discarded.";
           } else {
-            const finalSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch, commonDir);
+            const finalSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch, commonDir, reviewWorktreeName);
             if (!isSameSnapshot(initialSnapshot, finalSnapshot)) {
               reviewStatus = "tampered";
               reviewError = "The reviewer changed files; its review was discarded.";

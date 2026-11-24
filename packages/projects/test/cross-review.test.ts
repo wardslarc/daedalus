@@ -17,6 +17,7 @@ import {
 } from "@daedalus/db";
 import { SessionManager, syncProviders, type AgentSession, type ProviderEntry } from "@daedalus/providers";
 import {
+  extractWorktreeNameFromGitFile,
   hashGitCommonDir,
   parseFindings,
   parseTriage,
@@ -203,6 +204,15 @@ And then final response:
 
       // Count mismatch throws
       expect(() => parseTriage(triageText, 2)).toThrow(/does not match/i);
+    });
+
+    it("extractWorktreeNameFromGitFile extracts the review worktree name safely", () => {
+      expect(extractWorktreeNameFromGitFile("gitdir: /path/to/.git/worktrees/review-1-task1-1\n")).toBe("review-1-task1-1");
+      expect(extractWorktreeNameFromGitFile("gitdir: ../../.git/worktrees/review-2-task2-2")).toBe("review-2-task2-2");
+      expect(extractWorktreeNameFromGitFile("gitdir: .git/worktrees/review-3/")).toBe("review-3");
+      expect(extractWorktreeNameFromGitFile("invalid content")).toBeNull();
+      expect(extractWorktreeNameFromGitFile("gitdir: /path/to/worktrees/..")).toBeNull();
+      expect(extractWorktreeNameFromGitFile("gitdir: /path/to/worktrees/.")).toBeNull();
     });
   });
 
@@ -644,6 +654,130 @@ And then final response:
       expect(xrGate?.items).toContain("The reviewer changed files; its review was discarded.");
     });
 
+    it("reviewer rewrites its own worktrees/<name>/commondir -> status tampered, gate blocked", async () => {
+      git(repoDir, "checkout", "-b", "daedalus/t-rwcommondir", "daedalus/release-v1.0");
+      writeFileSync(join(repoDir, "rwcommondir.txt"), "rwcommondir\n");
+      git(repoDir, "add", ".");
+      git(repoDir, "commit", "-m", "rwcommondir commit");
+      git(repoDir, "checkout", "main");
+
+      const [t] = db.insert(tasks).values({
+        projectId: projId,
+        code: "T-RWCOMMONDIR",
+        title: "Test FAKE:rewrite-commondir tampering",
+        status: "in-review",
+        branch: "daedalus/t-rwcommondir",
+      }).returning().all();
+
+      db.insert(runs).values({
+        taskId: t!.id,
+        providerId: provClaudeId,
+        role: "implement",
+        start: new Date().toISOString(),
+      }).run();
+
+      const proj = db.select().from(projects).where(eq(projects.id, projId)).get()!;
+
+      const res = await startCrossReview(
+        { db, dataDir, sessions: manager, providers: testProviders },
+        projId,
+        "T-RWCOMMONDIR",
+      );
+      await res.promise;
+
+      const review = db.select().from(reviews).where(eq(reviews.id, res.reviewId)).get();
+      expect(review?.status).toBe("tampered");
+
+      const reviewData = await getReview(db, proj, "T-RWCOMMONDIR");
+      const xrGate = reviewData.gates.find((g) => g.id === "cross-review");
+      expect(xrGate?.status).toBe("blocked");
+      expect(xrGate?.items).toContain("The reviewer changed files; its review was discarded.");
+    });
+
+    it("adding objects/info/alternates -> status tampered, gate blocked", async () => {
+      git(repoDir, "checkout", "-b", "daedalus/t-alternates", "daedalus/release-v1.0");
+      writeFileSync(join(repoDir, "alternates.txt"), "alternates\n");
+      git(repoDir, "add", ".");
+      git(repoDir, "commit", "-m", "alternates commit");
+      git(repoDir, "checkout", "main");
+
+      const [t] = db.insert(tasks).values({
+        projectId: projId,
+        code: "T-ALTERNATES",
+        title: "Test FAKE:add-alternates tampering",
+        status: "in-review",
+        branch: "daedalus/t-alternates",
+      }).returning().all();
+
+      db.insert(runs).values({
+        taskId: t!.id,
+        providerId: provClaudeId,
+        role: "implement",
+        start: new Date().toISOString(),
+      }).run();
+
+      const proj = db.select().from(projects).where(eq(projects.id, projId)).get()!;
+
+      const res = await startCrossReview(
+        { db, dataDir, sessions: manager, providers: testProviders },
+        projId,
+        "T-ALTERNATES",
+      );
+      await res.promise;
+
+      const review = db.select().from(reviews).where(eq(reviews.id, res.reviewId)).get();
+      expect(review?.status).toBe("tampered");
+
+      const reviewData = await getReview(db, proj, "T-ALTERNATES");
+      const xrGate = reviewData.gates.find((g) => g.id === "cross-review");
+      expect(xrGate?.status).toBe("blocked");
+      expect(xrGate?.items).toContain("The reviewer changed files; its review was discarded.");
+    });
+
+    it("moving or updating other worktrees during review does not read as tampering", async () => {
+      // Create another worktree (e.g. for another task)
+      const otherWorktreeDir = join(dataDir, "worktrees", "task-other");
+      git(repoDir, "worktree", "add", otherWorktreeDir, "daedalus/release-v1.0");
+
+      git(repoDir, "checkout", "-b", "daedalus/t-otherwt", "daedalus/release-v1.0");
+      writeFileSync(join(repoDir, "otherwt.ts"), "other wt\n");
+      git(repoDir, "add", ".");
+      git(repoDir, "commit", "-m", "other wt commit");
+      git(repoDir, "checkout", "main");
+
+      const [t] = db.insert(tasks).values({
+        projectId: projId,
+        code: "T-OTHERWT",
+        title: "Test other worktree move",
+        status: "in-review",
+        branch: "daedalus/t-otherwt",
+      }).returning().all();
+
+      db.insert(runs).values({
+        taskId: t!.id,
+        providerId: provClaudeId,
+        role: "implement",
+        start: new Date().toISOString(),
+      }).run();
+
+      // Simulate task runner moving or touching the other worktree's admin dir (gitdir/commondir)
+      const gitDir = join(repoDir, ".git");
+      const otherAdminDir = join(gitDir, "worktrees", "task-other");
+      if (existsSync(otherAdminDir)) {
+        writeFileSync(join(otherAdminDir, "gitdir"), "/tmp/moved-task-other/.git\n");
+      }
+
+      const res = await startCrossReview(
+        { db, dataDir, sessions: manager, providers: testProviders },
+        projId,
+        "T-OTHERWT",
+      );
+      await res.promise;
+
+      const review = db.select().from(reviews).where(eq(reviews.id, res.reviewId)).get();
+      expect(review?.status).toBe("done");
+    });
+
     it("two startCrossReview calls started together -> one succeeds, the other is 409", async () => {
       git(repoDir, "checkout", "-b", "daedalus/t-race", "daedalus/release-v1.0");
       writeFileSync(join(repoDir, "race.txt"), "race test\n");
@@ -996,6 +1130,22 @@ And then final response:
 
       const hashAfter = hashGitCommonDir(gitDir);
       expect(hashAfter).toBe(hashBefore);
+    });
+
+    it("hashes objects/info/alternates and changes when alternates is added or modified", () => {
+      const gitDir = join(repoDir, ".git");
+      const initialHash = hashGitCommonDir(gitDir);
+
+      const objInfoDir = join(gitDir, "objects", "info");
+      mkdirSync(objInfoDir, { recursive: true });
+      const alternatesFile = join(objInfoDir, "alternates");
+      writeFileSync(alternatesFile, "/tmp/alt-objects\n");
+
+      const withAltHash = hashGitCommonDir(gitDir);
+      expect(withAltHash).not.toBe(initialHash);
+
+      writeFileSync(alternatesFile, "/tmp/alt-objects-2\n");
+      expect(hashGitCommonDir(gitDir)).not.toBe(withAltHash);
     });
   });
 });

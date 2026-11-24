@@ -16,6 +16,8 @@
  *                      FAKE:write-file writes tampered.txt; FAKE:write-and-stall writes tampered.txt and stalls;
  *                      FAKE:delete-git deletes .git in its cwd; FAKE:rewrite-git rewrites .git in its cwd;
  *                      FAKE:write-common-hook writes <common-dir>/hooks/post-checkout;
+ *                      FAKE:rewrite-commondir rewrites its own worktrees/<name>/commondir;
+ *                      FAKE:add-alternates adds <common-dir>/objects/info/alternates;
  *                      FAKE:bad-json replies without json; otherwise replies with 3 findings.
  *   [Triage]*          triage findings (T6.2): first finding must-fix, others should-fix / nit.
  */
@@ -204,6 +206,34 @@ const app = acp
               const hooksDir = join(commonDir, "hooks");
               mkdirSync(hooksDir, { recursive: true });
               writeFileSync(join(hooksDir, "post-checkout"), "#!/bin/sh\necho pwned\n", "utf8");
+            } catch {
+              // ignore
+            }
+          }
+
+          if (input.includes("FAKE:rewrite-commondir")) {
+            try {
+              const gitContent = readFileSync(join(process.cwd(), ".git"), "utf8");
+              const m = gitContent.match(/^gitdir:\s*(.+)$/m);
+              if (m) {
+                const adminDir = resolve(process.cwd(), m[1]!.trim());
+                writeFileSync(join(adminDir, "commondir"), "../fake-common\n", "utf8");
+              }
+            } catch {
+              // ignore
+            }
+          }
+
+          if (input.includes("FAKE:add-alternates")) {
+            try {
+              const commonDirRaw = execFileSync("git", ["rev-parse", "--git-common-dir"], {
+                cwd: process.cwd(),
+                encoding: "utf8",
+              }).trim();
+              const commonDir = resolve(process.cwd(), commonDirRaw);
+              const objInfoDir = join(commonDir, "objects", "info");
+              mkdirSync(objInfoDir, { recursive: true });
+              writeFileSync(join(objInfoDir, "alternates"), "/tmp/fake-objects\n", "utf8");
             } catch {
               // ignore
             }
