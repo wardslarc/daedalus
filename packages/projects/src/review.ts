@@ -36,6 +36,12 @@ import type { ProjectLike } from "@daedalus/core/profiles";
 import { redact } from "@daedalus/providers";
 import { getRecordedCheckResult } from "./runner.js";
 
+export type ReviewProject = ProjectLike & {
+  id: number;
+  localPath: string;
+  defaultBranch: string;
+};
+
 export class ReviewError extends Error {
   override name = "ReviewError";
   readonly status: number;
@@ -220,7 +226,7 @@ export function scanPatchAddedLinesForSecrets(rawPatch: string): string[] {
  */
 export async function getReview(
   db: DaedalusDb,
-  project: ProjectLike,
+  project: ReviewProject,
   taskCode: string,
   options?: ReviewOptions,
 ): Promise<ReviewData> {
@@ -517,7 +523,7 @@ export function listInReviewTasks(
  */
 export async function approveTask(
   db: DaedalusDb,
-  project: ProjectLike,
+  project: ReviewProject,
   taskCode: string,
   options?: ApproveOptions,
 ): Promise<{ sha: string; status: TaskStatus }> {
@@ -675,7 +681,7 @@ export async function approveTask(
  */
 export async function sendBack(
   db: DaedalusDb,
-  project: ProjectLike,
+  project: ReviewProject,
   taskCode: string,
   notes: string,
   options?: SendBackOptions,
@@ -756,7 +762,7 @@ export async function sendBack(
  */
 export async function discardTask(
   db: DaedalusDb,
-  project: ProjectLike,
+  project: ReviewProject,
   taskCode: string,
   options?: DiscardOptions,
 ): Promise<{ status: TaskStatus }> {
@@ -838,7 +844,7 @@ export async function discardTask(
  */
 export async function ackGate(
   db: DaedalusDb,
-  project: ProjectLike,
+  project: ReviewProject,
   taskCode: string,
   gateId: string,
   note: string,
