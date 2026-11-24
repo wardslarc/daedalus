@@ -383,7 +383,7 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     expect(res.sha).toBe(git(repoDir, "rev-parse", "daedalus/release-v1.0"));
     const releaseLog = git(repoDir, "log", "-1", "--format=%s", "daedalus/release-v1.0");
     expect(releaseLog).toContain("Merge task T1.5: Feature Approve Task");
-    expect(git(repoDir, "show", "daedalus/release-v1.0:feature.txt")).toBe("feature v1.0\n");
+    expect(git(repoDir, "show", "daedalus/release-v1.0:feature.txt")).toBe("feature v1.0");
 
     // main's sha is UNCHANGED
     expect(git(repoDir, "rev-parse", "main")).toBe(mainShaBefore);
@@ -930,12 +930,6 @@ describe("Review center (T6.1, SPEC#Review)", () => {
   });
 
   it("P1: run a task, create fresh services/runner, getReview still returns check output from DB", async () => {
-    git(repoDir, "checkout", "-b", "daedalus/t-p1", "daedalus/release-v1.0");
-    writeFileSync(join(repoDir, "p1.txt"), "p1 content\n");
-    git(repoDir, "add", "p1.txt");
-    git(repoDir, "commit", "-m", "p1 commit");
-    git(repoDir, "checkout", "main");
-
     const [t] = db
       .insert(tasks)
       .values({
