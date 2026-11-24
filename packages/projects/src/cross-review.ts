@@ -765,6 +765,7 @@ export async function startCrossReview(
     let findings: Finding[] = [];
     let claudeTriage: TriageItem[] | null = null;
     let initialSnapshot: Snapshot | null = null;
+    let reviewWorktreeName: string | undefined;
     let commonDir: string | undefined;
 
     activeReviews.set(reviewId, {
@@ -785,7 +786,7 @@ export async function startCrossReview(
 
       // 4.b Initial snapshot
       initialSnapshot = await takeSnapshot(runExecGit, project.localPath, worktreeDir, taskBranch, commonDir);
-      const reviewWorktreeName = extractWorktreeNameFromGitFile(initialSnapshot.worktreeGitFile) ?? undefined;
+      reviewWorktreeName = extractWorktreeNameFromGitFile(initialSnapshot.worktreeGitFile) ?? undefined;
 
       // 4.c Start reviewer session with read-only
       try {
