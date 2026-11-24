@@ -9,6 +9,7 @@ import {
   projects,
   providers,
   reviewAcks,
+  reviews,
   runs,
   shapingState,
   tasks,
@@ -363,13 +364,7 @@ describe("Review center (T6.1, SPEC#Review)", () => {
       .run();
 
     // Acknowledge cross-review gate so task can be approved without running cross-review
-    db.insert(reviewAcks)
-      .values({
-        taskId: t15!.id,
-        gate: "cross-review",
-        note: "ack cross-review for test",
-      })
-      .run();
+    await ackGate(db, projectRow, "T1.5", "cross-review", "ack cross-review for test");
 
     // Mock check passed in runner
     const transitionTable: Record<string, Transition> = {
@@ -446,13 +441,7 @@ describe("Review center (T6.1, SPEC#Review)", () => {
       .run();
 
     // Acknowledge cross-review gate so task can reach git merge
-    db.insert(reviewAcks)
-      .values({
-        taskId: t16!.id,
-        gate: "cross-review",
-        note: "ack cross-review for test",
-      })
-      .run();
+    await ackGate(db, projectRow, "T1.6", "cross-review", "ack cross-review for test");
 
     await expect(
       approveTask(db, projectRow, "T1.6", {
@@ -608,13 +597,7 @@ describe("Review center (T6.1, SPEC#Review)", () => {
       .run();
 
     // Acknowledge cross-review gate so task can reach transition
-    db.insert(reviewAcks)
-      .values({
-        taskId: t19!.id,
-        gate: "cross-review",
-        note: "ack cross-review for test",
-      })
-      .run();
+    await ackGate(db, projectRow, "T1.9", "cross-review", "ack cross-review for test");
 
     const throwingTransition = (): Transition => {
       throw new NotImplementedError("T5.2: the owner writes the task state machine");
@@ -1556,5 +1539,259 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     const xrGateAfter = reviewAfter.gates.find((g) => g.id === "cross-review");
     expect(xrGateAfter?.ack).not.toBeNull();
     expect(xrGateAfter?.ack?.note).toBe("Acknowledged lack of cross-review for test");
+  });
+
+  it("cross-review: review A failed -> owner acks -> review B on the same head finds a must-fix -> gate needs-ack again and Approve is refused (409) until a new ack", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-xr-reack", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "xr-code.ts"), "export const code = 1;\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "implement xr code");
+    const headSha = git(repoDir, "rev-parse", "daedalus/t-xr-reack");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-XR-REACK",
+        title: "Re-ack XR Task",
+        status: "in-review",
+        branch: "daedalus/t-xr-reack",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    // 1. Review A failed
+    db.insert(reviews)
+      .values({
+        taskId: t!.id,
+        reviewer: "antigravity",
+        status: "failed",
+        headSha,
+        findings: "[]",
+        error: "Agent crashed",
+      })
+      .run();
+
+    const r1 = await getReview(db, projectRow, "T-XR-REACK");
+    const gate1 = r1.gates.find((g) => g.id === "cross-review");
+    expect(gate1?.status).toBe("needs-ack");
+    expect(gate1?.ack).toBeNull();
+
+    // 2. Owner acks failed review A
+    await ackGate(db, projectRow, "T-XR-REACK", "cross-review", "Acknowledged failed review A");
+
+    const r2 = await getReview(db, projectRow, "T-XR-REACK");
+    const gate2 = r2.gates.find((g) => g.id === "cross-review");
+    expect(gate2?.ack).not.toBeNull();
+    expect(gate2?.ack?.note).toBe("Acknowledged failed review A");
+
+    // 3. Review B runs on the SAME head and finds a must-fix
+    db.insert(reviews)
+      .values({
+        taskId: t!.id,
+        reviewer: "antigravity",
+        status: "done",
+        headSha,
+        findings: JSON.stringify([
+          { severity: "high", file: "xr-code.ts", line: 1, claim: "Critical vuln", proof: "Proof" },
+        ]),
+        claudeTriage: JSON.stringify([
+          { index: 0, bucket: "must-fix", reason: "Must fix this critical issue" },
+        ]),
+      })
+      .run();
+
+    // 4. Gate needs-ack again, old ack does not count
+    const r3 = await getReview(db, projectRow, "T-XR-REACK");
+    const gate3 = r3.gates.find((g) => g.id === "cross-review");
+    expect(gate3?.status).toBe("needs-ack");
+    expect(gate3?.items.some((i) => i.includes("must-fix"))).toBe(true);
+    expect(gate3?.ack).toBeNull();
+
+    // 5. Approve is refused (409)
+    await expect(approveTask(db, projectRow, "T-XR-REACK", { dataDir })).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/gate 'cross-review' requires acknowledgement/i),
+    });
+
+    // 6. Owner acks again
+    await ackGate(db, projectRow, "T-XR-REACK", "cross-review", "Acknowledged review B must-fix");
+
+    const r4 = await getReview(db, projectRow, "T-XR-REACK");
+    const gate4 = r4.gates.find((g) => g.id === "cross-review");
+    expect(gate4?.ack).not.toBeNull();
+    expect(gate4?.ack?.note).toBe("Acknowledged review B must-fix");
+  });
+
+  it("an ack row with head_sha null, or with items_sha256 null, doesn't count", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-ack-nulls", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "package.json"), JSON.stringify({ name: "app", version: "1.0.0" }));
+    git(repoDir, "add", "package.json");
+    git(repoDir, "commit", "-m", "dep change");
+    const headSha = git(repoDir, "rev-parse", "daedalus/t-ack-nulls");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-ACK-NULLS",
+        title: "Ack Nulls Task",
+        status: "in-review",
+        branch: "daedalus/t-ack-nulls",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    // 1. Insert ack row with head_sha null
+    db.insert(reviewAcks)
+      .values({
+        taskId: t!.id,
+        gate: "dependencies",
+        note: "Null headSha ack",
+        headSha: null,
+        itemsSha256: "dummy-hash",
+      })
+      .run();
+
+    const r1 = await getReview(db, projectRow, "T-ACK-NULLS");
+    expect(r1.gates.find((g) => g.id === "dependencies")?.ack).toBeNull();
+
+    // 2. Update row with headSha set, but itemsSha256 null
+    db.update(reviewAcks)
+      .set({
+        headSha,
+        itemsSha256: null,
+      })
+      .where(eq(reviewAcks.taskId, t!.id))
+      .run();
+
+    const r2 = await getReview(db, projectRow, "T-ACK-NULLS");
+    expect(r2.gates.find((g) => g.id === "dependencies")?.ack).toBeNull();
+
+    // Approve refused with 409
+    await expect(approveTask(db, projectRow, "T-ACK-NULLS", { dataDir })).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/gate 'dependencies' requires acknowledgement/i),
+    });
+  });
+
+  it("current head unknown (branch deleted) -> no ack counts, Approve refused", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-del-head", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "package.json"), JSON.stringify({ name: "app", version: "1.0.0" }));
+    git(repoDir, "add", "package.json");
+    git(repoDir, "commit", "-m", "dep change");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-DEL-HEAD",
+        title: "Delete Head Task",
+        status: "in-review",
+        branch: "daedalus/t-del-head",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    // Acknowledge dependencies gate while branch exists
+    await ackGate(db, projectRow, "T-DEL-HEAD", "dependencies", "Ack while branch exists");
+    const rBefore = await getReview(db, projectRow, "T-DEL-HEAD");
+    expect(rBefore.gates.find((g) => g.id === "dependencies")?.ack).not.toBeNull();
+
+    // Delete the task branch
+    git(repoDir, "branch", "-D", "daedalus/t-del-head");
+
+    // Review after branch deletion: no ack counts
+    const rAfter = await getReview(db, projectRow, "T-DEL-HEAD");
+    expect(rAfter.gates.every((g) => g.ack === null)).toBe(true);
+
+    // Approve must be refused with 409
+    await expect(approveTask(db, projectRow, "T-DEL-HEAD", { dataDir })).rejects.toMatchObject({
+      status: 409,
+    });
+  });
+
+  it("secrets gate: ack, then nothing changes -> ack still counts (no false invalidation)", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-sec-nofalse", "daedalus/release-v1.0");
+    const binBuffer = Buffer.from([0x00, 0x01, 0x02, 0xff]);
+    writeFileSync(join(repoDir, "asset.bin"), binBuffer);
+    git(repoDir, "add", "asset.bin");
+    git(repoDir, "commit", "-m", "add binary asset");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-SEC-NOFALSE",
+        title: "Secrets No False Invalidation",
+        status: "in-review",
+        branch: "daedalus/t-sec-nofalse",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const rBefore = await getReview(db, projectRow, "T-SEC-NOFALSE");
+    const secBefore = rBefore.gates.find((g) => g.id === "secrets");
+    expect(secBefore?.status).toBe("needs-ack");
+    expect(secBefore?.ack).toBeNull();
+
+    // Acknowledge secrets gate
+    const ackRes = await ackGate(db, projectRow, "T-SEC-NOFALSE", "secrets", "Verified binary asset");
+    expect(ackRes.itemsSha256).toBeDefined();
+
+    // Call getReview again when nothing has changed
+    const rAfter = await getReview(db, projectRow, "T-SEC-NOFALSE");
+    const secAfter = rAfter.gates.find((g) => g.id === "secrets");
+    expect(secAfter?.status).toBe("needs-ack");
+    expect(secAfter?.ack).not.toBeNull();
+    expect(secAfter?.ack?.note).toBe("Verified binary asset");
   });
 });

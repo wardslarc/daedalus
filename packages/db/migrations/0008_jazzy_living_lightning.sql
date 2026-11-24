@@ -1,0 +1,1 @@
+ALTER TABLE `review_acks` ADD `items_sha256` text;

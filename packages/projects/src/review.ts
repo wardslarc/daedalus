@@ -3,6 +3,7 @@
  * (secrets, dependencies, tests, check), acknowledgements and owner review decisions
  * (approve, send back with notes, discard).
  */
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { and, desc, eq } from "drizzle-orm";
@@ -291,6 +292,33 @@ export function scanPatchAddedLinesForSecrets(rawPatch: string): string[] {
   }
 
   return hits;
+}
+
+/**
+ * A gate's fingerprint = sha256 of JSON { gate, status, items } as computed for the current state;
+ * for the cross-review gate also include the latest review's id, status, findings and claude_triage.
+ */
+export function computeGateFingerprint(
+  gate: { id: string; status: string; items: string[] },
+  latestReview?: {
+    id: number;
+    status: string;
+    findings: string;
+    claudeTriage: string | null;
+  } | null,
+): string {
+  const payload: Record<string, unknown> = {
+    gate: gate.id,
+    status: gate.status,
+    items: gate.items,
+  };
+  if (gate.id === "cross-review") {
+    payload.id = latestReview ? latestReview.id : null;
+    payload.status = latestReview ? latestReview.status : gate.status;
+    payload.findings = latestReview ? latestReview.findings : null;
+    payload.claude_triage = latestReview ? latestReview.claudeTriage : null;
+  }
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 
 /**
@@ -605,67 +633,7 @@ export async function getReview(
     // ignore
   }
 
-  const validAcks = acks.filter((ack) => {
-    if (ack.headSha && currentHeadSha && ack.headSha !== currentHeadSha) {
-      return false;
-    }
-    return true;
-  });
-
-  const ackMap = new Map(validAcks.map((a) => [a.gate, a]));
-
-  const gates: Gate[] = [
-    {
-      id: "secrets",
-      status: secretGateStatus,
-      items: secretItems,
-      ack: ackMap.get("secrets")
-        ? {
-            id: ackMap.get("secrets")!.id,
-            ackedAt: ackMap.get("secrets")!.ackedAt,
-            note: ackMap.get("secrets")!.note,
-          }
-        : null,
-    },
-    {
-      id: "dependencies",
-      status: depItems.length > 0 ? "needs-ack" : "pass",
-      items: depItems,
-      ack: ackMap.get("dependencies")
-        ? {
-            id: ackMap.get("dependencies")!.id,
-            ackedAt: ackMap.get("dependencies")!.ackedAt,
-            note: ackMap.get("dependencies")!.note,
-          }
-        : null,
-    },
-    {
-      id: "tests",
-      status: testItems.length > 0 ? "needs-ack" : "pass",
-      items: testItems,
-      ack: ackMap.get("tests")
-        ? {
-            id: ackMap.get("tests")!.id,
-            ackedAt: ackMap.get("tests")!.ackedAt,
-            note: ackMap.get("tests")!.note,
-          }
-        : null,
-    },
-    {
-      id: "check",
-      status: checkGateStatus,
-      items: checkGateItems,
-      ack: ackMap.get("check")
-        ? {
-            id: ackMap.get("check")!.id,
-            ackedAt: ackMap.get("check")!.ackedAt,
-            note: ackMap.get("check")!.note,
-          }
-        : null,
-    },
-  ];
-
-  // 5. cross-review gate (T6.2, ADR 0019)
+  // Cross-review gate data (T6.2, ADR 0019)
   let latestReview: typeof reviews.$inferSelect | null;
   try {
     latestReview = db
@@ -760,18 +728,67 @@ export async function getReview(
     crossReviewGateItems.push(latestReview.error || `Cross-review status: ${latestReview.status}`);
   }
 
-  gates.push({
-    id: "cross-review",
-    status: crossReviewGateStatus,
-    items: crossReviewGateItems,
-    ack: ackMap.get("cross-review")
-      ? {
-          id: ackMap.get("cross-review")!.id,
-          ackedAt: ackMap.get("cross-review")!.ackedAt,
-          note: ackMap.get("cross-review")!.note,
-        }
-      : null,
-  });
+  const rawAckMap = new Map(acks.map((a) => [a.gate, a]));
+
+  const getValidAck = (
+    gateId: GateId,
+    gateStatus: "pass" | "blocked" | "needs-ack",
+    gateItems: string[],
+  ): { id?: number; ackedAt: string; note: string } | null => {
+    const ack = rawAckMap.get(gateId);
+    if (!ack) return null;
+    if (!currentHeadSha || !ack.headSha || ack.headSha !== currentHeadSha) {
+      return null;
+    }
+    if (!ack.itemsSha256) {
+      return null;
+    }
+    const fp = computeGateFingerprint(
+      { id: gateId, status: gateStatus, items: gateItems },
+      gateId === "cross-review" ? latestReview : null,
+    );
+    if (ack.itemsSha256 !== fp) {
+      return null;
+    }
+    return {
+      id: ack.id,
+      ackedAt: ack.ackedAt,
+      note: ack.note,
+    };
+  };
+
+  const gates: Gate[] = [
+    {
+      id: "secrets",
+      status: secretGateStatus,
+      items: secretItems,
+      ack: getValidAck("secrets", secretGateStatus, secretItems),
+    },
+    {
+      id: "dependencies",
+      status: depItems.length > 0 ? "needs-ack" : "pass",
+      items: depItems,
+      ack: getValidAck("dependencies", depItems.length > 0 ? "needs-ack" : "pass", depItems),
+    },
+    {
+      id: "tests",
+      status: testItems.length > 0 ? "needs-ack" : "pass",
+      items: testItems,
+      ack: getValidAck("tests", testItems.length > 0 ? "needs-ack" : "pass", testItems),
+    },
+    {
+      id: "check",
+      status: checkGateStatus,
+      items: checkGateItems,
+      ack: getValidAck("check", checkGateStatus, checkGateItems),
+    },
+    {
+      id: "cross-review",
+      status: crossReviewGateStatus,
+      items: crossReviewGateItems,
+      ack: getValidAck("cross-review", crossReviewGateStatus, crossReviewGateItems),
+    },
+  ];
 
   return {
     task,
@@ -1143,7 +1160,13 @@ export async function ackGate(
   gateId: string,
   note: string,
   options?: AckGateOptions,
-): Promise<{ gate: string; note: string; ackedAt: string; headSha?: string | null }> {
+): Promise<{
+  gate: string;
+  note: string;
+  ackedAt: string;
+  headSha?: string | null;
+  itemsSha256?: string | null;
+}> {
   if (typeof note !== "string" || note.trim().length < 1 || note.length > 1000) {
     throw new ReviewError("Acknowledgement note must be between 1 and 1000 characters.", 400);
   }
@@ -1193,6 +1216,23 @@ export async function ackGate(
     headSha = null;
   }
 
+  let latestReview: typeof reviews.$inferSelect | null = null;
+  if (gateId === "cross-review") {
+    try {
+      latestReview = db
+        .select()
+        .from(reviews)
+        .where(eq(reviews.taskId, task.id))
+        .orderBy(desc(reviews.id))
+        .limit(1)
+        .get() ?? null;
+    } catch {
+      latestReview = null;
+    }
+  }
+
+  const itemsSha256 = computeGateFingerprint(gate, latestReview);
+
   const ackedAt = new Date().toISOString();
   db.insert(reviewAcks)
     .values({
@@ -1201,6 +1241,7 @@ export async function ackGate(
       note: note.trim(),
       ackedAt,
       headSha,
+      itemsSha256,
     })
     .onConflictDoUpdate({
       target: [reviewAcks.taskId, reviewAcks.gate],
@@ -1208,6 +1249,7 @@ export async function ackGate(
         note: note.trim(),
         ackedAt,
         headSha,
+        itemsSha256,
       },
     })
     .run();
@@ -1217,5 +1259,6 @@ export async function ackGate(
     note: note.trim(),
     ackedAt,
     headSha,
+    itemsSha256,
   };
 }
