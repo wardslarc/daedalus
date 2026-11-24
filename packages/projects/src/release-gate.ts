@@ -5,8 +5,17 @@
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import type { DaedalusDb } from "@daedalus/db";
 import {
@@ -17,8 +26,10 @@ import {
   shapingState,
   shipChecklistTicks,
   tasks,
+  type GateCheckStatus,
   type GateRunChecks,
 } from "@daedalus/db";
+export type { GateCheckStatus, GateRunChecks };
 import { execGit } from "@daedalus/git";
 import { shipChecklist, type ProjectLike } from "@daedalus/core/profiles";
 import { redact, scrubEnv } from "@daedalus/providers";
@@ -493,16 +504,21 @@ export async function getReleaseGate(
       checks?.checklist?.status === "error";
 
     const openFindings = findings.filter((f) => f.state === "open");
-    const anyBlockingOpen = openFindings.some((f) => f.blocking);
+    const anyUndecidedBlocking = openFindings.some(
+      (f) => f.blocking && (!f.outcome || f.outcome.trim() === ""),
+    );
     const anyUndecidedNonBlocking = openFindings.some(
       (f) => !f.blocking && (!f.outcome || f.outcome.trim() === ""),
     );
+    const anyOpenBlocking = openFindings.some((f) => f.blocking);
     const anyUnticked = checklist.some((item) => !item.ticked);
 
-    if (anyCheckError || anyBlockingOpen) {
+    if (anyCheckError || anyUndecidedBlocking) {
       status = "blocked";
     } else if (anyUndecidedNonBlocking) {
       status = "needs-decision";
+    } else if (anyOpenBlocking) {
+      status = "blocked";
     } else if (anyUnticked) {
       status = "checklist";
     } else {
@@ -532,7 +548,7 @@ export async function getReleaseGate(
 export async function startGateRun(
   deps: ReleaseGateDeps,
   projectId: number,
-): Promise<{ runId: number }> {
+): Promise<{ runId: number; promise: Promise<void> }> {
   const verifyStartedAt = refreshVerifyStage(deps.db, projectId);
   const shaping = deps.db
     .select()
@@ -628,9 +644,40 @@ export async function startGateRun(
   activeRuns.set(runId, activeRecord);
 
   // Background work
-  void executeGateRun(deps, project, shaping, runId, headSha, activeRecord);
+  const runPromise = executeGateRun(deps, project, shaping, runId, headSha, activeRecord);
 
-  return { runId };
+  return { runId, promise: runPromise };
+}
+
+function checkRegularWorktreeFile(
+  filePath: string,
+  worktreeDir: string,
+  fileName: string,
+): { ok: boolean; exists: boolean; error?: string } {
+  try {
+    const stat = lstatSync(filePath);
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      return { ok: false, exists: true, error: `${fileName} must be a regular file` };
+    }
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return { ok: true, exists: false };
+    }
+    return { ok: false, exists: true, error: `${fileName} must be a regular file` };
+  }
+
+  try {
+    const realFile = realpathSync(filePath);
+    const realWorktree = realpathSync(worktreeDir);
+    const rel = relative(realWorktree, realFile);
+    if (rel.startsWith("..") || isAbsolute(rel)) {
+      return { ok: false, exists: true, error: `${fileName} must be a regular file` };
+    }
+  } catch {
+    return { ok: false, exists: true, error: `${fileName} must be a regular file` };
+  }
+
+  return { ok: true, exists: true };
 }
 
 type InternalFinding = {
@@ -675,37 +722,56 @@ async function executeGateRun(
       const diffArgs = buildReviewDiffArgs(["--unified=0"], `${defaultBranch}...${releaseBranch}`);
       const diffRes = await gitCmd(diffArgs, { cwd: repoPath, env: gitEnv });
       const diffHits = scanPatchAddedLinesForDetailedSecrets(diffRes.stdout);
-      for (const hit of diffHits) {
-        const fp = `secrets:${hit.ruleId}:${hit.file}:${hit.valueSha256}`;
-        reportedFindings.push({
-          check: "secrets",
-          fingerprint: fp,
-          severity: "critical",
-          title: `Secret detected (${hit.ruleId}) in ${hit.file}`,
-          detail: redact(`Rule '${hit.ruleId}' matched added content in ${hit.file}.`),
-          location: `${hit.file}:${hit.line}`,
-          blocking: true,
-        });
-      }
 
       // b) History: git log -p per commit in <defaultBranch>..<releaseBranch>
       const logArgs = buildReviewLogArgs([], `${defaultBranch}..${releaseBranch}`);
       const logRes = await gitCmd(logArgs, { cwd: repoPath, env: gitEnv });
       const historyHits = scanPatchAddedLinesForDetailedSecrets(logRes.stdout);
-      for (const hit of historyHits) {
-        const fp = `secrets:${hit.ruleId}:${hit.file}:${hit.valueSha256}`;
+
+      const allSecretHits = [...diffHits, ...historyHits];
+      const dedupedSecretHits = new Map<string, typeof diffHits[number]>();
+
+      const ruleSpecificity = (ruleId: string): number => {
+        if (ruleId === "entropy") return 1;
+        if (ruleId === "assignment") return 2;
+        return 3; // a named rule beats assignment beats entropy
+      };
+
+      for (const hit of allSecretHits) {
+        const key = `${hit.file}:${hit.valueSha256}`;
+        const existing = dedupedSecretHits.get(key);
+        if (!existing) {
+          dedupedSecretHits.set(key, hit);
+        } else {
+          const existingScore = ruleSpecificity(existing.ruleId);
+          const newScore = ruleSpecificity(hit.ruleId);
+          if (newScore > existingScore) {
+            dedupedSecretHits.set(key, hit);
+          } else if (newScore === existingScore) {
+            if (existing.commit && !hit.commit) {
+              dedupedSecretHits.set(key, hit);
+            }
+          }
+        }
+      }
+
+      for (const hit of dedupedSecretHits.values()) {
+        const fp = `secrets:${hit.file}:${hit.valueSha256}`;
         const commitShort = hit.commit ? hit.commit.slice(0, 8) : "";
+        const location = commitShort
+          ? `${hit.file}:${hit.line} @ ${commitShort}`
+          : `${hit.file}:${hit.line}`;
+        const detail = commitShort
+          ? `Rule '${hit.ruleId}' matched added content in commit ${commitShort}.`
+          : `Rule '${hit.ruleId}' matched added content in ${hit.file}.`;
+
         reportedFindings.push({
           check: "secrets",
           fingerprint: fp,
           severity: "critical",
-          title: `Secret detected (${hit.ruleId}) in history`,
-          detail: redact(
-            `Rule '${hit.ruleId}' matched added content in commit ${commitShort || "unknown"}.`,
-          ),
-          location: commitShort
-            ? `${hit.file}:${hit.line} @ ${commitShort}`
-            : `${hit.file}:${hit.line}`,
+          title: `Secret detected in ${hit.file}`,
+          detail: redact(detail),
+          location,
           blocking: true,
         });
       }
@@ -744,10 +810,23 @@ async function executeGateRun(
     try {
       const pnpmLockPath = join(worktreeDir, "pnpm-lock.yaml");
       const npmLockPath = join(worktreeDir, "package-lock.json");
-      const hasPnpmLock = existsSync(pnpmLockPath);
-      const hasNpmLock = existsSync(npmLockPath);
+      const srcPkgJson = join(worktreeDir, "package.json");
+      const srcWorkspace = join(worktreeDir, "pnpm-workspace.yaml");
 
-      if (!hasPnpmLock && !hasNpmLock) {
+      const pnpmLockCheck = checkRegularWorktreeFile(pnpmLockPath, worktreeDir, "pnpm-lock.yaml");
+      const npmLockCheck = checkRegularWorktreeFile(npmLockPath, worktreeDir, "package-lock.json");
+      const pkgJsonCheck = checkRegularWorktreeFile(srcPkgJson, worktreeDir, "package.json");
+      const workspaceCheck = checkRegularWorktreeFile(srcWorkspace, worktreeDir, "pnpm-workspace.yaml");
+
+      if (!pnpmLockCheck.ok) {
+        checks.dependencies = { status: "error", detail: pnpmLockCheck.error };
+      } else if (!npmLockCheck.ok) {
+        checks.dependencies = { status: "error", detail: npmLockCheck.error };
+      } else if (!pkgJsonCheck.ok) {
+        checks.dependencies = { status: "error", detail: pkgJsonCheck.error };
+      } else if (!workspaceCheck.ok) {
+        checks.dependencies = { status: "error", detail: workspaceCheck.error };
+      } else if (!pnpmLockCheck.exists && !npmLockCheck.exists) {
         checks.dependencies = {
           status: "not-applicable",
           detail: "No pnpm-lock.yaml or package-lock.json found",
@@ -757,34 +836,16 @@ async function executeGateRun(
         activeRecord.auditDir = auditDir;
         mkdirSync(auditDir, { recursive: true });
 
-        // Copy lockfile
-        if (hasPnpmLock) {
-          copyFileSync(pnpmLockPath, join(auditDir, "pnpm-lock.yaml"));
-        } else if (hasNpmLock) {
-          copyFileSync(npmLockPath, join(auditDir, "package-lock.json"));
-        }
-
-        // Copy root package.json if present
-        const srcPkgJson = join(worktreeDir, "package.json");
-        const copiedPkgJson = join(auditDir, "package.json");
-        if (existsSync(srcPkgJson)) {
-          copyFileSync(srcPkgJson, copiedPkgJson);
-        }
-
-        // Copy pnpm-workspace.yaml if present
-        const srcWorkspace = join(worktreeDir, "pnpm-workspace.yaml");
-        if (existsSync(srcWorkspace)) {
-          copyFileSync(srcWorkspace, join(auditDir, "pnpm-workspace.yaml"));
-        }
-
         // Point both at an empty config: empty file in that folder
         const emptyConfigPath = join(auditDir, "empty.npmrc");
         writeFileSync(emptyConfigPath, "");
 
         let disallowedAuditConfig = false;
-        if (existsSync(copiedPkgJson)) {
+
+        if (pkgJsonCheck.exists) {
           try {
-            const pkgRaw = JSON.parse(readFileSync(copiedPkgJson, "utf8")) as Record<string, unknown>;
+            const rawContent = readFileSync(srcPkgJson, "utf8");
+            const pkgRaw = JSON.parse(rawContent) as Record<string, unknown>;
             if (
               pkgRaw &&
               typeof pkgRaw === "object" &&
@@ -797,10 +858,25 @@ async function executeGateRun(
             ) {
               disallowedAuditConfig = true;
             }
-          } catch (err) {
+          } catch {
             checks.dependencies = {
               status: "error",
-              detail: `Could not parse package.json: ${err instanceof Error ? err.message : String(err)}`,
+              detail: "package.json is not valid JSON",
+            };
+            disallowedAuditConfig = true;
+          }
+        }
+
+        if (!disallowedAuditConfig && workspaceCheck.exists) {
+          try {
+            const workspaceContent = readFileSync(srcWorkspace, "utf8");
+            if (/^\s*(auditConfig|ignoreCves|ignoreGhsas)\s*:/m.test(workspaceContent)) {
+              disallowedAuditConfig = true;
+            }
+          } catch {
+            checks.dependencies = {
+              status: "error",
+              detail: "pnpm-workspace.yaml is not readable",
             };
             disallowedAuditConfig = true;
           }
@@ -815,6 +891,21 @@ async function executeGateRun(
             };
           }
         } else {
+          const hasPnpmLock = pnpmLockCheck.exists;
+          if (hasPnpmLock) {
+            copyFileSync(pnpmLockPath, join(auditDir, "pnpm-lock.yaml"));
+          } else {
+            copyFileSync(npmLockPath, join(auditDir, "package-lock.json"));
+          }
+
+          if (pkgJsonCheck.exists) {
+            copyFileSync(srcPkgJson, join(auditDir, "package.json"));
+          }
+
+          if (workspaceCheck.exists) {
+            copyFileSync(srcWorkspace, join(auditDir, "pnpm-workspace.yaml"));
+          }
+
           const cmd = hasPnpmLock ? "pnpm" : "npm";
           const args = hasPnpmLock
             ? [
@@ -1330,10 +1421,20 @@ export async function decideFinding(
  */
 export async function setChecklistItem(
   db: DaedalusDb,
-  project: ProjectLike & { id: number },
+  projectId: number,
   itemId: string,
   ticked: boolean,
 ): Promise<{ itemId: string; ticked: boolean }> {
+  const project = db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .get();
+
+  if (!project) {
+    throw new ReleaseGateError(`Project ${projectId} not found.`, 404);
+  }
+
   const allowedItems = shipChecklist(project.profile);
   const item = allowedItems.find((i) => i.id === itemId);
   if (!item) {
@@ -1343,7 +1444,7 @@ export async function setChecklistItem(
   const shaping = db
     .select()
     .from(shapingState)
-    .where(eq(shapingState.projectId, project.id))
+    .where(eq(shapingState.projectId, projectId))
     .get();
 
   const releaseVersion = shaping?.activeMilestoneVersion;
@@ -1357,7 +1458,7 @@ export async function setChecklistItem(
       .from(shipChecklistTicks)
       .where(
         and(
-          eq(shipChecklistTicks.projectId, project.id),
+          eq(shipChecklistTicks.projectId, projectId),
           eq(shipChecklistTicks.releaseVersion, releaseVersion),
           eq(shipChecklistTicks.itemId, itemId),
         ),
@@ -1367,7 +1468,7 @@ export async function setChecklistItem(
     if (!existing) {
       db.insert(shipChecklistTicks)
         .values({
-          projectId: project.id,
+          projectId,
           releaseVersion,
           itemId,
           tickedAt: new Date().toISOString(),
@@ -1378,7 +1479,7 @@ export async function setChecklistItem(
     db.delete(shipChecklistTicks)
       .where(
         and(
-          eq(shipChecklistTicks.projectId, project.id),
+          eq(shipChecklistTicks.projectId, projectId),
           eq(shipChecklistTicks.releaseVersion, releaseVersion),
           eq(shipChecklistTicks.itemId, itemId),
         ),

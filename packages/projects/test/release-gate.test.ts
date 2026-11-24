@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -30,8 +30,8 @@ import {
   type AuditRunner,
 } from "../src/index.js";
 import { shipChecklist } from "@daedalus/core/profiles";
-import { TaskRunner } from "../src/runner.js";
-import { SessionManager, type ProviderEntry } from "@daedalus/providers";
+import { TaskRunner, type TaskRunnerSessions } from "../src/runner.js";
+import { type ProviderEntry } from "@daedalus/providers";
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -42,8 +42,10 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
   let repoDir: string;
   let db: DaedalusDb;
   let projectRow: typeof projects.$inferSelect;
+  let activeRunPromises: Promise<void>[] = [];
 
   beforeEach(() => {
+    activeRunPromises = [];
     testDir = mkdtempSync(join(tmpdir(), "daedalus-gate-test-"));
     dataDir = join(testDir, "data");
     mkdirSync(dataDir, { recursive: true });
@@ -97,7 +99,9 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
       .run();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.allSettled(activeRunPromises);
+    activeRunPromises = [];
     try {
       db.$client.close();
     } catch {
@@ -188,17 +192,12 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
     git(repoDir, "checkout", "main");
 
     // Start gate run
-    const { runId } = await startGateRun({ db, dataDir }, projectRow.id);
+    const { runId, promise } = await startGateRun({ db, dataDir }, projectRow.id);
+    activeRunPromises.push(promise);
+    await promise;
     expect(runId).toBeGreaterThan(0);
 
-    // Wait briefly for background execution
-    let attempts = 0;
-    let run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-    while (run?.status === "running" && attempts < 30) {
-      await new Promise((r) => setTimeout(r, 100));
-      run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-      attempts++;
-    }
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
     expect(run?.status).toBe("done");
 
     // Finding must exist for the secret from history
@@ -269,15 +268,12 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
     git(repoDir, "commit", "-m", "second commit with same token");
     git(repoDir, "checkout", "main");
 
-    const { runId } = await startGateRun({ db, dataDir }, projectRow.id);
+    const { runId, promise } = await startGateRun({ db, dataDir }, projectRow.id);
+    activeRunPromises.push(promise);
+    await promise;
 
-    let attempts = 0;
-    let run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-    while (run?.status === "running" && attempts < 30) {
-      await new Promise((r) => setTimeout(r, 100));
-      run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-      attempts++;
-    }
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    expect(run?.status).toBe("done");
 
     const findings = db
       .select()
@@ -337,18 +333,15 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
       timedOut: false,
     });
 
-    const { runId } = await startGateRun(
+    const { runId, promise } = await startGateRun(
       { db, dataDir, auditRunner: stubRunner },
       projectRow.id,
     );
+    activeRunPromises.push(promise);
+    await promise;
 
-    let attempts = 0;
-    let run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-    while (run?.status === "running" && attempts < 30) {
-      await new Promise((r) => setTimeout(r, 100));
-      run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-      attempts++;
-    }
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    expect(run?.status).toBe("done");
 
     const highFinding = db
       .select()
@@ -445,18 +438,15 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
       timedOut: false,
     });
 
-    const { runId } = await startGateRun(
+    const { runId, promise } = await startGateRun(
       { db, dataDir, auditRunner: stubRunner },
       projectRow.id,
     );
+    activeRunPromises.push(promise);
+    await promise;
 
-    let attempts = 0;
-    let run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-    while (run?.status === "running" && attempts < 30) {
-      await new Promise((r) => setTimeout(r, 100));
-      run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-      attempts++;
-    }
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    expect(run?.status).toBe("done");
 
     const checks = run?.checks as GateRunChecks | null;
     expect(checks?.dependencies?.status).toBe("error");
@@ -479,15 +469,12 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
       .where(eq(shapingState.projectId, projectRow.id))
       .run();
 
-    const { runId } = await startGateRun({ db, dataDir }, projectRow.id);
+    const { runId, promise } = await startGateRun({ db, dataDir }, projectRow.id);
+    activeRunPromises.push(promise);
+    await promise;
 
-    let attempts = 0;
-    let run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-    while (run?.status === "running" && attempts < 30) {
-      await new Promise((r) => setTimeout(r, 100));
-      run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-      attempts++;
-    }
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    expect(run?.status).toBe("done");
 
     const checks = run?.checks as GateRunChecks | null;
     expect(checks?.dependencies?.status).toBe("not-applicable");
@@ -537,13 +524,9 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
       .all();
 
     const run1 = await startGateRun({ db, dataDir }, projectRow.id);
-    let attempts = 0;
+    activeRunPromises.push(run1.promise);
+    await run1.promise;
     let r1 = db.select().from(gateRuns).where(eq(gateRuns.id, run1.runId)).get();
-    while (r1?.status === "running" && attempts < 30) {
-      await new Promise((r) => setTimeout(r, 100));
-      r1 = db.select().from(gateRuns).where(eq(gateRuns.id, run1.runId)).get();
-      attempts++;
-    }
 
     const tamperedFinding = db
       .select()
@@ -565,13 +548,9 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
       .run();
 
     const run2 = await startGateRun({ db, dataDir }, projectRow.id);
-    attempts = 0;
+    activeRunPromises.push(run2.promise);
+    await run2.promise;
     let r2 = db.select().from(gateRuns).where(eq(gateRuns.id, run2.runId)).get();
-    while (r2?.status === "running" && attempts < 30) {
-      await new Promise((r) => setTimeout(r, 100));
-      r2 = db.select().from(gateRuns).where(eq(gateRuns.id, run2.runId)).get();
-      attempts++;
-    }
 
     const failedFinding = db
       .select()
@@ -594,13 +573,9 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
       .run();
 
     const run3 = await startGateRun({ db, dataDir }, projectRow.id);
-    attempts = 0;
+    activeRunPromises.push(run3.promise);
+    await run3.promise;
     let r3 = db.select().from(gateRuns).where(eq(gateRuns.id, run3.runId)).get();
-    while (r3?.status === "running" && attempts < 30) {
-      await new Promise((r) => setTimeout(r, 100));
-      r3 = db.select().from(gateRuns).where(eq(gateRuns.id, run3.runId)).get();
-      attempts++;
-    }
 
     const r3Checks = r3?.checks as GateRunChecks | null;
     expect(r3Checks?.securityTests?.status).toBe("pass");
@@ -620,14 +595,8 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
     git(repoDir, "checkout", "main");
 
     const run1 = await startGateRun({ db, dataDir }, projectRow.id);
-    let attempts = 0;
-    while (
-      db.select().from(gateRuns).where(eq(gateRuns.id, run1.runId)).get()?.status === "running" &&
-      attempts < 30
-    ) {
-      await new Promise((r) => setTimeout(r, 100));
-      attempts++;
-    }
+    activeRunPromises.push(run1.promise);
+    await run1.promise;
 
     const finding = db
       .select()
@@ -643,14 +612,8 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
 
     // Rerun checks
     const run2 = await startGateRun({ db, dataDir }, projectRow.id);
-    attempts = 0;
-    while (
-      db.select().from(gateRuns).where(eq(gateRuns.id, run2.runId)).get()?.status === "running" &&
-      attempts < 30
-    ) {
-      await new Promise((r) => setTimeout(r, 100));
-      attempts++;
-    }
+    activeRunPromises.push(run2.promise);
+    await run2.promise;
 
     const findingResolved = db
       .select()
@@ -755,13 +718,15 @@ Done when: all tasks pass.
       allowedProfiles: ["work", "client", "personal"],
       version: "1.0.0",
     };
-    const sessions = new SessionManager({ providers: [providerEntry] });
-    sessions.start = async () => ({
-      id: "fake-session",
-      startedAt: new Date().toISOString(),
-      prompt: async () => "end_turn",
-      stop: async () => {},
-    });
+    const sessions: TaskRunnerSessions = {
+      start: async () => ({
+        id: "fake-session",
+        startedAt: new Date().toISOString(),
+        prompt: async () => "end_turn",
+        stop: async () => {},
+      }),
+      stopAll: async () => {},
+    };
     const runner = new TaskRunner({
       db,
       dataDir,
@@ -800,6 +765,12 @@ Done when: all tasks pass.
     expect(fulfilled.length).toBe(1);
     expect(rejected.length).toBe(1);
 
+    const fulfilledResult = (
+      fulfilled[0] as PromiseFulfilledResult<{ runId: number; promise: Promise<void> }>
+    ).value;
+    activeRunPromises.push(fulfilledResult.promise);
+    await fulfilledResult.promise;
+
     const error = (rejected[0] as PromiseRejectedResult).reason;
     expect(error).toBeInstanceOf(ReleaseGateError);
     expect(error.status).toBe(409);
@@ -813,14 +784,14 @@ Done when: all tasks pass.
 
     // Work profile checklist items are: mr-opened, kollab-form, release-notes, deploy-owner
     await expect(
-      setChecklistItem(db, projectRow, "non-existent-item", true),
+      setChecklistItem(db, projectRow.id, "non-existent-item", true),
     ).rejects.toThrow(ReleaseGateError);
 
     // Tick all valid items
-    await setChecklistItem(db, projectRow, "mr-opened", true);
-    await setChecklistItem(db, projectRow, "kollab-form", true);
-    await setChecklistItem(db, projectRow, "release-notes", true);
-    await setChecklistItem(db, projectRow, "deploy-owner", true);
+    await setChecklistItem(db, projectRow.id, "mr-opened", true);
+    await setChecklistItem(db, projectRow.id, "kollab-form", true);
+    await setChecklistItem(db, projectRow.id, "release-notes", true);
+    await setChecklistItem(db, projectRow.id, "deploy-owner", true);
 
     const gate = await getReleaseGate(db, projectRow);
     expect(gate.checklist.every((i) => i.ticked)).toBe(true);
@@ -832,15 +803,12 @@ Done when: all tasks pass.
       .where(eq(shapingState.projectId, projectRow.id))
       .run();
 
-    const { runId } = await startGateRun({ db, dataDir }, projectRow.id);
+    const { runId, promise } = await startGateRun({ db, dataDir }, projectRow.id);
+    activeRunPromises.push(promise);
+    await promise;
 
-    let attempts = 0;
-    let run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-    while (run?.status === "running" && attempts < 30) {
-      await new Promise((r) => setTimeout(r, 100));
-      run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-      attempts++;
-    }
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    expect(run?.status).toBe("done");
 
     const items = shipChecklist(projectRow.profile);
     for (const item of items) {
@@ -880,15 +848,12 @@ Done when: all tasks pass.
     git(repoDir, "commit", "-m", "add auditConfig and lockfile");
     git(repoDir, "checkout", "main");
 
-    const { runId } = await startGateRun({ db, dataDir }, projectRow.id);
+    const { runId, promise } = await startGateRun({ db, dataDir }, projectRow.id);
+    activeRunPromises.push(promise);
+    await promise;
 
-    let attempts = 0;
-    let run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-    while (run?.status === "running" && attempts < 30) {
-      await new Promise((r) => setTimeout(r, 100));
-      run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-      attempts++;
-    }
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    expect(run?.status).toBe("done");
 
     const checks = run?.checks as GateRunChecks | null;
     expect(checks?.dependencies?.status).toBe("error");
@@ -926,17 +891,13 @@ Done when: all tasks pass.
     git(repoDir, "commit", "-m", "add package-lock.json");
     git(repoDir, "checkout", "main");
 
-    const { runId: runId1 } = await startGateRun(
+    const { runId: runId1, promise: p1 } = await startGateRun(
       { db, dataDir, auditRunner: stubRunner },
       projectRow.id,
     );
-    let attempts = 0;
+    activeRunPromises.push(p1);
+    await p1;
     let run = db.select().from(gateRuns).where(eq(gateRuns.id, runId1)).get();
-    while (run?.status === "running" && attempts < 30) {
-      await new Promise((r) => setTimeout(r, 100));
-      run = db.select().from(gateRuns).where(eq(gateRuns.id, runId1)).get();
-      attempts++;
-    }
 
     expect(capturedCmd).toBe("npm");
     expect(capturedArgs).toContain("--audit-level=low");
@@ -952,17 +913,13 @@ Done when: all tasks pass.
     git(repoDir, "commit", "-m", "switch to pnpm-lock.yaml");
     git(repoDir, "checkout", "main");
 
-    const { runId: runId2 } = await startGateRun(
+    const { runId: runId2, promise: p2 } = await startGateRun(
       { db, dataDir, auditRunner: stubRunner },
       projectRow.id,
     );
-    attempts = 0;
+    activeRunPromises.push(p2);
+    await p2;
     run = db.select().from(gateRuns).where(eq(gateRuns.id, runId2)).get();
-    while (run?.status === "running" && attempts < 30) {
-      await new Promise((r) => setTimeout(r, 100));
-      run = db.select().from(gateRuns).where(eq(gateRuns.id, runId2)).get();
-      attempts++;
-    }
 
     expect(capturedCmd).toBe("pnpm");
     expect(capturedArgs).toContain("--audit-level=low");
@@ -1016,20 +973,16 @@ Done when: all tasks pass.
       };
     };
 
-    const { runId } = await startGateRun(
+    const { runId, promise } = await startGateRun(
       { db, dataDir, auditRunner: stubRunner },
       projectRow.id,
     );
+    activeRunPromises.push(promise);
+    await promise;
 
-    let attempts = 0;
-    let run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-    while (run?.status === "running" && attempts < 30) {
-      await new Promise((r) => setTimeout(r, 100));
-      run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-      attempts++;
-    }
-
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
     expect(run?.status).toBe("done");
+
     // Verify isolated directory properties
     expect(cwdHasPnpmfile).toBe(false);
     expect(cwdHasNpmrc).toBe(false);
@@ -1100,16 +1053,11 @@ Done when: all tasks pass.
 
     git(repoDir, "checkout", "main");
 
-    const { runId } = await startGateRun({ db, dataDir }, projectRow.id);
+    const { runId, promise } = await startGateRun({ db, dataDir }, projectRow.id);
+    activeRunPromises.push(promise);
+    await promise;
 
-    let attempts = 0;
-    let run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-    while (run?.status === "running" && attempts < 30) {
-      await new Promise((r) => setTimeout(r, 100));
-      run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
-      attempts++;
-    }
-
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
     expect(run?.status).toBe("done");
 
     const findings = db
@@ -1125,5 +1073,82 @@ Done when: all tasks pass.
 
     const gate = await getReleaseGate(db, projectRow);
     expect(gate.status).toBe("blocked");
+  });
+
+  it("pnpm-workspace.yaml with auditConfig → dependencies check error", async () => {
+    db.update(shapingState)
+      .set({ activeMilestoneVerifyStartedAt: new Date().toISOString() })
+      .where(eq(shapingState.projectId, projectRow.id))
+      .run();
+
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    writeFileSync(
+      join(repoDir, "pnpm-workspace.yaml"),
+      "packages:\n  - 'packages/*'\nauditConfig:\n  ignoreCves:\n    - CVE-2023-1234\n",
+    );
+    writeFileSync(join(repoDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    git(repoDir, "add", "pnpm-workspace.yaml", "pnpm-lock.yaml");
+    git(repoDir, "commit", "-m", "add workspace with auditConfig");
+    git(repoDir, "checkout", "main");
+
+    const { runId, promise } = await startGateRun({ db, dataDir }, projectRow.id);
+    activeRunPromises.push(promise);
+    await promise;
+
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    const checks = run?.checks as GateRunChecks | null;
+    expect(checks?.dependencies?.status).toBe("error");
+    expect(checks?.dependencies?.detail).toBe(
+      "package.json pnpm.auditConfig is not allowed: the gate decides which advisories are accepted",
+    );
+
+    const gate = await getReleaseGate(db, projectRow);
+    expect(gate.status).toBe("blocked");
+  });
+
+  it("package.json as a symlink to a file outside → error, and the outside file's content appears nowhere in the run or findings", async () => {
+    db.update(shapingState)
+      .set({ activeMilestoneVerifyStartedAt: new Date().toISOString() })
+      .where(eq(shapingState.projectId, projectRow.id))
+      .run();
+
+    // Outside file with secret content
+    const outsideSecret = "SUPER_SECRET_TOKEN_NEVER_LEAK_OUTSIDE_123456";
+    const outsidePath = join(testDir, "outside-secret-file.json");
+    writeFileSync(outsidePath, JSON.stringify({ secret: outsideSecret }));
+
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    symlinkSync(outsidePath, join(repoDir, "package.json"));
+    git(repoDir, "add", "pnpm-lock.yaml", "package.json");
+    git(repoDir, "commit", "-m", "symlink package.json outside");
+    git(repoDir, "checkout", "main");
+
+    const { runId, promise } = await startGateRun({ db, dataDir }, projectRow.id);
+    activeRunPromises.push(promise);
+    await promise;
+
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    const checks = run?.checks as GateRunChecks | null;
+    expect(checks?.dependencies?.status).toBe("error");
+    expect(checks?.dependencies?.detail).toBe("package.json must be a regular file");
+
+    const gate = await getReleaseGate(db, projectRow);
+    expect(gate.status).toBe("blocked");
+
+    // Outside secret content must appear nowhere in run row or findings
+    const runJson = JSON.stringify(run);
+    expect(runJson).not.toContain(outsideSecret);
+
+    const findings = db
+      .select()
+      .from(gateFindings)
+      .where(eq(gateFindings.projectId, projectRow.id))
+      .all();
+    const findingsJson = JSON.stringify(findings);
+    expect(findingsJson).not.toContain(outsideSecret);
+
+    const gateJson = JSON.stringify(gate);
+    expect(gateJson).not.toContain(outsideSecret);
   });
 });

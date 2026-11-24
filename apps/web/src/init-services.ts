@@ -391,7 +391,8 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
     startGateRun: async (projectId) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      return startGateRun({ db, dataDir }, projectId);
+      const res = await startGateRun({ db, dataDir }, projectId);
+      return { runId: res.runId };
     },
     decideFinding: async (projectId, findingId, input) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
@@ -401,7 +402,7 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
     setChecklistItem: async (projectId, itemId, ticked) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      return setChecklistItem(db, project, itemId, ticked);
+      return setChecklistItem(db, projectId, itemId, ticked);
     },
   };
   holder[SERVICES_KEY] = services;
