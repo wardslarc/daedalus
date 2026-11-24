@@ -182,7 +182,7 @@ Done when: `docs/PLAN.md` tasks appear on `/projects/[id]/pipeline`, the task st
   retry count, and inbox trigger on second check failure). Owner implements the state machine (learning mode);
   types and unit test suite may be scaffolded when requested.
   check: `pnpm --filter @daedalus/core test`
-- [ ] **T5.3 Worktree task runner and check executor** `[claude]` — [[SPEC#Task runner]] [[SPEC#Profiles]]
+- [x] **T5.3 Worktree task runner and check executor** `[claude]` — [[SPEC#Task runner]] [[SPEC#Profiles]]
   Run at most 2 tasks at once, each in its own git worktree outside the repo folder on branch
   `daedalus/<task>` made from the current release branch `daedalus/release-<version>`, with a fresh
   agent session per task. Server runs the task's `check:` command itself: pass → commit and move to
