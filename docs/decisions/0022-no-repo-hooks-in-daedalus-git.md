@@ -61,6 +61,17 @@
     `.gitmodules` of the work tree (read with `git config -z --name-only --file <toplevel>/.gitmodules`, only if
     the file exists) gets `-c submodule.<name>.ignore=dirty`. Names may contain `/`; anything outside
     `[A-Za-z0-9._/-]` fails closed. `commit` does not look inside submodule work trees (checked by hand).
+- **Fourth amendment 2026-11-25 (automated review; both reproduced by hand):**
+  - `.gitmodules` sources: with the work-tree file deleted, git reads `:.gitmodules` (index) and then
+    `HEAD:.gitmodules`. Submodule names are now the union of the work-tree file, `--blob :.gitmodules` and
+    `--blob HEAD:.gitmodules` (a missing blob counts as none; any other failure fails closed).
+  - Caller arguments can't weaken the settings: git accepts unambiguous abbreviations, so `--ignore-sub=none`
+    works. Before `--` / `--end-of-options`, any argument starting with `--ignore-su` other than exactly
+    `--ignore-submodules=dirty` or `=all` throws, and so does a caller `-c` (or `-c<key>=…`) whose key is one Daedalus
+    sets or neutralises (`core.hooksPath`, `core.fsmonitor`, `*.gpgSign`, `gpg.*`, `log.showSignature`,
+    `merge.verifySignatures`, `core.editor`, `sequence.editor`, `diff.ignoreSubmodules`, `submodule.*`,
+    `filter.*`, `merge.*.driver`, `diff.*.textconv`, `diff.*.command`, `diff.external` — except
+    `diff.external=` with an empty value, which review diffs pass on purpose), because a later `-c` wins.
 - **Consequences:** a planted hook or fsmonitor in a project's `.git` can no longer run through Daedalus. Same for
   signing and filter programs. One extra `git config` call runs before checkout-type commands. Review diffs
   already ignore textconv and external diff drivers (ADR 0019 amendment). Remote helpers and `core.sshCommand`
