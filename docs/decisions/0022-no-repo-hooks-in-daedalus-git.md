@@ -44,6 +44,14 @@
   - Not covered here, decided with T6.8 Ship: remote programs from repo config (`core.sshCommand`,
     `credential.helper`, `core.askPass`, `remote.*.uploadpack/receivepack`) — they only run on fetch/push, which
     Daedalus doesn't do before Ship.
+- **Amended again 2026-11-25 (automated security review of the merged fix; each case reproduced by hand):**
+  - Signatures: `log.showSignature=true` in repo config makes `log`/`show` run `gpg.program` (also from repo
+    config) on any signed commit. Base args add `-c log.showSignature=false -c merge.verifySignatures=false
+    -c gpg.program=false -c gpg.openpgp.program=false -c gpg.x509.program=false -c gpg.ssh.program=false`.
+  - Submodules: `status`/`diff` in the superproject look inside submodule work trees, where the submodule's own
+    config (not in our driver listing) can name a clean filter. Base args add `-c diff.ignoreSubmodules=dirty
+    -c submodule.recurse=false -c status.submoduleSummary=false`. `dirty` (not `all`): git no longer looks inside
+    submodule work trees, but a changed submodule commit still shows in diffs, so Review can't miss a bump.
 - **Consequences:** a planted hook or fsmonitor in a project's `.git` can no longer run through Daedalus. Same for
   signing and filter programs. One extra `git config` call runs before checkout-type commands. Review diffs
   already ignore textconv and external diff drivers (ADR 0019 amendment). Remote helpers and `core.sshCommand`
