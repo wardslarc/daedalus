@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { GitError, stripUserInfo } from "./error.js";
 
@@ -75,7 +77,17 @@ export const DIFF_EXT_TEXTCONV_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "format-patch",
 ]);
 
+export const IGNORE_SUBMODULES_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  "status",
+  "diff",
+  "log",
+  "show",
+  "format-patch",
+  "stash",
+]);
+
 const SAFE_DRIVER_NAME_REGEX = /^[A-Za-z0-9._-]+$/;
+const SAFE_SUBMODULE_NAME_REGEX = /^[A-Za-z0-9._/-]+$/;
 
 /** Observable listing counter for testing; kept out of public API docs. */
 export let listingCounter = 0;
@@ -104,6 +116,14 @@ export function findSubcommand(args: string[]): string | undefined {
 }
 
 export async function execGit(args: string[], options: ExecGitOptions): Promise<ExecGitResult> {
+  for (const arg of args) {
+    if (arg === "--ignore-submodules" || arg.startsWith("--ignore-submodules=")) {
+      if (arg !== "--ignore-submodules=all" && arg !== "--ignore-submodules=dirty") {
+        throw new GitError(`Invalid --ignore-submodules flag: '${arg}' is not allowed`);
+      }
+    }
+  }
+
   const timeout = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxBuffer = options.maxBuffer ?? 10 * 1024 * 1024;
   const env = {
@@ -127,7 +147,7 @@ export async function execGit(args: string[], options: ExecGitOptions): Promise<
         "-z",
         "--name-only",
         "--get-regexp",
-        "^(filter|merge|diff)\\.",
+        "^(filter|merge|diff|submodule)\\.",
       ];
       let configStdout = "";
       try {
@@ -157,20 +177,23 @@ export async function execGit(args: string[], options: ExecGitOptions): Promise<
         }
       }
 
-      if (configStdout) {
-        const filterNames = new Set<string>();
-        const mergeNames = new Set<string>();
-        const diffNames = new Set<string>();
+      const filterNames = new Set<string>();
+      const mergeNames = new Set<string>();
+      const diffNames = new Set<string>();
+      const submoduleNames = new Set<string>();
 
+      if (configStdout) {
         for (const key of configStdout.split("\0")) {
           if (!key) continue;
-          let section: "filter" | "merge" | "diff" | null = null;
+          let section: "filter" | "merge" | "diff" | "submodule" | null = null;
           if (key.startsWith("filter.")) {
             section = "filter";
           } else if (key.startsWith("merge.")) {
             section = "merge";
           } else if (key.startsWith("diff.")) {
             section = "diff";
+          } else if (key.startsWith("submodule.")) {
+            section = "submodule";
           } else {
             throw new GitError("Unsafe filter name in repo config");
           }
@@ -178,52 +201,153 @@ export async function execGit(args: string[], options: ExecGitOptions): Promise<
           const firstDot = section.length;
           const lastDot = key.lastIndexOf(".");
           if (lastDot === key.length - 1) {
-            throw new GitError("Unsafe filter name in repo config");
+            throw new GitError(
+              section === "submodule"
+                ? "Unsafe submodule name in repo config"
+                : "Unsafe filter name in repo config",
+            );
           }
           if (firstDot === lastDot) {
             // Exactly one dot: plain setting (section.variable) -> skip it
             continue;
           }
           const name = key.slice(firstDot + 1, lastDot);
-          if (!name || !SAFE_DRIVER_NAME_REGEX.test(name)) {
-            throw new GitError("Unsafe filter name in repo config");
+          if (section === "submodule") {
+            if (!name || !SAFE_SUBMODULE_NAME_REGEX.test(name)) {
+              throw new GitError("Unsafe submodule name in repo config");
+            }
+            submoduleNames.add(name);
+          } else {
+            if (!name || !SAFE_DRIVER_NAME_REGEX.test(name)) {
+              throw new GitError("Unsafe filter name in repo config");
+            }
+            if (section === "filter") {
+              filterNames.add(name);
+            } else if (section === "merge") {
+              mergeNames.add(name);
+            } else if (section === "diff") {
+              diffNames.add(name);
+            }
+          }
+        }
+      }
+
+      // Check <toplevel>/.gitmodules
+      let toplevel: string | null = null;
+      try {
+        const { stdout: tlStdout } = await execFileAsync(
+          "git",
+          [...BASE_CONFIG_ARGS, "rev-parse", "--show-toplevel"],
+          { cwd: options.cwd, timeout, maxBuffer, env },
+        );
+        toplevel = tlStdout.trim();
+      } catch {
+        // cwd has no work tree (e.g. bare repo)
+        toplevel = null;
+      }
+
+      if (toplevel) {
+        const gitmodulesPath = join(toplevel, ".gitmodules");
+        if (existsSync(gitmodulesPath)) {
+          let gitmodulesStdout = "";
+          try {
+            const { stdout } = await execFileAsync(
+              "git",
+              [
+                ...BASE_CONFIG_ARGS,
+                "config",
+                "-z",
+                "--name-only",
+                "--file",
+                gitmodulesPath,
+                "--get-regexp",
+                "^submodule\\.",
+              ],
+              { cwd: options.cwd, timeout, maxBuffer, env },
+            );
+            gitmodulesStdout = stdout;
+          } catch (err: unknown) {
+            const nodeErr = err as {
+              code?: number | string;
+              status?: number;
+              stderr?: string;
+              message?: string;
+            };
+            const exitCode = typeof nodeErr.code === "number" ? nodeErr.code : (nodeErr.status ?? null);
+            if (exitCode === 1) {
+              // exit code 1 means "none"
+              gitmodulesStdout = "";
+            } else {
+              const rawStderr = typeof nodeErr.stderr === "string" ? nodeErr.stderr : "";
+              const cleanStderr = stripUserInfo(rawStderr.trim().slice(0, 2048));
+              const cleanMsg = cleanStderr || stripUserInfo(nodeErr.message ?? "git config --file .gitmodules failed");
+              throw new GitError(cleanMsg, { exitCode, stderr: cleanStderr });
+            }
           }
 
-          if (section === "filter") {
-            filterNames.add(name);
-          } else if (section === "merge") {
-            mergeNames.add(name);
-          } else if (section === "diff") {
-            diffNames.add(name);
+          if (gitmodulesStdout) {
+            for (const key of gitmodulesStdout.split("\0")) {
+              if (!key) continue;
+              if (!key.startsWith("submodule.")) {
+                throw new GitError("Unsafe submodule name in .gitmodules");
+              }
+              const firstDot = 9; // "submodule".length
+              const lastDot = key.lastIndexOf(".");
+              if (lastDot === key.length - 1) {
+                throw new GitError("Unsafe submodule name in .gitmodules");
+              }
+              if (firstDot === lastDot) {
+                continue;
+              }
+              const name = key.slice(firstDot + 1, lastDot);
+              if (!name || !SAFE_SUBMODULE_NAME_REGEX.test(name)) {
+                throw new GitError("Unsafe submodule name in .gitmodules");
+              }
+              submoduleNames.add(name);
+            }
           }
         }
+      }
 
-        for (const name of [...filterNames].sort()) {
-          driverArgs.push(
-            "-c",
-            `filter.${name}.process=`,
-            "-c",
-            `filter.${name}.clean=cat`,
-            "-c",
-            `filter.${name}.smudge=cat`,
-            "-c",
-            `filter.${name}.required=false`,
-          );
-        }
+      for (const name of [...filterNames].sort()) {
+        driverArgs.push(
+          "-c",
+          `filter.${name}.process=`,
+          "-c",
+          `filter.${name}.clean=cat`,
+          "-c",
+          `filter.${name}.smudge=cat`,
+          "-c",
+          `filter.${name}.required=false`,
+        );
+      }
 
-        for (const name of [...mergeNames].sort()) {
-          driverArgs.push("-c", `merge.${name}.driver=false`);
-        }
+      for (const name of [...mergeNames].sort()) {
+        driverArgs.push("-c", `merge.${name}.driver=false`);
+      }
 
-        for (const name of [...diffNames].sort()) {
-          driverArgs.push("-c", `diff.${name}.textconv=cat`);
-        }
+      for (const name of [...diffNames].sort()) {
+        driverArgs.push("-c", `diff.${name}.textconv=cat`);
+      }
+
+      for (const name of [...submoduleNames].sort()) {
+        driverArgs.push("-c", `submodule.${name}.ignore=dirty`);
       }
     }
 
     let finalArgs = args;
     if (subcommand) {
       const flagsToInsert: string[] = [];
+
+      if (IGNORE_SUBMODULES_SUBCOMMANDS.has(subcommand)) {
+        const hasIgnoreSubmodules = args.some(
+          (a) => a === "--ignore-submodules" || a.startsWith("--ignore-submodules="),
+        );
+        if (!hasIgnoreSubmodules) {
+          flagsToInsert.push("--ignore-submodules=dirty");
+        }
+      }
+
       if (DIFF_EXT_TEXTCONV_SUBCOMMANDS.has(subcommand)) {
         if (!args.includes("--no-ext-diff")) {
           flagsToInsert.push("--no-ext-diff");

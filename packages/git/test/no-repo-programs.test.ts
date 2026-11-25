@@ -590,4 +590,120 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
     const res = await execGit(["diff", "--name-status", "HEAD~1"], { cwd: superDir });
     expect(res.stdout).toContain("M\tmysub");
   });
+
+  function setupSubmoduleWithCleanFilter(options?: { subName?: string; subPath?: string }): {
+    superDir: string;
+    subDir: string;
+    subFile: string;
+    markerFile: string;
+    subName: string;
+  } {
+    const { dir: superDir, markerFile } = repo();
+    const subName = options?.subName ?? "mysub";
+    const subPath = options?.subPath ?? subName;
+
+    const subSourceDir = makeTemp("git-sec-subsrc-");
+    g(subSourceDir, "init", "--initial-branch=main");
+    g(subSourceDir, "config", "user.name", "Security Test");
+    g(subSourceDir, "config", "user.email", "sec@example.com");
+    writeFileSync(join(subSourceDir, ".gitattributes"), "*.txt filter=sub\n");
+    writeFileSync(join(subSourceDir, "subfile.txt"), "sub content\n");
+    g(subSourceDir, "add", ".gitattributes", "subfile.txt");
+    g(subSourceDir, "commit", "-m", "sub initial");
+
+    g(superDir, "-c", "protocol.file.allow=always", "submodule", "add", "--name", subName, subSourceDir, subPath);
+    g(superDir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "add submodule");
+
+    const subDir = join(superDir, ...subPath.split("/"));
+    const filterScript = join(makeTemp("filter-sub-"), "clean.sh");
+    makeScript(filterScript, markerFile, "cat");
+    g(subDir, "config", "filter.sub.clean", filterScript);
+
+    const subFile = join(subDir, "subfile.txt");
+    return { superDir, subDir, subFile, markerFile, subName };
+  }
+
+  it(".gitmodules committed with submodule.<name>.ignore = none: statusPorcelain and diff HEAD leave no marker", async () => {
+    const { superDir, subFile, markerFile, subName } = setupSubmoduleWithCleanFilter();
+
+    g(superDir, "config", "--file", ".gitmodules", `submodule.${subName}.ignore`, "none");
+    g(superDir, "add", ".gitmodules");
+    g(superDir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "set ignore=none in .gitmodules");
+
+    const future = new Date(Date.now() + 10_000);
+    utimesSync(subFile, future, future);
+
+    await statusPorcelain(superDir);
+    expect(existsSync(markerFile)).toBe(false);
+
+    const future2 = new Date(Date.now() + 20_000);
+    utimesSync(subFile, future2, future2);
+
+    await execGit(["diff", "HEAD"], { cwd: superDir });
+    expect(existsSync(markerFile)).toBe(false);
+  });
+
+  it("repo config submodule.<name>.ignore=none (not in .gitmodules): statusPorcelain and diff HEAD leave no marker", async () => {
+    const { superDir, subFile, markerFile, subName } = setupSubmoduleWithCleanFilter();
+
+    g(superDir, "config", `submodule.${subName}.ignore`, "none");
+
+    const future = new Date(Date.now() + 10_000);
+    utimesSync(subFile, future, future);
+
+    await statusPorcelain(superDir);
+    expect(existsSync(markerFile)).toBe(false);
+
+    const future2 = new Date(Date.now() + 20_000);
+    utimesSync(subFile, future2, future2);
+
+    await execGit(["diff", "HEAD"], { cwd: superDir });
+    expect(existsSync(markerFile)).toBe(false);
+  });
+
+  it("submodule whose name contains / (e.g. path libs/c) with ignore=none: no marker, no error", async () => {
+    const { superDir, subFile, markerFile } = setupSubmoduleWithCleanFilter({
+      subName: "libs/c",
+      subPath: "libs/c",
+    });
+
+    g(superDir, "config", "--file", ".gitmodules", "submodule.libs/c.ignore", "none");
+    g(superDir, "add", ".gitmodules");
+    g(superDir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "set ignore=none for libs/c");
+
+    const future = new Date(Date.now() + 10_000);
+    utimesSync(subFile, future, future);
+
+    await statusPorcelain(superDir);
+    expect(existsSync(markerFile)).toBe(false);
+
+    const future2 = new Date(Date.now() + 20_000);
+    utimesSync(subFile, future2, future2);
+
+    await execGit(["diff", "HEAD"], { cwd: superDir });
+    expect(existsSync(markerFile)).toBe(false);
+  });
+
+  it("caller passes --ignore-submodules=none to execGit(['status', ...]): GitError, nothing run", async () => {
+    const { superDir, subFile, markerFile } = setupSubmoduleWithCleanFilter();
+
+    const future = new Date(Date.now() + 10_000);
+    utimesSync(subFile, future, future);
+
+    await expect(
+      execGit(["status", "--ignore-submodules=none"], { cwd: superDir }),
+    ).rejects.toThrow(GitError);
+
+    expect(existsSync(markerFile)).toBe(false);
+  });
+
+  it("caller passes bare --ignore-submodules or --ignore-submodules=untracked: throws GitError", async () => {
+    const { dir } = repo();
+    await expect(
+      execGit(["status", "--ignore-submodules"], { cwd: dir }),
+    ).rejects.toThrow(GitError);
+    await expect(
+      execGit(["diff", "--ignore-submodules=untracked", "HEAD"], { cwd: dir }),
+    ).rejects.toThrow(GitError);
+  });
 });
