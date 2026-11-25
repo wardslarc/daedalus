@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -491,5 +491,103 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
 
     const committedContent = g(wt, "show", "HEAD:file.txt");
     expect(committedContent).toBe("dot filter modified content");
+  });
+
+  it("signed-looking commit with log.showSignature=true and gpg.program=<script>: log -1 and show HEAD leave no marker", async () => {
+    const { dir, markerFile } = repo();
+    const gpgScript = join(makeTemp("gpg-"), "fake-gpg.sh");
+    makeScript(gpgScript, markerFile);
+
+    const rawCommit = execFileSync("git", ["cat-file", "commit", "HEAD"], { cwd: dir, encoding: "utf8" });
+    const separatorIdx = rawCommit.indexOf("\n\n");
+    if (separatorIdx === -1) {
+      throw new Error("Invalid commit format: missing separator");
+    }
+    const headers = rawCommit.slice(0, separatorIdx);
+    const message = rawCommit.slice(separatorIdx + 2);
+    const fakeSig = [
+      "gpgsig -----BEGIN PGP SIGNATURE-----",
+      " Version: fake",
+      " ",
+      " fake",
+      " -----END PGP SIGNATURE-----",
+    ].join("\n");
+    const signedCommit = `${headers}\n${fakeSig}\n\n${message}`;
+
+    const newSha = execFileSync(
+      "git",
+      ["hash-object", "-t", "commit", "-w", "--stdin"],
+      { cwd: dir, input: signedCommit, encoding: "utf8" },
+    ).trim();
+    g(dir, "update-ref", "HEAD", newSha);
+
+    g(dir, "config", "log.showSignature", "true");
+    g(dir, "config", "gpg.program", gpgScript);
+
+    await execGit(["log", "-1"], { cwd: dir });
+    expect(existsSync(markerFile)).toBe(false);
+
+    await execGit(["show", "HEAD"], { cwd: dir });
+    expect(existsSync(markerFile)).toBe(false);
+  });
+
+  it("submodule: work tree clean filter leaves no marker on statusPorcelain and diff HEAD", async () => {
+    const { dir: superDir, markerFile } = repo();
+
+    const subSourceDir = makeTemp("git-sec-subsrc-");
+    g(subSourceDir, "init", "--initial-branch=main");
+    g(subSourceDir, "config", "user.name", "Security Test");
+    g(subSourceDir, "config", "user.email", "sec@example.com");
+    writeFileSync(join(subSourceDir, ".gitattributes"), "*.txt filter=sub\n");
+    writeFileSync(join(subSourceDir, "subfile.txt"), "sub content\n");
+    g(subSourceDir, "add", ".gitattributes", "subfile.txt");
+    g(subSourceDir, "commit", "-m", "sub initial");
+
+    g(superDir, "-c", "protocol.file.allow=always", "submodule", "add", subSourceDir, "mysub");
+    g(superDir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "add submodule");
+
+    const subDir = join(superDir, "mysub");
+    const filterScript = join(makeTemp("filter-sub-"), "clean.sh");
+    makeScript(filterScript, markerFile, "cat");
+    g(subDir, "config", "filter.sub.clean", filterScript);
+
+    const subFile = join(subDir, "subfile.txt");
+    const future = new Date(Date.now() + 10_000);
+    utimesSync(subFile, future, future);
+
+    await statusPorcelain(superDir);
+    expect(existsSync(markerFile)).toBe(false);
+
+    const future2 = new Date(Date.now() + 20_000);
+    utimesSync(subFile, future2, future2);
+
+    await execGit(["diff", "HEAD"], { cwd: superDir });
+    expect(existsSync(markerFile)).toBe(false);
+  });
+
+  it("submodule bump still visible in diff --name-status HEAD~1", async () => {
+    const { dir: superDir } = repo();
+
+    const subSourceDir = makeTemp("git-sec-subsrc2-");
+    g(subSourceDir, "init", "--initial-branch=main");
+    g(subSourceDir, "config", "user.name", "Security Test");
+    g(subSourceDir, "config", "user.email", "sec@example.com");
+    writeFileSync(join(subSourceDir, "subfile.txt"), "sub content\n");
+    g(subSourceDir, "add", "subfile.txt");
+    g(subSourceDir, "commit", "-m", "sub initial");
+
+    g(superDir, "-c", "protocol.file.allow=always", "submodule", "add", subSourceDir, "mysub");
+    g(superDir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "add submodule");
+
+    const subDir = join(superDir, "mysub");
+    writeFileSync(join(subDir, "subfile.txt"), "sub content bumped\n");
+    g(subDir, "add", "subfile.txt");
+    g(subDir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "submodule commit 2");
+
+    g(superDir, "add", "mysub");
+    g(superDir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "bump submodule in super");
+
+    const res = await execGit(["diff", "--name-status", "HEAD~1"], { cwd: superDir });
+    expect(res.stdout).toContain("M\tmysub");
   });
 });
