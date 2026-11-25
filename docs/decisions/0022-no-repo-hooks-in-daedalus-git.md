@@ -52,6 +52,15 @@
     config (not in our driver listing) can name a clean filter. Base args add `-c diff.ignoreSubmodules=dirty
     -c submodule.recurse=false -c status.submoduleSummary=false`. `dirty` (not `all`): git no longer looks inside
     submodule work trees, but a changed submodule commit still shows in diffs, so Review can't miss a bump.
+- **Third amendment 2026-11-25 (automated review; reproduced by hand):** `submodule.<name>.ignore` — from repo
+  config or from the committed, agent-editable `.gitmodules` — outranks `diff.ignoreSubmodules`, so
+  `ignore = none` brought the submodule filter back. Two layers now:
+  - `--ignore-submodules=dirty` is inserted right after the subcommand for `status, diff, log, show,
+    format-patch, stash` (the command-line flag beats every config source; checked by hand).
+  - Every submodule name found in repo config (`^submodule\.` keys, same listing call) and in the top-level
+    `.gitmodules` of the work tree (read with `git config -z --name-only --file <toplevel>/.gitmodules`, only if
+    the file exists) gets `-c submodule.<name>.ignore=dirty`. Names may contain `/`; anything outside
+    `[A-Za-z0-9._/-]` fails closed. `commit` does not look inside submodule work trees (checked by hand).
 - **Consequences:** a planted hook or fsmonitor in a project's `.git` can no longer run through Daedalus. Same for
   signing and filter programs. One extra `git config` call runs before checkout-type commands. Review diffs
   already ignore textconv and external diff drivers (ADR 0019 amendment). Remote helpers and `core.sshCommand`
