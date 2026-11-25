@@ -24,6 +24,6 @@ Also confirmed:
   ext4), not in a Windows folder; the earlier note to move it is done.
 - The whole Daedalus suite (typecheck, 268 unit tests, 28 e2e tests in Chromium, node-pty terminals,
   ACP agents) runs in this WSL setup.
-- agy updates itself: 1.5.8 (pinned in providers.json) → 1.5.13 (2026-11-20) → 1.5.14 (2026-11-23).
+- agy updates itself: 1.5.8 (pinned in providers.json) → 1.5.13 (2026-11-20) → 1.5.14 (2026-11-23) → 1.5.17 (2026-11-25; pin updated to 1.5.17 by the owner).
   With the version pin from ADR 0003, Daedalus refuses agy sessions until the pin is updated on
   purpose. Decide: update the pin when agy updates, or turn agy's auto-update off.
