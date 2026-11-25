@@ -214,7 +214,7 @@ Status changes go through the T5.2 state machine; review and gate records are se
   must-fix / should-fix / nit. Work projects review with a second Claude session. Findings show in the
   Review center.
   check: unit + e2e tests with the fake agent — reviewer provider is the opposite of the writer; a write request is denied; findings and triage are stored and shown; Work never starts Antigravity
-- [ ] **T6.3 Verify stage and automatic security checks** `[gemini]` — [[SPEC#Release gate]] [[SPEC#Gate findings]]
+- [x] **T6.3 Verify stage and automatic security checks** `[gemini]` — [[SPEC#Release gate]] [[SPEC#Gate findings]]
   When every task of the active milestone is merged, the release moves to Verify. Replace the empty state on
   `/projects/[id]/release` with the gate checklist. Automatic checks, no model: secret scan of the release diff
   and branch history, dependency audit, saved security tests, the profile's ship checklist (Work: Kollab

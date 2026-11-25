@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { openDb, projects, tasks as tasksTable, shapingState } from "@daedalus/db";
 import { branchExists } from "@daedalus/git";
 import { assertProviderAllowed, effectiveGeminiAllowed, ProfileRuleError, rulesFor, validateProjectSettings } from "@daedalus/core/profiles";
-import { ackGate, approveMockDoc, approvePlanDoc, approveSpecDoc, approveTask, beginMockSession, beginPlanSession, beginSpecInterview, closeAllReviews, createProject, discardTask, getReview, getShapingState, ImportError, importProject, listFolders, listInReviewTasks, mergeKit, realGitOps, recoverReviewsOnStartup, saveIntakeDoc, sendBack, startCrossReview, startMilestoneRelease, syncPlanTasksToDb, TaskRunner } from "@daedalus/projects";
+import { ackGate, approveMockDoc, approvePlanDoc, approveSpecDoc, approveTask, beginMockSession, beginPlanSession, beginSpecInterview, closeAllReviews, createProject, decideFinding, discardTask, getReleaseGate, getReview, getShapingState, ImportError, importProject, listFolders, listInReviewTasks, mergeKit, realGitOps, recoverGateRunsOnStartup, recoverReviewsOnStartup, refreshVerifyStage, saveIntakeDoc, sendBack, setChecklistItem, startCrossReview, startGateRun, startMilestoneRelease, stopAllGateRuns, syncPlanTasksToDb, TaskRunner } from "@daedalus/projects";
 import { loadProviders, repoProvidersFile, SessionManager, syncProviders } from "@daedalus/providers";
 import { SERVICES_KEY, type PipelineStage, type Services, type ServicesHolder } from "./services.js";
 import { toSessionInfo } from "./ws/channel.js";
@@ -36,6 +36,7 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
   });
   runner.recoverOnStartup();
   recoverReviewsOnStartup(db);
+  recoverGateRunsOnStartup(db);
   const services: Services = {
     db,
     dataDir,
@@ -294,7 +295,11 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
           activeTasks = tasks.filter((t) => codes.has(t.code));
         }
 
-        if (activeTasks.length > 0 && activeTasks.every((t) => t.status === "done")) {
+        refreshVerifyStage(db, projectId);
+        const shapingCheck = db.select().from(shapingState).where(eq(shapingState.projectId, projectId)).get();
+        if (shapingCheck?.activeMilestoneVerifyStartedAt) {
+          stage = "Verify";
+        } else if (activeTasks.length > 0 && activeTasks.every((t) => t.status === "done")) {
           stage = "Verify";
         } else if (activeTasks.some((t) => t.status === "in-review")) {
           stage = "Review";
@@ -394,6 +399,27 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
       );
       return { reviewId: res.reviewId };
     },
+    getReleaseGate: async (projectId) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return getReleaseGate(db, project);
+    },
+    startGateRun: async (projectId) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      const res = await startGateRun({ db, dataDir }, projectId);
+      return { runId: res.runId };
+    },
+    decideFinding: async (projectId, findingId, input) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return decideFinding(db, projectId, findingId, input);
+    },
+    setChecklistItem: async (projectId, itemId, ticked) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return setChecklistItem(db, projectId, itemId, ticked);
+    },
   };
   holder[SERVICES_KEY] = services;
   return services;
@@ -409,6 +435,7 @@ export async function closeServices(): Promise<void> {
       services.terminals.closeAll(),
       services.runner.stopAll(),
       closeAllReviews(services.db),
+      stopAllGateRuns(services.db, services.dataDir),
     ]);
   } finally {
     services.db.$client.close();

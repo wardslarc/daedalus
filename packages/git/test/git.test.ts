@@ -14,6 +14,7 @@ import {
   createBranch,
   currentBranch,
   detectHost,
+  execGit,
   GitError,
   headSha,
   init,
@@ -303,6 +304,47 @@ describe("@daedalus/git", () => {
       const gitErr = caught as GitError;
       expect(gitErr.message).not.toContain("sensitiveTokenXYZ");
       expect(gitErr.stderr).not.toContain("sensitiveTokenXYZ");
+    });
+
+    it("rawStdout: true keeps userinfo in stdout, default strips it, stderr stripped in both", async () => {
+      const dir = tempDir("exec-raw-");
+      await init(dir, { initialBranch: "main" });
+      setGitUser(dir);
+
+      const secretUrl = "https://bob:s3cr3tT0ken9x@example.com/repo.git";
+      writeFileSync(join(dir, "url.txt"), `${secretUrl}\n`);
+      await commitFiles(dir, ["url.txt"], "commit url");
+
+      // Default strips userinfo from stdout
+      const defaultRes = await execGit(["show", "HEAD:url.txt"], { cwd: dir });
+      expect(defaultRes.stdout).toBe("https://example.com/repo.git\n");
+      expect(defaultRes.stdout).not.toContain("s3cr3tT0ken9x");
+
+      // rawStdout: true keeps userinfo in stdout
+      const rawRes = await execGit(["show", "HEAD:url.txt"], { cwd: dir, rawStdout: true });
+      expect(rawRes.stdout).toBe(`${secretUrl}\n`);
+      expect(rawRes.stdout).toContain("s3cr3tT0ken9x");
+
+      // stderr is stripped in both (default and rawStdout: true)
+      let defaultErr: GitError | undefined;
+      try {
+        await execGit(["log", "--end-of-options", secretUrl], { cwd: dir });
+      } catch (err) {
+        defaultErr = err as GitError;
+      }
+      expect(defaultErr).toBeInstanceOf(GitError);
+      expect(defaultErr?.stderr).not.toContain("s3cr3tT0ken9x");
+      expect(defaultErr?.message).not.toContain("s3cr3tT0ken9x");
+
+      let rawErr: GitError | undefined;
+      try {
+        await execGit(["log", "--end-of-options", secretUrl], { cwd: dir, rawStdout: true });
+      } catch (err) {
+        rawErr = err as GitError;
+      }
+      expect(rawErr).toBeInstanceOf(GitError);
+      expect(rawErr?.stderr).not.toContain("s3cr3tT0ken9x");
+      expect(rawErr?.message).not.toContain("s3cr3tT0ken9x");
     });
   });
 

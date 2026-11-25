@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { makeRedactor, redact, redactDeep } from "../src/redact.js";
+import { findSecretsInText, makeRedactor, redact, redactDeep } from "../src/redact.js";
 import { PLANTED } from "./fixtures/secrets.js";
 
 describe("redact", () => {
@@ -73,5 +73,15 @@ describe("makeRedactor", () => {
     const r = makeRedactor({ HOME: "/home/me", MY_SERVICE_TOKEN: shapeless, SHORT_KEY: "abc", PATH: "/usr/bin" });
     expect(r(`agent printed ${shapeless} and /home/me`)).toBe("agent printed [REDACTED:env] and /home/me");
     expect(r("abc stays: too short to be sure")).toBe("abc stays: too short to be sure");
+  });
+});
+
+describe("findSecretsInText", () => {
+  it("reports userinfo rule's credential (the user:pass part) as a hit", () => {
+    const text = 'url = "https://bob:s3cr3tT0ken9x@example.com/repo.git"';
+    const matches = findSecretsInText(text);
+    const userinfoMatch = matches.find((m) => m.ruleId === "userinfo");
+    expect(userinfoMatch).toBeDefined();
+    expect(userinfoMatch?.value).toBe("bob:s3cr3tT0ken9x");
   });
 });

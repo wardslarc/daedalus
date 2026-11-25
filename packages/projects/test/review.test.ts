@@ -228,6 +228,57 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     });
   });
 
+  it("task branch adding url with userinfo credential blocks secrets gate and patch does not contain secret", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-userinfo", "daedalus/release-v1.0");
+
+    const secretUrl = 'url = "https://bob:s3cr3tT0ken9x@example.com/repo.git"';
+    writeFileSync(join(repoDir, "config.ts"), `${secretUrl}\n`);
+    git(repoDir, "add", "config.ts");
+    git(repoDir, "commit", "-m", "added userinfo credential");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-USERINFO",
+        title: "Userinfo Secret Task",
+        status: "in-review",
+        branch: "daedalus/t-userinfo",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-USERINFO", {
+      checkResult: { ok: true, exitCode: 0, output: "ok" },
+    });
+
+    const secretGate = review.gates.find((g) => g.id === "secrets");
+    expect(secretGate).toBeDefined();
+    expect(secretGate?.status).toBe("blocked");
+    expect(secretGate?.items.length).toBe(1);
+    expect(secretGate?.items[0]).toBe("config.ts:1");
+
+    // Patch must not contain the secret value
+    expect(review.diff.patch).not.toContain("s3cr3tT0ken9x");
+    expect(review.diff.patch).toContain("[REDACTED:userinfo]");
+
+    // The secret text itself must never appear anywhere in review data
+    const jsonOutput = JSON.stringify(review);
+    expect(jsonOutput).not.toContain("s3cr3tT0ken9x");
+  });
+
   it("a deleted test needs ack and blocks approve until acknowledged", async () => {
     // Add a test file to release branch first
     git(repoDir, "checkout", "daedalus/release-v1.0");

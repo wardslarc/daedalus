@@ -30,4 +30,6 @@ export {
   type CrossReviewDeps,
   type StartCrossReviewResult,
 } from "./cross-review.js";
+export * from "./release-gate.js";
+
 

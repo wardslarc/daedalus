@@ -7,8 +7,9 @@ const execFileAsync = promisify(execFile);
 export interface ExecGitOptions {
   cwd: string;
   timeoutMs?: number;
-  env?: NodeJS.ProcessEnv;
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   maxBuffer?: number;
+  rawStdout?: boolean;
 }
 
 export interface ExecGitResult {
@@ -33,7 +34,7 @@ export async function execGit(args: string[], options: ExecGitOptions): Promise<
       },
     });
     return {
-      stdout: stripUserInfo(stdout),
+      stdout: options.rawStdout ? stdout : stripUserInfo(stdout),
       stderr: stripUserInfo(stderr),
     };
   } catch (err: unknown) {

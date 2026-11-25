@@ -34,13 +34,17 @@ describe("@daedalus/db", () => {
     expect(tableNames).toEqual([
       "doc_links",
       "doc_nodes",
+      "gate_findings",
+      "gate_runs",
       "inbox",
       "projects",
       "providers",
       "review_acks",
       "reviews",
       "runs",
+      "security_tests",
       "shaping_state",
+      "ship_checklist_ticks",
       "tasks",
       "usage",
     ]);

@@ -1096,6 +1096,7 @@ export async function startMilestoneRelease(
     activeMilestoneBranch: branch,
     activeMilestoneStartedAt: milestone.startedAt,
     activeMilestoneFrozen: true,
+    activeMilestoneVerifyStartedAt: null,
   });
 
   for (const t of milestoneTasks) {
