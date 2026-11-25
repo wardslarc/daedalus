@@ -26,6 +26,21 @@
     searching for `"git"` spawns); otherwise none.
   - Projects that depend on hooks for their own workflow (husky, lint-staged) keep them in the owner's own
     terminal; Daedalus-made commits were already `--no-verify`.
+- **Amended 2026-11-25 (automated security review of the first implementation):** the driver list and the
+  subcommand list were both too narrow.
+  - Drivers: besides filters, `.gitattributes` selects `merge.<name>.driver` (run on merge, rebase,
+    cherry-pick, stash, checkout -m) and `diff.<name>.command` / `diff.<name>.textconv` (run on diff, show, log -p,
+    blame). One listing call, `git config -z --name-only --get-regexp '^(filter|merge|diff)\.'`, collects the
+    names; each gets `filter.<n>.process= clean=cat smudge=cat required=false`, `merge.<n>.driver=false` (a custom
+    merge always conflicts instead of running a program: fail closed) and `diff.<n>.command= diff.<n>.textconv=cat`.
+    Globally also `-c diff.external= -c core.editor=true -c sequence.editor=true`.
+  - Subcommands: the listing and overrides apply to **every** call except object-only ones that never read
+    the working tree or run drivers: `rev-parse, show-ref, check-ref-format, for-each-ref, cat-file, rev-list,
+    merge-base, symbolic-ref, config, ls-remote, init, clone` (the last three run before or without a repo). An
+    unknown or missing subcommand is treated as working-tree (overrides applied).
+  - Not covered here, decided with T6.8 Ship: remote programs from repo config (`core.sshCommand`,
+    `credential.helper`, `core.askPass`, `remote.*.uploadpack/receivepack`) — they only run on fetch/push, which
+    Daedalus doesn't do before Ship.
 - **Consequences:** a planted hook or fsmonitor in a project's `.git` can no longer run through Daedalus. Same for
   signing and filter programs. One extra `git config` call runs before checkout-type commands. Review diffs
   already ignore textconv and external diff drivers (ADR 0019 amendment). Remote helpers and `core.sshCommand`
