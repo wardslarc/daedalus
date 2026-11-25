@@ -515,7 +515,7 @@ describe("@daedalus/git", () => {
       ).rejects.toThrow(GitError);
     });
 
-    it("commitFiles supports noVerify option to bypass pre-commit hooks", async () => {
+    it("commitFiles never runs repo hooks (ADR 0022) and supports noVerify option", async () => {
       const repoDir = tempDir("noverify-repo-");
       await init(repoDir, { initialBranch: "main" });
       setGitUser(repoDir);
@@ -530,10 +530,12 @@ describe("@daedalus/git", () => {
 
       writeFileSync(join(repoDir, "f.txt"), "v2");
 
-      // Without noVerify, commit fails because of hook
-      await expect(commitFiles(repoDir, ["f.txt"], "failing commit")).rejects.toThrow(GitError);
+      // Without noVerify, failing hook does not run and commit succeeds (ADR 0022)
+      const sha1 = await commitFiles(repoDir, ["f.txt"], "commit without noVerify");
+      expect(sha1).toMatch(/^[0-9a-f]{40}$/);
 
       // With noVerify: true, commit succeeds
+      writeFileSync(join(repoDir, "f.txt"), "v3");
       const sha = await commitFiles(repoDir, ["f.txt"], "bypassed hook commit", { noVerify: true });
       expect(sha).toMatch(/^[0-9a-f]{40}$/);
     });
