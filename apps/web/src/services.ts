@@ -5,8 +5,8 @@
  * handlers reach them through this object on globalThis (Symbol.for key, so it also
  * survives Next's dev reloads).
  */
-import type { DaedalusDb, gateFindings, projects, tasks } from "@daedalus/db";
-import type { ApproveMockInput, ApprovePlanInput, ApproveSpecInput, BrowseResult, CreateInput, createProject, ImportInput, importProject, mergeKit, MilestoneState, MockApproval, ParsedMilestone, PipelineTask, ReleaseGateData, ReviewData, RunTaskResult, SaveIntakeInput, ShapingState, StartMilestoneInput, TaskRunner } from "@daedalus/projects";
+import type { DaedalusDb, gateFindings, projects, tasks, uatAppConfig, uatItems, uatMarks, uatSessions } from "@daedalus/db";
+import type { ApproveMockInput, ApprovePlanInput, ApproveSpecInput, BrowseResult, CreateInput, createProject, ImportInput, importProject, MarkUatItemInput, mergeKit, MilestoneState, MockApproval, ParsedMilestone, PipelineTask, ReleaseGateData, ReviewData, RunTaskResult, SaveIntakeInput, ShapingState, StartMilestoneInput, TaskRunner } from "@daedalus/projects";
 import type { ProfileRules } from "@daedalus/core/profiles";
 import type { TaskStatus } from "@daedalus/core/task-state";
 import type { ProviderEntry, SessionManager } from "@daedalus/providers";
@@ -49,6 +49,7 @@ export type Services = SessionServices & {
   db: DaedalusDb;
   dataDir: string;
   repoRoot: string;
+  port?: number;
   /** Validated providers.json: the only agents Daedalus may launch (T3.1). */
   providers: readonly ProviderEntry[];
   /** Running agent sessions (T3.2); stopped by closeServices on shutdown. */
@@ -140,6 +141,37 @@ export type Services = SessionServices & {
     itemId: string,
     ticked: boolean,
   ): Promise<{ itemId: string; ticked: boolean }>;
+  /** Set UAT app config (T6.4). */
+  setUatAppConfig(
+    projectId: number,
+    input: { startCommand: string; appUrl: string },
+  ): Promise<typeof uatAppConfig.$inferSelect>;
+  /** Get UAT app config (T6.4). */
+  getUatAppConfig(projectId: number): Promise<typeof uatAppConfig.$inferSelect | null>;
+  /** Start a UAT session with recorded browser (T6.4). */
+  startUatSession(projectId: number): Promise<typeof uatSessions.$inferSelect>;
+  /** Stop a UAT session (T6.4). */
+  stopUatSession(projectId: number): Promise<typeof uatSessions.$inferSelect>;
+  /** Take a screenshot from the active UAT browser (T6.4). */
+  uatScreenshot(projectId: number): Promise<{ path: string; name: string }>;
+  /** Add a UAT item from approved spec (T6.4). */
+  addUatItemFromSpec(projectId: number, text: string): Promise<typeof uatItems.$inferSelect>;
+  /** Mark a UAT item pass or fail (T6.4). */
+  markUatItem(
+    projectId: number,
+    itemId: number,
+    input: MarkUatItemInput,
+  ): Promise<{
+    mark: typeof uatMarks.$inferSelect;
+    task?: typeof tasks.$inferSelect;
+    finding?: typeof gateFindings.$inferSelect;
+  }>;
+  /** Resolve a recorded UAT file path and content type (T6.4). */
+  resolveUatRecordingPath(
+    projectId: number,
+    sessionId: string,
+    nameParts: string[],
+  ): { path: string; contentType: string; attachment: boolean };
 };
 
 export type SessionServices = {

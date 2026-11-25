@@ -5,6 +5,7 @@ import {
   sqliteTable,
   text,
   unique,
+  uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 
 export const projects = sqliteTable("projects", {
@@ -262,6 +263,7 @@ export type GateRunChecks = {
   dependencies?: GateCheckResult;
   securityTests?: GateCheckResult;
   checklist?: GateCheckResult;
+  uat?: GateCheckResult;
 };
 
 export const gateRuns = sqliteTable(
@@ -299,7 +301,7 @@ export const gateFindings = sqliteTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     releaseVersion: text("release_version").notNull(),
     check: text("check", {
-      enum: ["secrets", "dependencies", "security-tests"],
+      enum: ["secrets", "dependencies", "security-tests", "uat"],
     }).notNull(),
     fingerprint: text("fingerprint").notNull(),
     severity: text("severity", {
@@ -312,7 +314,7 @@ export const gateFindings = sqliteTable(
     state: text("state", { enum: ["open", "resolved"] })
       .notNull()
       .default("open"),
-    outcome: text("outcome", { enum: ["fix-task", "accept", "defer"] }),
+    outcome: text("outcome", { enum: ["fix-task", "accept", "defer", "change-request"] }),
     reason: text("reason"),
     fixTaskId: integer("fix_task_id").references(() => tasks.id, {
       onDelete: "set null",
@@ -331,7 +333,7 @@ export const gateFindings = sqliteTable(
   (table) => [
     check(
       "gate_findings_check_check",
-      sql`${table.check} in ('secrets', 'dependencies', 'security-tests')`,
+      sql`${table.check} in ('secrets', 'dependencies', 'security-tests', 'uat')`,
     ),
     check(
       "gate_findings_severity_check",
@@ -343,7 +345,7 @@ export const gateFindings = sqliteTable(
     ),
     check(
       "gate_findings_outcome_check",
-      sql`${table.outcome} is null or ${table.outcome} in ('fix-task', 'accept', 'defer')`,
+      sql`${table.outcome} is null or ${table.outcome} in ('fix-task', 'accept', 'defer', 'change-request')`,
     ),
     unique("gate_findings_project_id_release_version_fingerprint_unique").on(
       table.projectId,
@@ -386,6 +388,101 @@ export const shipChecklistTicks = sqliteTable(
       table.releaseVersion,
       table.itemId,
     ),
+  ],
+);
+
+export const uatItems = sqliteTable(
+  "uat_items",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    projectId: integer("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    releaseVersion: text("release_version").notNull(),
+    position: integer("position").notNull(),
+    text: text("text").notNull(),
+    source: text("source", { enum: ["plan", "spec"] }).notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(CURRENT_TIMESTAMP)`),
+  },
+  (table) => [
+    check("uat_items_source_check", sql`${table.source} in ('plan', 'spec')`),
+    unique("uat_items_project_id_release_version_position_unique").on(
+      table.projectId,
+      table.releaseVersion,
+      table.position,
+    ),
+  ],
+);
+
+export const uatMarks = sqliteTable(
+  "uat_marks",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    itemId: integer("item_id")
+      .notNull()
+      .references(() => uatItems.id, { onDelete: "cascade" }),
+    result: text("result", { enum: ["pass", "fail"] }).notNull(),
+    note: text("note"),
+    kind: text("kind", { enum: ["bug", "change"] }),
+    headSha: text("head_sha").notNull(),
+    sessionId: text("session_id"),
+    fixTaskId: integer("fix_task_id").references(() => tasks.id, {
+      onDelete: "set null",
+    }),
+    findingId: integer("finding_id").references(() => gateFindings.id, {
+      onDelete: "set null",
+    }),
+    markedAt: text("marked_at")
+      .notNull()
+      .default(sql`(CURRENT_TIMESTAMP)`),
+  },
+  (table) => [
+    check("uat_marks_result_check", sql`${table.result} in ('pass', 'fail')`),
+    check("uat_marks_kind_check", sql`${table.kind} is null or ${table.kind} in ('bug', 'change')`),
+  ],
+);
+
+export const uatAppConfig = sqliteTable("uat_app_config", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  projectId: integer("project_id")
+    .notNull()
+    .unique()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  startCommand: text("start_command").notNull(),
+  appUrl: text("app_url").notNull(),
+  updatedAt: text("updated_at")
+    .notNull()
+    .default(sql`(CURRENT_TIMESTAMP)`),
+});
+
+export const uatSessions = sqliteTable(
+  "uat_sessions",
+  {
+    id: text("id").primaryKey(),
+    projectId: integer("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    releaseVersion: text("release_version").notNull(),
+    headSha: text("head_sha").notNull(),
+    status: text("status", {
+      enum: ["starting", "running", "stopped", "error"],
+    }).notNull(),
+    error: text("error"),
+    startedAt: text("started_at")
+      .notNull()
+      .default(sql`(CURRENT_TIMESTAMP)`),
+    endedAt: text("ended_at"),
+  },
+  (table) => [
+    check(
+      "uat_sessions_status_check",
+      sql`${table.status} in ('starting', 'running', 'stopped', 'error')`,
+    ),
+    uniqueIndex("uat_sessions_active_project_unique")
+      .on(table.projectId)
+      .where(sql`${table.status} in ('starting', 'running')`),
   ],
 );
 

@@ -31,5 +31,6 @@ export {
   type StartCrossReviewResult,
 } from "./cross-review.js";
 export * from "./release-gate.js";
+export * from "./uat.js";
 
 

@@ -3803,5 +3803,170 @@ dialog.modal-dialog::backdrop {
   justify-content: flex-end;
 }
 
+/* UAT Section (T6.4, ADR 0021) */
+.uat-config-card {
+  background-color: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.uat-config-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.uat-config-label {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.uat-config-val {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink-strong);
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  border-radius: 6px;
+  word-break: break-all;
+}
+
+.uat-session-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  background-color: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+
+.uat-session-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.uat-session-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.uat-items-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.uat-item-card {
+  background-color: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.uat-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.uat-item-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.uat-item-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-strong);
+  line-height: 1.4;
+}
+
+.uat-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.uat-mark-badge-pass {
+  background-color: var(--ok-bg);
+  color: var(--ok);
+  border: 1px solid var(--ok-border);
+}
+
+.uat-mark-badge-fail {
+  background-color: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid var(--danger-border);
+}
+
+.uat-mark-badge-retest {
+  background-color: var(--warn-bg);
+  color: var(--warn);
+  border: 1px solid var(--warn-border);
+}
+
+.uat-mark-badge-untested {
+  background-color: var(--surface);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+.uat-recordings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.uat-recording-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  gap: 12px;
+}
+
+.uat-recording-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.uat-recording-name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink-strong);
+}
+
+.uat-recording-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 
 

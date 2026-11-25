@@ -46,6 +46,10 @@ describe("@daedalus/db", () => {
       "shaping_state",
       "ship_checklist_ticks",
       "tasks",
+      "uat_app_config",
+      "uat_items",
+      "uat_marks",
+      "uat_sessions",
       "usage",
     ]);
   });

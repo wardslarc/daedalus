@@ -221,7 +221,7 @@ Status changes go through the T5.2 state machine; review and gate records are se
   handoff). Every finding is stored in a `gate_findings` table and must end as a fix task (added to the same
   milestone, frozen), a change request, or an accept / defer with a written reason.
   check: unit + e2e tests — a planted secret in branch history blocks the gate and becomes a fix task; a moderate dependency finding can be deferred only with a reason
-- [ ] **T6.4 UAT checklist with a recorded browser** `[gemini]` — [[SPEC#Release gate]] [[SPEC#Gate findings]]
+- [x] **T6.4 UAT checklist with a recorded browser** `[gemini]` — [[SPEC#Release gate]] [[SPEC#Gate findings]]
   UAT lists only this milestone's "Done when" items (and spec `## Verify` items they cover). Daedalus opens the
   project's app in a recorded Chromium window (screenshots, video, Playwright trace) and the owner marks each item
   pass or fail with a note. Fail → bug (fix task) or change (change request), chosen by the owner.

@@ -71,6 +71,13 @@
       "when": 1795571537191,
       "tag": "0009_amazing_sharon_carter",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1795577215795,
+      "tag": "0010_steady_hellcat",
+      "breakpoints": true
     }
   ]
 }

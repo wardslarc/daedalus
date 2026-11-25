@@ -32,6 +32,29 @@ export default function ReleaseGatePage() {
   // Checklist item toggle state
   const [togglingItems, setTogglingItems] = useState<Record<string, boolean>>({});
 
+  // UAT App config state
+  const [configModalOpen, setConfigModalOpen] = useState(false);
+  const [configCmd, setConfigCmd] = useState("");
+  const [configUrl, setConfigUrl] = useState("");
+  const [savingConfig, setSavingConfig] = useState(false);
+
+  // UAT Session state
+  const [sessionBusy, setSessionBusy] = useState(false);
+
+  // UAT Fail mark dialog state
+  const [markDialog, setMarkDialog] = useState<{
+    itemId: number;
+    itemText: string;
+    note: string;
+    kind: "bug" | "change";
+    checkCommand: string;
+    busy: boolean;
+  } | null>(null);
+
+  // Add from spec state
+  const [specInput, setSpecInput] = useState("");
+  const [addingSpecItem, setAddingSpecItem] = useState(false);
+
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const loadGate = useCallback(
@@ -60,9 +83,12 @@ export default function ReleaseGatePage() {
     loadGate(true);
   }, [loadGate]);
 
-  // Polling every 3s while gate status is "running" or runningChecks is true
+  // Polling every 3s while gate status is "running", runningChecks, or session is starting
   useEffect(() => {
-    const isRunning = gate?.status === "running" || runningChecks;
+    const isRunning =
+      gate?.status === "running" ||
+      runningChecks ||
+      gate?.uat?.session?.status === "starting";
     if (isRunning) {
       pollTimerRef.current = setTimeout(() => {
         loadGate(false);
@@ -79,7 +105,199 @@ export default function ReleaseGatePage() {
         pollTimerRef.current = null;
       }
     };
-  }, [gate?.status, runningChecks, loadGate]);
+  }, [gate?.status, gate?.uat?.session?.status, runningChecks, loadGate]);
+
+  useEffect(() => {
+    if (gate?.uat?.config) {
+      setConfigCmd(gate.uat.config.startCommand);
+      setConfigUrl(gate.uat.config.appUrl);
+    }
+  }, [gate?.uat?.config]);
+
+  // Handle UAT app config save
+  const handleSaveConfig = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!id || savingConfig) return;
+    try {
+      setSavingConfig(true);
+      setActionError(null);
+      setActionSuccess(null);
+      const res = await postJson(`/api/projects/${id}/release/uat/config`, {
+        startCommand: configCmd,
+        appUrl: configUrl,
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        setActionError(body.error || "Failed to save UAT app config.");
+      } else {
+        setActionSuccess("UAT app config saved.");
+        setConfigModalOpen(false);
+        await loadGate(false);
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to save config.");
+    } finally {
+      setSavingConfig(false);
+    }
+  };
+
+  // Handle UAT session start
+  const handleStartUatSession = async () => {
+    if (!id || sessionBusy) return;
+    try {
+      setSessionBusy(true);
+      setActionError(null);
+      setActionSuccess(null);
+      const res = await postJson(`/api/projects/${id}/release/uat/start`, {});
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        setActionError(body.error || "Failed to start UAT session.");
+      } else {
+        setActionSuccess("UAT browser session started.");
+        await loadGate(false);
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to start session.");
+    } finally {
+      setSessionBusy(false);
+    }
+  };
+
+  // Handle UAT session stop
+  const handleStopUatSession = async () => {
+    if (!id || sessionBusy) return;
+    try {
+      setSessionBusy(true);
+      setActionError(null);
+      setActionSuccess(null);
+      const res = await postJson(`/api/projects/${id}/release/uat/stop`, {});
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        setActionError(body.error || "Failed to stop UAT session.");
+      } else {
+        setActionSuccess("UAT session stopped. Recordings saved.");
+        await loadGate(false);
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to stop session.");
+    } finally {
+      setSessionBusy(false);
+    }
+  };
+
+  // Handle UAT screenshot
+  const handleTakeScreenshot = async () => {
+    if (!id || sessionBusy) return;
+    try {
+      setSessionBusy(true);
+      setActionError(null);
+      setActionSuccess(null);
+      const res = await postJson(`/api/projects/${id}/release/uat/screenshot`, {});
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; name?: string; error?: string };
+      if (!res.ok) {
+        setActionError(body.error || "Failed to capture screenshot.");
+      } else {
+        setActionSuccess(`Screenshot captured: ${body.name}`);
+        await loadGate(false);
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to capture screenshot.");
+    } finally {
+      setSessionBusy(false);
+    }
+  };
+
+  // Handle pass UAT item
+  const handlePassItem = async (itemId: number) => {
+    if (!id) return;
+    const headSha = gate?.headSha ?? gate?.latestRun?.headSha ?? "";
+    try {
+      setActionError(null);
+      setActionSuccess(null);
+      const res = await postJson(`/api/projects/${id}/release/uat/items/${itemId}/mark`, {
+        result: "pass",
+        headSha,
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        setActionError(body.error || "Failed to mark item pass.");
+      } else {
+        setActionSuccess("Item marked as pass.");
+        await loadGate(false);
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to mark item pass.");
+    }
+  };
+
+  // Handle fail UAT item submit
+  const handleFailSubmit = async () => {
+    if (!id || !markDialog || markDialog.busy) return;
+    const headSha = gate?.headSha ?? gate?.latestRun?.headSha ?? "";
+    if (!markDialog.note.trim()) {
+      setActionError("Note is required for fail marks (1-2000 chars).");
+      return;
+    }
+    if (markDialog.kind === "bug" && !markDialog.checkCommand.trim()) {
+      setActionError("Check command is required for bug fix task.");
+      return;
+    }
+
+    try {
+      setMarkDialog((prev) => (prev ? { ...prev, busy: true } : null));
+      setActionError(null);
+      setActionSuccess(null);
+      const res = await postJson(`/api/projects/${id}/release/uat/items/${markDialog.itemId}/mark`, {
+        result: "fail",
+        note: markDialog.note.trim(),
+        kind: markDialog.kind,
+        checkCommand: markDialog.kind === "bug" ? markDialog.checkCommand.trim() : undefined,
+        headSha,
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        setActionError(body.error || "Failed to record fail mark.");
+      } else {
+        setMarkDialog(null);
+        setActionSuccess(
+          markDialog.kind === "bug"
+            ? "Fix task created for UAT item."
+            : "Change request logged for UAT item.",
+        );
+        await loadGate(false);
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to record fail mark.");
+    } finally {
+      setMarkDialog((prev) => (prev ? { ...prev, busy: false } : null));
+    }
+  };
+
+  // Handle add item from spec
+  const handleAddSpecItem = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!id || addingSpecItem || !specInput.trim()) return;
+    try {
+      setAddingSpecItem(true);
+      setActionError(null);
+      setActionSuccess(null);
+      const res = await postJson(`/api/projects/${id}/release/uat/items`, {
+        text: specInput.trim(),
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        setActionError(body.error || "Failed to add item from spec.");
+      } else {
+        setSpecInput("");
+        setActionSuccess("UAT item added from approved spec.");
+        await loadGate(false);
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to add item from spec.");
+    } finally {
+      setAddingSpecItem(false);
+    }
+  };
 
   // Handle "Run checks"
   const handleRunChecks = async () => {
@@ -289,6 +507,11 @@ export default function ReleaseGatePage() {
                 status={gate.checks?.checklist?.status}
                 detail={gate.checks?.checklist?.detail}
               />
+              <CheckRow
+                name="UAT"
+                status={gate.checks?.uat?.status ?? gate.uat?.gateLine?.status}
+                detail={gate.checks?.uat?.detail ?? gate.uat?.gateLine?.detail}
+              />
             </div>
           </section>
 
@@ -323,6 +546,401 @@ export default function ReleaseGatePage() {
                     </label>
                   );
                 })
+              )}
+            </div>
+          </section>
+
+          {/* 5. User Acceptance Testing (UAT) (T6.4, ADR 0021) */}
+          <section className="release-section" aria-label="User Acceptance Testing">
+            <div className="release-section-header">
+              <h2>User Acceptance Testing (UAT)</h2>
+              <span className="review-gate-ack-time">
+                {gate.uat?.items.filter((i) => i.status === "pass").length ?? 0} of{" "}
+                {gate.uat?.items.length ?? 0} passed
+              </span>
+            </div>
+
+            {/* App Config Card */}
+            <div className="uat-config-card">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span className="uat-config-label">App Configuration (Trust Boundary)</span>
+                <button
+                  type="button"
+                  className="btn-secondary-sm"
+                  onClick={() => setConfigModalOpen((v) => !v)}
+                >
+                  {configModalOpen ? "Close config" : gate.uat?.config ? "Edit config" : "Configure app"}
+                </button>
+              </div>
+
+              {gate.uat?.config && !configModalOpen && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <div className="uat-config-row">
+                    <span className="uat-config-label">Start command:</span>
+                    <code className="uat-config-val">{gate.uat.config.startCommand}</code>
+                  </div>
+                  <div className="uat-config-row">
+                    <span className="uat-config-label">App URL:</span>
+                    <code className="uat-config-val">{gate.uat.config.appUrl}</code>
+                  </div>
+                </div>
+              )}
+
+              {(!gate.uat?.config || configModalOpen) && (
+                <form
+                  onSubmit={handleSaveConfig}
+                  style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "6px" }}
+                >
+                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                    <label className="release-dialog-label" htmlFor="uat-start-cmd">
+                      Start command (1-500 chars, e.g. pnpm dev --port 5173):
+                    </label>
+                    <input
+                      id="uat-start-cmd"
+                      type="text"
+                      className="release-dialog-input"
+                      placeholder="e.g. pnpm install --frozen-lockfile && pnpm dev --port 5173"
+                      value={configCmd}
+                      onChange={(e) => setConfigCmd(e.target.value)}
+                      required
+                    />
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                    <label className="release-dialog-label" htmlFor="uat-app-url">
+                      App URL (http://127.0.0.1:&lt;port&gt; or http://localhost:&lt;port&gt;):
+                    </label>
+                    <input
+                      id="uat-app-url"
+                      type="text"
+                      className="release-dialog-input"
+                      placeholder="e.g. http://127.0.0.1:5173"
+                      value={configUrl}
+                      onChange={(e) => setConfigUrl(e.target.value)}
+                      required
+                    />
+                  </div>
+                  <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+                    {gate.uat?.config && (
+                      <button
+                        type="button"
+                        className="btn-secondary-sm"
+                        onClick={() => setConfigModalOpen(false)}
+                      >
+                        Cancel
+                      </button>
+                    )}
+                    <button
+                      type="submit"
+                      className="btn-primary-sm"
+                      disabled={savingConfig || !configCmd.trim() || !configUrl.trim()}
+                    >
+                      {savingConfig ? "Saving…" : "Save configuration"}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+
+            {/* Session Controls */}
+            <div className="uat-session-bar">
+              <div className="uat-session-status">
+                <span style={{ fontWeight: 600 }}>Browser Session:</span>
+                {gate.uat?.session?.status === "running" ? (
+                  <span className="finding-badge finding-state-resolved">Running</span>
+                ) : gate.uat?.session?.status === "starting" ? (
+                  <span className="finding-badge finding-sev-moderate">Starting…</span>
+                ) : (
+                  <span className="finding-badge finding-state-badge">Stopped</span>
+                )}
+                {gate.uat?.session?.headSha && gate.uat.session.headSha !== "starting" && (
+                  <span style={{ fontSize: "12px", color: "var(--muted)", fontFamily: "var(--font-mono)" }}>
+                    Head: {gate.uat.session.headSha.slice(0, 8)}
+                  </span>
+                )}
+              </div>
+
+              <div className="uat-session-actions">
+                {gate.uat?.session?.status === "running" ? (
+                  <>
+                    <button
+                      type="button"
+                      className="btn-secondary-sm"
+                      disabled={sessionBusy}
+                      onClick={handleTakeScreenshot}
+                    >
+                      {sessionBusy ? "Working…" : "Screenshot"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-primary-sm"
+                      disabled={sessionBusy}
+                      onClick={handleStopUatSession}
+                    >
+                      {sessionBusy ? "Stopping…" : "Stop session"}
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    disabled={sessionBusy || !gate.uat?.config}
+                    onClick={handleStartUatSession}
+                    title={!gate.uat?.config ? "Configure start command first" : undefined}
+                  >
+                    {sessionBusy ? "Starting browser…" : "Start recorded browser"}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Checklist Items */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <h3 style={{ fontSize: "14.5px", fontWeight: 600, color: "var(--ink-strong)" }}>
+                  Checklist items
+                </h3>
+              </div>
+
+              {!gate.uat?.items || gate.uat.items.length === 0 ? (
+                <p className="review-muted-text">
+                  No UAT items found for this release milestone.
+                </p>
+              ) : (
+                <div className="uat-items-list">
+                  {gate.uat.items.map((item) => {
+                    const isMarkDialogOpen = markDialog?.itemId === item.id;
+                    const markClass =
+                      item.status === "pass"
+                        ? "uat-mark-badge-pass"
+                        : item.status === "fail"
+                          ? "uat-mark-badge-fail"
+                          : item.status === "re-test"
+                            ? "uat-mark-badge-retest"
+                            : "uat-mark-badge-untested";
+
+                    return (
+                      <div key={item.id} className="uat-item-card">
+                        <div className="uat-item-header">
+                          <div className="uat-item-badges">
+                            <span className="finding-badge finding-state-badge">#{item.position}</span>
+                            <span className="finding-badge finding-check-badge">{item.source}</span>
+                            <span className={`finding-badge ${markClass}`}>
+                              {item.status === "re-test" ? "Re-test" : item.status}
+                            </span>
+                          </div>
+                          <div className="uat-item-actions">
+                            <button
+                              type="button"
+                              className="btn-secondary-sm"
+                              onClick={() => handlePassItem(item.id)}
+                            >
+                              Pass
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-secondary-sm"
+                              onClick={() =>
+                                setMarkDialog({
+                                  itemId: item.id,
+                                  itemText: item.text,
+                                  note: "",
+                                  kind: "bug",
+                                  checkCommand: "",
+                                  busy: false,
+                                })
+                              }
+                            >
+                              Fail…
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="uat-item-text">{item.text}</div>
+
+                        {item.latestMark && (
+                          <div className="release-finding-outcome-details">
+                            <span>
+                              <strong>Latest decision:</strong> {item.latestMark.result}
+                              {item.latestMark.kind ? ` (${item.latestMark.kind})` : ""} ·{" "}
+                              <span style={{ color: "var(--muted)" }}>
+                                {new Date(item.latestMark.markedAt).toLocaleTimeString()}
+                              </span>
+                            </span>
+                            {item.latestMark.note && <span>Note: {item.latestMark.note}</span>}
+                            {item.latestMark.fixTaskCode && (
+                              <span>
+                                Fix task: <strong>{item.latestMark.fixTaskCode}</strong> (
+                                {item.latestMark.fixTaskStatus ?? "queued"})
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Inline Fail Mark Dialog */}
+                        {isMarkDialogOpen && (
+                          <div className="release-dialog-panel">
+                            <div className="release-dialog-title">
+                              Mark Item #{item.position} as Failed
+                            </div>
+
+                            <div style={{ display: "flex", gap: "16px", margin: "4px 0" }}>
+                              <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+                                <input
+                                  type="radio"
+                                  name={`kind-${item.id}`}
+                                  checked={markDialog.kind === "bug"}
+                                  onChange={() =>
+                                    setMarkDialog((prev) => (prev ? { ...prev, kind: "bug" } : null))
+                                  }
+                                />
+                                <span>
+                                  <strong>Bug</strong> (creates frozen fix task)
+                                </span>
+                              </label>
+                              <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+                                <input
+                                  type="radio"
+                                  name={`kind-${item.id}`}
+                                  checked={markDialog.kind === "change"}
+                                  onChange={() =>
+                                    setMarkDialog((prev) => (prev ? { ...prev, kind: "change" } : null))
+                                  }
+                                />
+                                <span>
+                                  <strong>Change</strong> (logs gate finding)
+                                </span>
+                              </label>
+                            </div>
+
+                            <label className="release-dialog-label" htmlFor={`uat-note-${item.id}`}>
+                              Note (required, 1-2000 chars):
+                            </label>
+                            <textarea
+                              id={`uat-note-${item.id}`}
+                              rows={3}
+                              className="release-dialog-textarea"
+                              placeholder="Describe what failed or differs..."
+                              value={markDialog.note}
+                              disabled={markDialog.busy}
+                              onChange={(e) =>
+                                setMarkDialog((prev) =>
+                                  prev ? { ...prev, note: e.target.value } : null
+                                )
+                              }
+                            />
+
+                            {markDialog.kind === "bug" && (
+                              <>
+                                <label className="release-dialog-label" htmlFor={`uat-cmd-${item.id}`}>
+                                  Check command for fix task (required, max 500 chars):
+                                </label>
+                                <input
+                                  id={`uat-cmd-${item.id}`}
+                                  type="text"
+                                  className="release-dialog-input"
+                                  placeholder="e.g. pnpm test"
+                                  value={markDialog.checkCommand}
+                                  disabled={markDialog.busy}
+                                  onChange={(e) =>
+                                    setMarkDialog((prev) =>
+                                      prev ? { ...prev, checkCommand: e.target.value } : null
+                                    )
+                                  }
+                                />
+                              </>
+                            )}
+
+                            <div className="release-dialog-actions">
+                              <button
+                                type="button"
+                                className="btn-secondary-sm"
+                                disabled={markDialog.busy}
+                                onClick={() => setMarkDialog(null)}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                className="btn-primary-sm"
+                                disabled={
+                                  markDialog.busy ||
+                                  !markDialog.note.trim() ||
+                                  (markDialog.kind === "bug" && !markDialog.checkCommand.trim())
+                                }
+                                onClick={handleFailSubmit}
+                              >
+                                {markDialog.busy ? "Saving…" : "Submit failure"}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Add item from spec */}
+            <div className="uat-config-card" style={{ marginTop: "12px" }}>
+              <span className="uat-config-label">Add item from approved SPEC.md</span>
+              <form
+                onSubmit={handleAddSpecItem}
+                style={{ display: "flex", gap: "8px", marginTop: "6px" }}
+              >
+                <input
+                  type="text"
+                  className="release-dialog-input"
+                  style={{ flex: 1 }}
+                  placeholder="Enter exact item text from docs/SPEC.md ## Verify section..."
+                  value={specInput}
+                  onChange={(e) => setSpecInput(e.target.value)}
+                  disabled={addingSpecItem}
+                />
+                <button
+                  type="submit"
+                  className="btn-secondary-sm"
+                  disabled={addingSpecItem || !specInput.trim()}
+                >
+                  {addingSpecItem ? "Adding…" : "Add from spec"}
+                </button>
+              </form>
+            </div>
+
+            {/* Recordings List */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "12px" }}>
+              <div className="release-section-header">
+                <h2>Recordings ({gate.uat?.recordings.length ?? 0})</h2>
+              </div>
+
+              {!gate.uat?.recordings || gate.uat.recordings.length === 0 ? (
+                <p className="review-muted-text">
+                  No recordings saved yet. Playwright trace, video, and screenshots will appear here after stopping a session.
+                </p>
+              ) : (
+                <div className="uat-recordings-list">
+                  {gate.uat.recordings.map((rec, idx) => (
+                    <div key={`${rec.sessionId}-${rec.name}-${idx}`} className="uat-recording-row">
+                      <div className="uat-recording-info">
+                        <span className="finding-badge finding-check-badge">{rec.type}</span>
+                        <span className="uat-recording-name">{rec.name}</span>
+                        <span className="uat-recording-meta">
+                          {(rec.size / 1024).toFixed(1)} KB ·{" "}
+                          {new Date(rec.createdAt).toLocaleTimeString()}
+                        </span>
+                      </div>
+                      <a
+                        href={rec.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn-secondary-sm"
+                        download={rec.type === "trace"}
+                      >
+                        {rec.type === "trace" ? "Download trace" : "View"}
+                      </a>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </section>

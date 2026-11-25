@@ -57,6 +57,7 @@ export function toErrorResponse(err: unknown): Response {
       e.name === "TaskRunnerError" ||
       e.name === "ReviewError" ||
       e.name === "ReleaseGateError" ||
+      e.name === "UatError" ||
       e.name === "CheckExecError") &&
     typeof e.status === "number"
   ) {

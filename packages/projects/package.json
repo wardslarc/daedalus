@@ -25,6 +25,7 @@
     "@daedalus/git": "workspace:*",
     "@daedalus/kit": "workspace:*",
     "@daedalus/providers": "workspace:*",
-    "drizzle-orm": "0.45.4"
+    "drizzle-orm": "0.45.4",
+    "playwright": "1.65.1"
   }
 }

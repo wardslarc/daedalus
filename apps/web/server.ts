@@ -67,7 +67,7 @@ async function main(): Promise<void> {
   const port = parsePort(process.env.DAE_PORT);
   const dev = process.env.NODE_ENV !== "production";
   // Open the database (and run migrations) before serving anything.
-  const services = initServices({ dataDir: dataDir(), repoRoot: join(APP_DIR, "..", "..") });
+  const services = initServices({ dataDir: dataDir(), repoRoot: join(APP_DIR, "..", ".."), port });
   // Next.js would add its own "upgrade" listener to the real server on the first request,
   // accepting WebSockets with no session check. Give it a server that never emits; our upgrade
   // handler forwards only HMR to Next, after its own checks (ADR 0011).

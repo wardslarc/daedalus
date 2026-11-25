@@ -40,6 +40,7 @@ import {
   REVIEW_GIT_ENV,
   scanPatchAddedLinesForDetailedSecrets,
 } from "./review.js";
+import { getUatState, type UatGateData } from "./uat.js";
 
 export class ReleaseGateError extends Error {
   override name = "ReleaseGateError";
@@ -63,6 +64,7 @@ export type ReleaseGateStatus =
 export type ReleaseGateData = {
   version: string | null;
   branch: string | null;
+  headSha?: string | null;
   verifyStartedAt: string | null;
   stage: "build" | "verify";
   status: ReleaseGateStatus;
@@ -72,6 +74,7 @@ export type ReleaseGateData = {
   findings: Array<typeof gateFindings.$inferSelect>;
   checklist: Array<{ id: string; label: string; ticked: boolean }>;
   milestoneTasksSummary?: { done: number; total: number; milestoneCode: string | null };
+  uat: UatGateData;
 };
 
 export type AuditRunner = (
@@ -535,7 +538,7 @@ export function parseAuditJson(rawJson: unknown): ParseAuditResult {
 export async function getReleaseGate(
   db: DaedalusDb,
   project: ProjectLike & { id: number; localPath: string; defaultBranch?: string },
-  options?: { execGit?: typeof execGit },
+  options?: { execGit?: typeof execGit; dataDir?: string },
 ): Promise<ReleaseGateData> {
   const verifyStartedAt = refreshVerifyStage(db, project.id);
   const shaping = db
@@ -660,11 +663,21 @@ export async function getReleaseGate(
     }
   }
 
+  const dataDir =
+    options?.dataDir ?? process.env.DAE_DATA_DIR ?? join(process.cwd(), ".daedalus-data");
+  const uat = await getUatState(
+    { db, dataDir, execGit: options?.execGit },
+    project.id,
+  );
+
   // Determine gate status
   let status: ReleaseGateStatus;
   let blockedReason: string | undefined;
 
-  if (!verifyStartedAt) {
+  if (uat.blockedReason) {
+    status = "blocked";
+    blockedReason = uat.blockedReason;
+  } else if (!verifyStartedAt) {
     status = "not-ready";
   } else if (!releaseBranch || !currentHeadSha) {
     status = "blocked";
@@ -701,12 +714,15 @@ export async function getReleaseGate(
     );
     const anyOpenBlocking = openFindings.some((f) => f.blocking);
     const anyUnticked = checklist.some((item) => !item.ticked);
+    const uatPass = uat.gateLine.status === "pass";
 
     if (anyCheckError || anyUndecidedBlocking) {
       status = "blocked";
     } else if (anyUndecidedNonBlocking) {
       status = "needs-decision";
     } else if (anyOpenBlocking) {
+      status = "blocked";
+    } else if (!uatPass) {
       status = "blocked";
     } else if (anyUnticked) {
       status = "checklist";
@@ -715,18 +731,24 @@ export async function getReleaseGate(
     }
   }
 
+  const combinedChecks: GateRunChecks | null = latestRun?.checks
+    ? { ...(latestRun.checks as GateRunChecks), uat: uat.gateLine }
+    : null;
+
   return {
     version: releaseVersion,
     branch: releaseBranch,
+    headSha: currentHeadSha,
     verifyStartedAt,
     stage,
     status,
     ...(blockedReason ? { blockedReason } : {}),
     latestRun,
-    checks: latestRun?.checks ?? null,
+    checks: combinedChecks,
     findings,
     checklist,
     milestoneTasksSummary,
+    uat,
   };
 }
 

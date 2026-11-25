@@ -6,19 +6,20 @@ import { eq } from "drizzle-orm";
 import { openDb, projects, tasks as tasksTable, shapingState } from "@daedalus/db";
 import { branchExists } from "@daedalus/git";
 import { assertProviderAllowed, effectiveGeminiAllowed, ProfileRuleError, rulesFor, validateProjectSettings } from "@daedalus/core/profiles";
-import { ackGate, approveMockDoc, approvePlanDoc, approveSpecDoc, approveTask, beginMockSession, beginPlanSession, beginSpecInterview, closeAllReviews, createProject, decideFinding, discardTask, getReleaseGate, getReview, getShapingState, ImportError, importProject, listFolders, listInReviewTasks, mergeKit, realGitOps, recoverGateRunsOnStartup, recoverReviewsOnStartup, refreshVerifyStage, saveIntakeDoc, sendBack, setChecklistItem, startCrossReview, startGateRun, startMilestoneRelease, stopAllGateRuns, syncPlanTasksToDb, TaskRunner } from "@daedalus/projects";
+import { ackGate, addUatItemFromSpec, approveMockDoc, approvePlanDoc, approveSpecDoc, approveTask, beginMockSession, beginPlanSession, beginSpecInterview, closeAllReviews, createProject, decideFinding, discardTask, getReleaseGate, getReview, getShapingState, getUatAppConfig, ImportError, importProject, listFolders, listInReviewTasks, markUatItem, mergeKit, realGitOps, recoverGateRunsOnStartup, recoverReviewsOnStartup, recoverUatSessionsOnStartup, refreshVerifyStage, resolveUatRecordingPath, saveIntakeDoc, sendBack, setChecklistItem, setUatAppConfig, startCrossReview, startGateRun, startMilestoneRelease, startUatSession, stopAllGateRuns, stopAllUatSessions, stopUatSession, syncPlanTasksToDb, TaskRunner, uatScreenshot } from "@daedalus/projects";
 import { loadProviders, repoProvidersFile, SessionManager, syncProviders } from "@daedalus/providers";
 import { SERVICES_KEY, type PipelineStage, type Services, type ServicesHolder } from "./services.js";
 import { toSessionInfo } from "./ws/channel.js";
 import { TerminalManager } from "./terminal.js";
 
-export type ServicesOptions = { dataDir: string; repoRoot: string };
+export type ServicesOptions = { dataDir: string; repoRoot: string; port?: number };
 
 const holder = globalThis as ServicesHolder;
 
-export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
+export function initServices({ dataDir, repoRoot, port }: ServicesOptions): Services {
   const existing = holder[SERVICES_KEY];
   if (existing) return existing;
+  const daedalusPort = port ?? (process.env.DAE_PORT ? Number(process.env.DAE_PORT) : undefined);
   // The providers file is the list of programs Daedalus may launch (T3.1). Validate it
   // before anything else: a broken file stops the server instead of half-loading.
   const providers = loadProviders(process.env.DAE_PROVIDERS_FILE || repoProvidersFile());
@@ -37,10 +38,12 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
   runner.recoverOnStartup();
   recoverReviewsOnStartup(db);
   recoverGateRunsOnStartup(db);
+  recoverUatSessionsOnStartup(db, dataDir);
   const services: Services = {
     db,
     dataDir,
     repoRoot,
+    port: daedalusPort,
     providers,
     sessions,
     runner,
@@ -402,7 +405,7 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
     getReleaseGate: async (projectId) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      return getReleaseGate(db, project);
+      return getReleaseGate(db, project, { dataDir });
     },
     startGateRun: async (projectId) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
@@ -420,6 +423,46 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
       if (!project) throw new ImportError("No such project.", 404);
       return setChecklistItem(db, projectId, itemId, ticked);
     },
+    setUatAppConfig: async (projectId, input) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return setUatAppConfig(db, projectId, input, { daedalusPort });
+    },
+    getUatAppConfig: async (projectId) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return getUatAppConfig(db, projectId);
+    },
+    startUatSession: async (projectId) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return startUatSession({ db, dataDir }, projectId);
+    },
+    stopUatSession: async (projectId) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return stopUatSession({ db, dataDir }, projectId);
+    },
+    uatScreenshot: async (projectId) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return uatScreenshot({ db, dataDir }, projectId);
+    },
+    addUatItemFromSpec: async (projectId, text) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return addUatItemFromSpec({ db, dataDir }, projectId, text);
+    },
+    markUatItem: async (projectId, itemId, input) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return markUatItem({ db, dataDir }, projectId, itemId, input);
+    },
+    resolveUatRecordingPath: (projectId, sessionId, nameParts) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return resolveUatRecordingPath({ db, dataDir }, projectId, sessionId, nameParts);
+    },
   };
   holder[SERVICES_KEY] = services;
   return services;
@@ -436,6 +479,7 @@ export async function closeServices(): Promise<void> {
       services.runner.stopAll(),
       closeAllReviews(services.db),
       stopAllGateRuns(services.db, services.dataDir),
+      stopAllUatSessions(services.db, services.dataDir),
     ]);
   } finally {
     services.db.$client.close();

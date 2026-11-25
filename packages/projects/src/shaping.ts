@@ -17,7 +17,7 @@ import {
 import { join, sep } from "node:path";
 import { eq } from "drizzle-orm";
 import type { DaedalusDb } from "@daedalus/db";
-import { shapingState, tasks } from "@daedalus/db";
+import { shapingState, tasks, uatItems } from "@daedalus/db";
 import { assertProviderAllowed, effectiveGeminiAllowed, rulesFor, type ProjectLike } from "@daedalus/core/profiles";
 import { branchExists as gitBranchExists, createBranch as gitCreateBranch } from "@daedalus/git";
 import { findDuplicateTaskCode, parsePlanMarkdown } from "./pipeline.js";
@@ -1054,6 +1054,17 @@ export async function startMilestoneRelease(
 
   const milestoneCode = matchedMilestone?.code ?? input?.milestoneCode ?? null;
 
+  const doneWhen = matchedMilestone?.doneWhen ?? [];
+  for (const itemText of doneWhen) {
+    const trimmed = itemText.trim();
+    if (trimmed.length > 500) {
+      throw new ShapingError(
+        `Done-when item "${trimmed}" exceeds 500 characters.`,
+        400,
+      );
+    }
+  }
+
   // 3. Before writing anything, check every task of the milestone being started:
   // if any already has frozenAt set, refuse with 409 naming the task codes.
   const existingRows = db.select().from(tasks).where(eq(tasks.projectId, projectId)).all();
@@ -1090,54 +1101,96 @@ export async function startMilestoneRelease(
     frozen: true,
   };
 
-  writeShapingStateRow(db, projectId, {
-    activeMilestoneVersion: version,
-    activeMilestoneCode: milestoneCode,
-    activeMilestoneBranch: branch,
-    activeMilestoneStartedAt: milestone.startedAt,
-    activeMilestoneFrozen: true,
-    activeMilestoneVerifyStartedAt: null,
-  });
+  db.transaction((tx) => {
+    const existing = tx
+      .select()
+      .from(shapingState)
+      .where(eq(shapingState.projectId, projectId))
+      .get();
 
-  for (const t of milestoneTasks) {
-    const prev = existingByCode.get(t.code);
-    if (prev?.frozenAt) {
-      // Never update a frozen row in startMilestoneRelease
-      continue;
-    }
-    const taskMilestoneCode = t.milestoneCode ?? milestoneCode;
-    if (prev) {
-      db.update(tasks)
+    if (existing) {
+      tx.update(shapingState)
         .set({
-          title: t.title,
-          tag: t.tag,
-          checkCommand: t.checkCommand,
-          milestoneCode: taskMilestoneCode,
-          status: "queued",
-          attempts: 0,
-          frozenAt: milestone.startedAt,
-          linkedSpecSections: t.linkedSpecSections,
+          activeMilestoneVersion: version,
+          activeMilestoneCode: milestoneCode,
+          activeMilestoneBranch: branch,
+          activeMilestoneStartedAt: milestone.startedAt,
+          activeMilestoneFrozen: true,
+          activeMilestoneVerifyStartedAt: null,
         })
-        .where(eq(tasks.id, prev.id))
+        .where(eq(shapingState.projectId, projectId))
         .run();
     } else {
-      db.insert(tasks)
+      tx.insert(shapingState)
         .values({
           projectId,
-          code: t.code,
-          title: t.title,
-          tag: t.tag,
-          checkCommand: t.checkCommand,
-          milestoneCode: taskMilestoneCode,
-          status: "queued",
-          attempts: 0,
-          frozenAt: milestone.startedAt,
-          linkedSpecSections: t.linkedSpecSections,
-          branch: null,
+          activeMilestoneVersion: version,
+          activeMilestoneCode: milestoneCode,
+          activeMilestoneBranch: branch,
+          activeMilestoneStartedAt: milestone.startedAt,
+          activeMilestoneFrozen: true,
+          activeMilestoneVerifyStartedAt: null,
         })
         .run();
     }
-  }
+
+    let pos = 1;
+    for (const itemText of doneWhen) {
+      const trimmed = itemText.trim();
+      if (trimmed.length > 0) {
+        tx.insert(uatItems)
+          .values({
+            projectId,
+            releaseVersion: version,
+            position: pos++,
+            text: trimmed,
+            source: "plan",
+            createdAt: milestone.startedAt,
+          })
+          .run();
+      }
+    }
+
+    for (const t of milestoneTasks) {
+      const prev = existingByCode.get(t.code);
+      if (prev?.frozenAt) {
+        // Never update a frozen row in startMilestoneRelease
+        continue;
+      }
+      const taskMilestoneCode = t.milestoneCode ?? milestoneCode;
+      if (prev) {
+        tx.update(tasks)
+          .set({
+            title: t.title,
+            tag: t.tag,
+            checkCommand: t.checkCommand,
+            milestoneCode: taskMilestoneCode,
+            status: "queued",
+            attempts: 0,
+            frozenAt: milestone.startedAt,
+            linkedSpecSections: t.linkedSpecSections,
+          })
+          .where(eq(tasks.id, prev.id))
+          .run();
+      } else {
+        tx.insert(tasks)
+          .values({
+            projectId,
+            code: t.code,
+            title: t.title,
+            tag: t.tag,
+            checkCommand: t.checkCommand,
+            milestoneCode: taskMilestoneCode,
+            status: "queued",
+            attempts: 0,
+            frozenAt: milestone.startedAt,
+            linkedSpecSections: t.linkedSpecSections,
+            branch: null,
+          })
+          .run();
+      }
+    }
+  });
 
   const state = getShapingState(db, projectId, localPath, project);
   return {
