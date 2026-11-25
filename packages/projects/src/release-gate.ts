@@ -366,21 +366,84 @@ export type RawAuditFinding = {
   blocking: boolean;
 };
 
-export function parseAuditJson(rawJson: unknown): RawAuditFinding[] {
-  if (typeof rawJson !== "object" || rawJson === null) return [];
+export type ParseAuditResult =
+  | { ok: true; findings: RawAuditFinding[]; total: number }
+  | { ok: false; reason: string };
+
+export function parseAuditJson(rawJson: unknown): ParseAuditResult {
+  if (typeof rawJson !== "object" || rawJson === null || Array.isArray(rawJson)) {
+    return { ok: false, reason: "Audit output is not a JSON object" };
+  }
   const root = rawJson as Record<string, unknown>;
+
+  if ("error" in root && root.error !== undefined) {
+    return { ok: false, reason: "Audit output contains error key" };
+  }
+
+  const hasVulns =
+    typeof root.vulnerabilities === "object" &&
+    root.vulnerabilities !== null &&
+    !Array.isArray(root.vulnerabilities);
+  const hasAdvisories =
+    typeof root.advisories === "object" &&
+    root.advisories !== null;
+
+  if (!hasVulns && !hasAdvisories) {
+    return { ok: false, reason: "Audit output missing vulnerabilities or advisories" };
+  }
+
+  if (typeof root.metadata !== "object" || root.metadata === null || Array.isArray(root.metadata)) {
+    return { ok: false, reason: "Audit output missing or invalid metadata object" };
+  }
+  const meta = root.metadata as Record<string, unknown>;
+  if (
+    typeof meta.vulnerabilities !== "object" ||
+    meta.vulnerabilities === null ||
+    Array.isArray(meta.vulnerabilities)
+  ) {
+    return { ok: false, reason: "Audit output missing or invalid metadata.vulnerabilities object" };
+  }
+
+  const metaVulns = meta.vulnerabilities as Record<string, unknown>;
+  const severityKeys = ["info", "low", "moderate", "high", "critical"] as const;
+  for (const key of severityKeys) {
+    const count = metaVulns[key];
+    if (typeof count !== "number" || !Number.isInteger(count) || count < 0) {
+      return {
+        ok: false,
+        reason: `metadata.vulnerabilities.${key} must be a non-negative integer`,
+      };
+    }
+  }
+
+  const total =
+    (metaVulns.low as number) +
+    (metaVulns.moderate as number) +
+    (metaVulns.high as number) +
+    (metaVulns.critical as number);
+
   const findings: RawAuditFinding[] = [];
 
-  const mapSeverity = (s?: unknown): "critical" | "high" | "moderate" | "low" => {
+  const mapSeverity = (s?: unknown): "critical" | "high" | "moderate" | "low" | null => {
     const str = typeof s === "string" ? s.toLowerCase() : "";
     if (str === "critical") return "critical";
     if (str === "high") return "high";
     if (str === "moderate" || str === "medium") return "moderate";
+    if (str === "low") return "low";
+    if (str === "info") return null;
     return "low";
   };
 
+  const hasVulnsEntries =
+    hasVulns && Object.keys(root.vulnerabilities as Record<string, unknown>).length > 0;
+  const hasAdvisoriesEntries =
+    hasAdvisories &&
+    (Array.isArray(root.advisories)
+      ? (root.advisories as unknown[]).length > 0
+      : Object.keys(root.advisories as Record<string, unknown>).length > 0);
+
   // Shape 1: npm v7+ { vulnerabilities: { [pkgName]: { name, severity, via, nodes, ... } } }
-  if (root.vulnerabilities && typeof root.vulnerabilities === "object") {
+  if (hasVulnsEntries || (hasVulns && !hasAdvisoriesEntries)) {
     const vulns = root.vulnerabilities as Record<string, unknown>;
     for (const [pkgName, vulnObj] of Object.entries(vulns)) {
       if (typeof vulnObj !== "object" || vulnObj === null) continue;
@@ -393,10 +456,11 @@ export function parseAuditJson(rawJson: unknown): RawAuditFinding[] {
         if (typeof item === "object" && item !== null) {
           foundViaObj = true;
           const advisoryObj = item as Record<string, unknown>;
+          const sev = mapSeverity(advisoryObj.severity ?? v.severity);
+          if (sev === null) continue;
           const advisoryId = String(
             advisoryObj.source ?? advisoryObj.id ?? advisoryObj.url ?? pkgName,
           );
-          const sev = mapSeverity(advisoryObj.severity ?? v.severity);
           const title = String(advisoryObj.title ?? `Vulnerability in ${pkgName}`);
           const url = advisoryObj.url ? String(advisoryObj.url) : "";
           const detail = url ? `${title}\n${url}` : title;
@@ -414,6 +478,7 @@ export function parseAuditJson(rawJson: unknown): RawAuditFinding[] {
 
       if (!foundViaObj) {
         const sev = mapSeverity(v.severity);
+        if (sev === null) continue;
         const title = `Vulnerability in ${pkgName}`;
         findings.push({
           package: pkgName,
@@ -426,11 +491,8 @@ export function parseAuditJson(rawJson: unknown): RawAuditFinding[] {
         });
       }
     }
-    return findings;
-  }
-
-  // Shape 2: pnpm / npm v6 { advisories: { [id]: { id, module_name, title, severity, url, findings } } }
-  if (root.advisories && typeof root.advisories === "object") {
+  } else if (hasAdvisories) {
+    // Shape 2: pnpm / npm v6 { advisories: { [id]: { id, module_name, title, severity, url, findings } } }
     const advList = Array.isArray(root.advisories)
       ? root.advisories
       : Object.values(root.advisories as Record<string, unknown>);
@@ -438,9 +500,10 @@ export function parseAuditJson(rawJson: unknown): RawAuditFinding[] {
     for (const adv of advList) {
       if (typeof adv !== "object" || adv === null) continue;
       const a = adv as Record<string, unknown>;
+      const sev = mapSeverity(a.severity);
+      if (sev === null) continue;
       const pkgName = String(a.module_name ?? a.name ?? "unknown");
       const advisoryId = String(a.id ?? Math.random().toString(36).slice(2));
-      const sev = mapSeverity(a.severity);
       const title = String(a.title ?? `Vulnerability in ${pkgName}`);
       const url = a.url ? String(a.url) : "";
       const detail = url ? `${title}\n${url}` : title;
@@ -461,10 +524,9 @@ export function parseAuditJson(rawJson: unknown): RawAuditFinding[] {
         blocking: sev === "critical" || sev === "high",
       });
     }
-    return findings;
   }
 
-  return findings;
+  return { ok: true, findings, total };
 }
 
 /**
@@ -1122,28 +1184,65 @@ async function executeGateRun(
                 detail: "Could not parse audit output as JSON",
               };
             } else {
-              const rawFindings = parseAuditJson(parsed);
-              for (const rf of rawFindings) {
-                const fp = `dependencies:${rf.package}:${rf.advisoryId}`;
-                reportedFindings.push({
-                  check: "dependencies",
-                  fingerprint: fp,
-                  severity: rf.severity,
-                  title: rf.title,
-                  detail: rf.detail,
-                  location: rf.location,
-                  blocking: rf.blocking,
-                });
-              }
-
-              const depHits = reportedFindings.filter((f) => f.check === "dependencies");
-              if (depHits.length > 0) {
+              const parseResult = parseAuditJson(parsed);
+              if (!parseResult.ok) {
                 checks.dependencies = {
-                  status: "fail",
-                  detail: `${depHits.length} advisory/ies found`,
+                  status: "error",
+                  detail: redact(parseResult.reason),
                 };
               } else {
-                checks.dependencies = { status: "pass" };
+                const { findings, total } = parseResult;
+                const exitCode = auditRes.exitCode;
+
+                if (findings.length === 0 && total === 0 && exitCode === 0) {
+                  checks.dependencies = { status: "pass" };
+                } else if (findings.length === 0 && total > 0) {
+                  checks.dependencies = {
+                    status: "error",
+                    detail: `Audit reported ${total} vulnerability/ies in metadata but 0 findings could be parsed`,
+                  };
+                } else if (total === 0 && findings.length > 0) {
+                  checks.dependencies = {
+                    status: "error",
+                    detail: `Audit reported 0 total vulnerabilities but ${findings.length} finding(s) were parsed`,
+                  };
+                } else if (findings.length === 0 && (exitCode === null || exitCode !== 0)) {
+                  const errDetail = auditRes.stderr.trim()
+                    ? redact(auditRes.stderr.trim())
+                    : exitCode === null
+                      ? "Audit command terminated without exit code"
+                      : `Audit command failed with exit code ${exitCode}`;
+                  checks.dependencies = {
+                    status: "error",
+                    detail: errDetail,
+                  };
+                } else if (findings.length > 0 && exitCode !== 0 && exitCode !== null) {
+                  for (const rf of findings) {
+                    const fp = `dependencies:${rf.package}:${rf.advisoryId}`;
+                    reportedFindings.push({
+                      check: "dependencies",
+                      fingerprint: fp,
+                      severity: rf.severity,
+                      title: rf.title,
+                      detail: rf.detail,
+                      location: rf.location,
+                      blocking: rf.blocking,
+                    });
+                  }
+                  const depHits = reportedFindings.filter((f) => f.check === "dependencies");
+                  checks.dependencies = {
+                    status: "fail",
+                    detail: `${depHits.length} advisory/ies found`,
+                  };
+                } else {
+                  checks.dependencies = {
+                    status: "error",
+                    detail:
+                      exitCode === null
+                        ? "Audit command terminated without exit code"
+                        : `Audit command exited with code 0 but found ${findings.length} advisory/ies`,
+                  };
+                }
               }
             }
           }

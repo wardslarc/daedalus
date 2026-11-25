@@ -25,6 +25,7 @@ import {
   decideFinding,
   getReleaseGate,
   getReview,
+  parseAuditJson,
   parsePnpmWorkspacePackages,
   refreshVerifyStage,
   ReleaseGateError,
@@ -365,6 +366,15 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
             nodes: ["node_modules/minimist"],
           },
         },
+        metadata: {
+          vulnerabilities: {
+            info: 0,
+            low: 0,
+            moderate: 1,
+            high: 1,
+            critical: 0,
+          },
+        },
       }),
       stderr: "",
       timedOut: false,
@@ -498,6 +508,283 @@ describe("Release gate and automatic security checks (T6.3, SPEC#Release gate)",
       .where(eq(gateFindings.id, existing!.id))
       .get();
     expect(findingAfter?.state).toBe("open");
+  });
+
+  it("audit error payload with exit 1 → dependencies check error", async () => {
+    db.update(shapingState)
+      .set({ activeMilestoneVerifyStartedAt: new Date().toISOString() })
+      .where(eq(shapingState.projectId, projectRow.id))
+      .run();
+
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    git(repoDir, "add", "pnpm-lock.yaml");
+    git(repoDir, "commit", "-m", "add lockfile");
+    git(repoDir, "checkout", "main");
+
+    const stubRunner: AuditRunner = async () => ({
+      exitCode: 1,
+      stdout: JSON.stringify({
+        error: {
+          code: "ERR_PNPM_AUDIT_BAD_RESPONSE",
+          message: "The registry responded with 500",
+        },
+      }),
+      stderr: "registry failure",
+      timedOut: false,
+    });
+
+    const { runId, promise } = await startGateRun(
+      { db, dataDir, auditRunner: stubRunner },
+      projectRow.id,
+    );
+    activeRunPromises.push(promise);
+    await promise;
+
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    expect(run?.status).toBe("done");
+    const checks = run?.checks as GateRunChecks | null;
+    expect(checks?.dependencies?.status).toBe("error");
+  });
+
+  it("empty or unknown shape audit output with exit 0 → dependencies check error", async () => {
+    db.update(shapingState)
+      .set({ activeMilestoneVerifyStartedAt: new Date().toISOString() })
+      .where(eq(shapingState.projectId, projectRow.id))
+      .run();
+
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    git(repoDir, "add", "pnpm-lock.yaml");
+    git(repoDir, "commit", "-m", "add lockfile");
+    git(repoDir, "checkout", "main");
+
+    // Case A: {} exit 0
+    let currentStdout = "{}";
+    const stubRunner: AuditRunner = async () => ({
+      exitCode: 0,
+      stdout: currentStdout,
+      stderr: "",
+      timedOut: false,
+    });
+
+    const run1 = await startGateRun(
+      { db, dataDir, auditRunner: stubRunner },
+      projectRow.id,
+    );
+    activeRunPromises.push(run1.promise);
+    await run1.promise;
+
+    const r1 = db.select().from(gateRuns).where(eq(gateRuns.id, run1.runId)).get();
+    const checks1 = r1?.checks as GateRunChecks | null;
+    expect(checks1?.dependencies?.status).toBe("error");
+
+    // Case B: {"foo":1} exit 0
+    currentStdout = JSON.stringify({ foo: 1 });
+    const run2 = await startGateRun(
+      { db, dataDir, auditRunner: stubRunner },
+      projectRow.id,
+    );
+    activeRunPromises.push(run2.promise);
+    await run2.promise;
+
+    const r2 = db.select().from(gateRuns).where(eq(gateRuns.id, run2.runId)).get();
+    const checks2 = r2?.checks as GateRunChecks | null;
+    expect(checks2?.dependencies?.status).toBe("error");
+  });
+
+  it("valid pnpm shape with no advisories, metadata all 0, exit 0 → pass (unchanged)", async () => {
+    db.update(shapingState)
+      .set({ activeMilestoneVerifyStartedAt: new Date().toISOString() })
+      .where(eq(shapingState.projectId, projectRow.id))
+      .run();
+
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    git(repoDir, "add", "pnpm-lock.yaml");
+    git(repoDir, "commit", "-m", "add lockfile");
+    git(repoDir, "checkout", "main");
+
+    const stubRunner: AuditRunner = async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        advisories: {},
+        metadata: {
+          vulnerabilities: {
+            info: 0,
+            low: 0,
+            moderate: 0,
+            high: 0,
+            critical: 0,
+          },
+        },
+      }),
+      stderr: "",
+      timedOut: false,
+    });
+
+    const { runId, promise } = await startGateRun(
+      { db, dataDir, auditRunner: stubRunner },
+      projectRow.id,
+    );
+    activeRunPromises.push(promise);
+    await promise;
+
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    expect(run?.status).toBe("done");
+    const checks = run?.checks as GateRunChecks | null;
+    expect(checks?.dependencies?.status).toBe("pass");
+  });
+
+  it("valid shape, no advisories, metadata all 0, exit 1 → dependencies check error", async () => {
+    db.update(shapingState)
+      .set({ activeMilestoneVerifyStartedAt: new Date().toISOString() })
+      .where(eq(shapingState.projectId, projectRow.id))
+      .run();
+
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    git(repoDir, "add", "pnpm-lock.yaml");
+    git(repoDir, "commit", "-m", "add lockfile");
+    git(repoDir, "checkout", "main");
+
+    const stubRunner: AuditRunner = async () => ({
+      exitCode: 1,
+      stdout: JSON.stringify({
+        advisories: {},
+        metadata: {
+          vulnerabilities: {
+            info: 0,
+            low: 0,
+            moderate: 0,
+            high: 0,
+            critical: 0,
+          },
+        },
+      }),
+      stderr: "command failed",
+      timedOut: false,
+    });
+
+    const { runId, promise } = await startGateRun(
+      { db, dataDir, auditRunner: stubRunner },
+      projectRow.id,
+    );
+    activeRunPromises.push(promise);
+    await promise;
+
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    expect(run?.status).toBe("done");
+    const checks = run?.checks as GateRunChecks | null;
+    expect(checks?.dependencies?.status).toBe("error");
+  });
+
+  it("advisories empty but metadata.vulnerabilities.high: 2 → dependencies check error", async () => {
+    db.update(shapingState)
+      .set({ activeMilestoneVerifyStartedAt: new Date().toISOString() })
+      .where(eq(shapingState.projectId, projectRow.id))
+      .run();
+
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    git(repoDir, "add", "pnpm-lock.yaml");
+    git(repoDir, "commit", "-m", "add lockfile");
+    git(repoDir, "checkout", "main");
+
+    const stubRunner: AuditRunner = async () => ({
+      exitCode: 1,
+      stdout: JSON.stringify({
+        advisories: {},
+        metadata: {
+          vulnerabilities: {
+            info: 0,
+            low: 0,
+            moderate: 0,
+            high: 2,
+            critical: 0,
+          },
+        },
+      }),
+      stderr: "",
+      timedOut: false,
+    });
+
+    const { runId, promise } = await startGateRun(
+      { db, dataDir, auditRunner: stubRunner },
+      projectRow.id,
+    );
+    activeRunPromises.push(promise);
+    await promise;
+
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    expect(run?.status).toBe("done");
+    const checks = run?.checks as GateRunChecks | null;
+    expect(checks?.dependencies?.status).toBe("error");
+  });
+
+  it("valid shape with one high advisory, exit 1 → fail with a blocking finding (unchanged)", async () => {
+    db.update(shapingState)
+      .set({ activeMilestoneVerifyStartedAt: new Date().toISOString() })
+      .where(eq(shapingState.projectId, projectRow.id))
+      .run();
+
+    git(repoDir, "checkout", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    git(repoDir, "add", "pnpm-lock.yaml");
+    git(repoDir, "commit", "-m", "add lockfile");
+    git(repoDir, "checkout", "main");
+
+    const stubRunner: AuditRunner = async () => ({
+      exitCode: 1,
+      stdout: JSON.stringify({
+        advisories: {
+          "5001": {
+            id: 5001,
+            module_name: "high-vuln-pkg",
+            title: "RCE in high-vuln-pkg",
+            severity: "high",
+            url: "https://example.com/advisories/5001",
+          },
+        },
+        metadata: {
+          vulnerabilities: {
+            info: 0,
+            low: 0,
+            moderate: 0,
+            high: 1,
+            critical: 0,
+          },
+        },
+      }),
+      stderr: "",
+      timedOut: false,
+    });
+
+    const { runId, promise } = await startGateRun(
+      { db, dataDir, auditRunner: stubRunner },
+      projectRow.id,
+    );
+    activeRunPromises.push(promise);
+    await promise;
+
+    const run = db.select().from(gateRuns).where(eq(gateRuns.id, runId)).get();
+    expect(run?.status).toBe("done");
+    const checks = run?.checks as GateRunChecks | null;
+    expect(checks?.dependencies?.status).toBe("fail");
+
+    const findings = db
+      .select()
+      .from(gateFindings)
+      .where(
+        and(
+          eq(gateFindings.projectId, projectRow.id),
+          eq(gateFindings.fingerprint, "dependencies:high-vuln-pkg:5001"),
+        ),
+      )
+      .all();
+    expect(findings.length).toBe(1);
+    expect(findings[0]?.blocking).toBe(true);
+    expect(findings[0]?.severity).toBe("high");
   });
 
   it("no lockfile → not-applicable", async () => {
@@ -913,7 +1200,18 @@ Done when: all tasks pass.
       capturedArgs = [...args];
       return {
         exitCode: 0,
-        stdout: JSON.stringify({ vulnerabilities: {} }),
+        stdout: JSON.stringify({
+          vulnerabilities: {},
+          metadata: {
+            vulnerabilities: {
+              info: 0,
+              low: 0,
+              moderate: 0,
+              high: 0,
+              critical: 0,
+            },
+          },
+        }),
         stderr: "",
         timedOut: false,
       };
@@ -1003,7 +1301,18 @@ Done when: all tasks pass.
 
       return {
         exitCode: 0,
-        stdout: JSON.stringify({ advisories: {} }),
+        stdout: JSON.stringify({
+          advisories: {},
+          metadata: {
+            vulnerabilities: {
+              info: 0,
+              low: 0,
+              moderate: 0,
+              high: 0,
+              critical: 0,
+            },
+          },
+        }),
         stderr: "",
         timedOut: false,
       };
@@ -1166,7 +1475,18 @@ Done when: all tasks pass.
       }
       return {
         exitCode: 0,
-        stdout: JSON.stringify({ vulnerabilities: {} }),
+        stdout: JSON.stringify({
+          vulnerabilities: {},
+          metadata: {
+            vulnerabilities: {
+              info: 0,
+              low: 0,
+              moderate: 0,
+              high: 0,
+              critical: 0,
+            },
+          },
+        }),
         stderr: "",
         timedOut: false,
       };
@@ -1467,5 +1787,74 @@ packages:
     const brokenGate = await getReleaseGate(db, updatedProj);
     expect(brokenGate.status).toBe("blocked");
     expect(brokenGate.blockedReason).toContain("Could not resolve head for default branch missing-default-branch");
+  });
+
+  describe("parseAuditJson unit tests", () => {
+    it("rejects non-object or null input", () => {
+      expect(parseAuditJson(null)).toEqual({ ok: false, reason: "Audit output is not a JSON object" });
+      expect(parseAuditJson("string")).toEqual({ ok: false, reason: "Audit output is not a JSON object" });
+      expect(parseAuditJson([])).toEqual({ ok: false, reason: "Audit output is not a JSON object" });
+    });
+
+    it("rejects payload with error key", () => {
+      const res = parseAuditJson({ error: { code: "ERR_PNPM_AUDIT_BAD_RESPONSE" } });
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toContain("error");
+      }
+    });
+
+    it("rejects payload without vulnerabilities or advisories", () => {
+      const res = parseAuditJson({
+        metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0 } },
+      });
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toContain("missing vulnerabilities or advisories");
+      }
+    });
+
+    it("rejects payload without metadata.vulnerabilities or non-integer counts", () => {
+      expect(parseAuditJson({ advisories: {} }).ok).toBe(false);
+      expect(parseAuditJson({ advisories: {}, metadata: {} }).ok).toBe(false);
+      expect(
+        parseAuditJson({
+          advisories: {},
+          metadata: { vulnerabilities: { info: 0, low: -1, moderate: 0, high: 0, critical: 0 } },
+        }).ok,
+      ).toBe(false);
+      expect(
+        parseAuditJson({
+          advisories: {},
+          metadata: { vulnerabilities: { info: "0", low: 0, moderate: 0, high: 0, critical: 0 } },
+        }).ok,
+      ).toBe(false);
+    });
+
+    it("calculates total as sum minus info and ignores info severity findings", () => {
+      const res = parseAuditJson({
+        advisories: {
+          "1": { id: 1, name: "pkg-info", severity: "info", title: "Info vuln" },
+          "2": { id: 2, name: "pkg-low", severity: "low", title: "Low vuln" },
+        },
+        metadata: {
+          vulnerabilities: {
+            info: 5,
+            low: 1,
+            moderate: 2,
+            high: 3,
+            critical: 4,
+          },
+        },
+      });
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        // sum = 5 + 1 + 2 + 3 + 4 = 15; sum minus info = 10
+        expect(res.total).toBe(10);
+        // info finding skipped, only low finding included
+        expect(res.findings.length).toBe(1);
+        expect(res.findings[0]?.severity).toBe("low");
+      }
+    });
   });
 });
