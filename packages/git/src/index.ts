@@ -297,6 +297,6 @@ export async function deleteBranch(dir: string, name: string): Promise<void> {
   await execGit(["branch", "-D", "--end-of-options", name], { cwd: dir });
 }
 
-export { addWorktreeForBranch, mergeNoFf, statusPorcelain, worktreeForBranch, type MergeResult } from "./merge.js";
+export { addWorktreeForBranch, mergeCommitNoFf, mergeNoFf, statusPorcelain, worktreeForBranch, type MergeResult } from "./merge.js";
 export { execGit, execGitQuiet, type ExecGitOptions, type ExecGitResult } from "./exec.js";
 

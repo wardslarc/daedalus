@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { addWorktreeForBranch, GitError, mergeNoFf, statusPorcelain, worktreeForBranch } from "../src/index.js";
+import { addWorktreeForBranch, GitError, mergeCommitNoFf, mergeNoFf, statusPorcelain, worktreeForBranch } from "../src/index.js";
 
 const g = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
 
@@ -82,5 +82,41 @@ describe("mergeNoFf", () => {
 
   it("rejects option-like branch names", async () => {
     await expect(mergeNoFf(repo(), "--strategy=ours", "m")).rejects.toThrow(GitError);
+  });
+});
+
+describe("mergeCommitNoFf", () => {
+  it("accepts a commit sha as merge target", async () => {
+    const dir = repo();
+    kitBranch(dir);
+    const kitSha = g(dir, "rev-parse", "kit");
+    const res = await mergeCommitNoFf(dir, kitSha, "Merge kit commit");
+    expect(res.ok).toBe(true);
+    expect(g(dir, "log", "-1", "--format=%s %p")).toContain("Merge kit commit");
+    expect(g(dir, "show", "HEAD:KIT.md")).toBe("kit");
+  });
+
+  it("rejects a branch name", async () => {
+    const dir = repo();
+    kitBranch(dir);
+    await expect(mergeCommitNoFf(dir, "kit", "m")).rejects.toThrow(GitError);
+  });
+
+  it("rejects HEAD", async () => {
+    const dir = repo();
+    await expect(mergeCommitNoFf(dir, "HEAD", "m")).rejects.toThrow(GitError);
+  });
+
+  it("rejects a short sha", async () => {
+    const dir = repo();
+    kitBranch(dir);
+    const shortSha = g(dir, "rev-parse", "--short", "kit");
+    await expect(mergeCommitNoFf(dir, shortSha, "m")).rejects.toThrow(GitError);
+  });
+
+  it("rejects a 40-hex that isn't a commit", async () => {
+    const dir = repo();
+    const fakeSha = "0".repeat(40);
+    await expect(mergeCommitNoFf(dir, fakeSha, "m")).rejects.toThrow(GitError);
   });
 });

@@ -9,6 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import type { DaedalusDb } from "@daedalus/db";
 import {
+  inbox,
   reviewAcks,
   reviews,
   runs,
@@ -20,7 +21,7 @@ import {
   deleteBranch,
   execGit,
   GitError,
-  mergeNoFf,
+  mergeCommitNoFf,
   removeWorktree,
   statusPorcelain,
   worktreeForBranch,
@@ -77,6 +78,7 @@ export type Gate = {
   id: GateId;
   status: "pass" | "blocked" | "needs-ack";
   items: string[];
+  fingerprint: string;
   ack?: { id?: number; ackedAt: string; note: string } | null;
 };
 
@@ -101,6 +103,7 @@ export type CrossReviewData = {
 export type ReviewData = {
   task: typeof tasks.$inferSelect;
   releaseBranch: string;
+  headSha: string | null;
   diff: ReviewDiff;
   check: ReviewCheck | null;
   gates: Gate[];
@@ -125,7 +128,7 @@ export type ApproveOptions = {
     worktreeForBranch?: typeof worktreeForBranch;
     statusPorcelain?: typeof statusPorcelain;
     addWorktreeForBranch?: typeof addWorktreeForBranch;
-    mergeNoFf?: typeof mergeNoFf;
+    mergeCommitNoFf?: typeof mergeCommitNoFf;
     removeWorktree?: typeof removeWorktree;
     execGit?: typeof execGit;
   };
@@ -143,6 +146,7 @@ export type SendBackOptions = {
   gitOps?: {
     removeWorktree?: (repoDir: string, worktreeDir: string) => Promise<void>;
     deleteBranch?: (dir: string, name: string) => Promise<void>;
+    execGit?: typeof execGit;
   };
 };
 
@@ -152,6 +156,7 @@ export type DiscardOptions = {
   gitOps?: {
     removeWorktree?: (repoDir: string, worktreeDir: string) => Promise<void>;
     deleteBranch?: (dir: string, name: string) => Promise<void>;
+    execGit?: typeof execGit;
   };
 };
 
@@ -369,149 +374,154 @@ export async function getReview(
     currentHeadSha = null;
   }
 
-  // Execute git diff <release>...daedalus/<task> with review safety flags
+  // Execute git diff <release>...<headSha> with review safety flags
   let rawPatch: string;
   let diffError: string | null = null;
   const files: ReviewDiffFile[] = [];
   const binaryPaths = new Set<string>();
 
-  try {
-    const nameStatusRes = await runExecGit(
-      buildReviewDiffArgs(["--name-status", "-z"], `${releaseBranch}...${taskBranch}`),
-      {
-        cwd: project.localPath,
-        // Cast only: Next.js types make NODE_ENV a required key of ProcessEnv.
-        env: REVIEW_GIT_ENV as NodeJS.ProcessEnv,
-      },
-    );
+  if (!currentHeadSha) {
+    diffError = `Cannot resolve head of ${taskBranch}`;
+    rawPatch = "";
+  } else {
+    try {
+      const nameStatusRes = await runExecGit(
+        buildReviewDiffArgs(["--name-status", "-z"], `${releaseBranch}...${currentHeadSha}`),
+        {
+          cwd: project.localPath,
+          // Cast only: Next.js types make NODE_ENV a required key of ProcessEnv.
+          env: REVIEW_GIT_ENV as NodeJS.ProcessEnv,
+        },
+      );
 
-    const numstatRes = await runExecGit(
-      buildReviewDiffArgs(["--numstat", "-z"], `${releaseBranch}...${taskBranch}`),
-      {
-        cwd: project.localPath,
-        // Cast only: Next.js types make NODE_ENV a required key of ProcessEnv.
-        env: REVIEW_GIT_ENV as NodeJS.ProcessEnv,
-      },
-    );
+      const numstatRes = await runExecGit(
+        buildReviewDiffArgs(["--numstat", "-z"], `${releaseBranch}...${currentHeadSha}`),
+        {
+          cwd: project.localPath,
+          // Cast only: Next.js types make NODE_ENV a required key of ProcessEnv.
+          env: REVIEW_GIT_ENV as NodeJS.ProcessEnv,
+        },
+      );
 
-    const nameTokens = nameStatusRes.stdout ? nameStatusRes.stdout.split("\0") : [];
-    if (nameTokens.length > 0 && nameTokens[nameTokens.length - 1] === "") {
-      nameTokens.pop();
-    }
-
-    const numTokens = numstatRes.stdout ? numstatRes.stdout.split("\0") : [];
-    if (numTokens.length > 0 && numTokens[numTokens.length - 1] === "") {
-      numTokens.pop();
-    }
-
-    interface NumstatEntry {
-      additions: number;
-      deletions: number;
-      binary: boolean;
-    }
-    const numstatMap = new Map<string, NumstatEntry>();
-
-    let numIdx = 0;
-    while (numIdx < numTokens.length) {
-      const token = numTokens[numIdx++];
-      if (!token) continue;
-
-      const parts = token.split("\t");
-      if (parts.length < 2) {
-        throw new Error("truncated numstat record");
+      const nameTokens = nameStatusRes.stdout ? nameStatusRes.stdout.split("\0") : [];
+      if (nameTokens.length > 0 && nameTokens[nameTokens.length - 1] === "") {
+        nameTokens.pop();
       }
 
-      const addStr = parts[0]?.trim();
-      const delStr = parts[1]?.trim();
-      const isBinary = addStr === "-" || delStr === "-";
-      const additions = isBinary ? 0 : parseInt(addStr ?? "0", 10) || 0;
-      const deletions = isBinary ? 0 : parseInt(delStr ?? "0", 10) || 0;
+      const numTokens = numstatRes.stdout ? numstatRes.stdout.split("\0") : [];
+      if (numTokens.length > 0 && numTokens[numTokens.length - 1] === "") {
+        numTokens.pop();
+      }
 
-      let newPath: string;
-      const rest = parts.slice(2).join("\t");
-      if (rest !== "") {
-        newPath = rest;
-      } else {
-        const rawOld = numTokens[numIdx++];
-        const rawNew = numTokens[numIdx++];
-        if (rawOld === undefined || rawNew === undefined) {
+      interface NumstatEntry {
+        additions: number;
+        deletions: number;
+        binary: boolean;
+      }
+      const numstatMap = new Map<string, NumstatEntry>();
+
+      let numIdx = 0;
+      while (numIdx < numTokens.length) {
+        const token = numTokens[numIdx++];
+        if (!token) continue;
+
+        const parts = token.split("\t");
+        if (parts.length < 2) {
           throw new Error("truncated numstat record");
         }
-        newPath = rawNew;
-      }
 
-      numstatMap.set(newPath, { additions, deletions, binary: isBinary });
-    }
+        const addStr = parts[0]?.trim();
+        const delStr = parts[1]?.trim();
+        const isBinary = addStr === "-" || delStr === "-";
+        const additions = isBinary ? 0 : parseInt(addStr ?? "0", 10) || 0;
+        const deletions = isBinary ? 0 : parseInt(delStr ?? "0", 10) || 0;
 
-    let nameIdx = 0;
-    while (nameIdx < nameTokens.length) {
-      const rawStatus = nameTokens[nameIdx++];
-      if (!rawStatus) continue;
-      const statusChar = rawStatus[0];
-      const isRenameOrCopy = statusChar === "R" || statusChar === "C";
-
-      let oldPath: string | undefined;
-      let filePath: string;
-
-      if (isRenameOrCopy) {
-        const rawOld = nameTokens[nameIdx++];
-        const rawNew = nameTokens[nameIdx++];
-        if (rawOld === undefined || rawNew === undefined) {
-          throw new Error("truncated name-status record");
+        let newPath: string;
+        const rest = parts.slice(2).join("\t");
+        if (rest !== "") {
+          newPath = rest;
+        } else {
+          const rawOld = numTokens[numIdx++];
+          const rawNew = numTokens[numIdx++];
+          if (rawOld === undefined || rawNew === undefined) {
+            throw new Error("truncated numstat record");
+          }
+          newPath = rawNew;
         }
-        oldPath = rawOld;
-        filePath = rawNew;
-      } else {
-        const rawPath = nameTokens[nameIdx++];
-        if (rawPath === undefined) {
-          throw new Error("truncated name-status record");
+
+        numstatMap.set(newPath, { additions, deletions, binary: isBinary });
+      }
+
+      let nameIdx = 0;
+      while (nameIdx < nameTokens.length) {
+        const rawStatus = nameTokens[nameIdx++];
+        if (!rawStatus) continue;
+        const statusChar = rawStatus[0];
+        const isRenameOrCopy = statusChar === "R" || statusChar === "C";
+
+        let oldPath: string | undefined;
+        let filePath: string;
+
+        if (isRenameOrCopy) {
+          const rawOld = nameTokens[nameIdx++];
+          const rawNew = nameTokens[nameIdx++];
+          if (rawOld === undefined || rawNew === undefined) {
+            throw new Error("truncated name-status record");
+          }
+          oldPath = rawOld;
+          filePath = rawNew;
+        } else {
+          const rawPath = nameTokens[nameIdx++];
+          if (rawPath === undefined) {
+            throw new Error("truncated name-status record");
+          }
+          filePath = rawPath;
         }
-        filePath = rawPath;
+
+        let additions = 0;
+        let deletions = 0;
+
+        const numstat = numstatMap.get(filePath);
+        if (!numstat || numstat.binary) {
+          binaryPaths.add(filePath);
+          if (oldPath) binaryPaths.add(oldPath);
+          additions = 0;
+          deletions = 0;
+        } else {
+          additions = numstat.additions;
+          deletions = numstat.deletions;
+        }
+
+        let status: "A" | "M" | "D" | "R" = "M";
+        if (statusChar === "A") status = "A";
+        else if (statusChar === "D") status = "D";
+        else if (statusChar === "R" || statusChar === "C") status = "R";
+        else status = "M";
+
+        files.push({
+          path: filePath,
+          ...(oldPath ? { oldPath } : {}),
+          status,
+          additions,
+          deletions,
+        });
       }
 
-      let additions = 0;
-      let deletions = 0;
-
-      const numstat = numstatMap.get(filePath);
-      if (!numstat || numstat.binary) {
-        binaryPaths.add(filePath);
-        if (oldPath) binaryPaths.add(oldPath);
-        additions = 0;
-        deletions = 0;
-      } else {
-        additions = numstat.additions;
-        deletions = numstat.deletions;
-      }
-
-      let status: "A" | "M" | "D" | "R" = "M";
-      if (statusChar === "A") status = "A";
-      else if (statusChar === "D") status = "D";
-      else if (statusChar === "R" || statusChar === "C") status = "R";
-      else status = "M";
-
-      files.push({
-        path: filePath,
-        ...(oldPath ? { oldPath } : {}),
-        status,
-        additions,
-        deletions,
-      });
+      const patchRes = await runExecGit(
+        buildReviewDiffArgs([], `${releaseBranch}...${currentHeadSha}`),
+        {
+          cwd: project.localPath,
+          maxBuffer: SIXTY_FOUR_MIB,
+          // Cast only: Next.js types make NODE_ENV a required key of ProcessEnv.
+          env: REVIEW_GIT_ENV as NodeJS.ProcessEnv,
+        },
+      );
+      rawPatch = patchRes.stdout;
+    } catch (err) {
+      diffError = (err instanceof Error ? err.message : String(err)).trim();
+      rawPatch = "";
+      files.length = 0;
     }
-
-    const patchRes = await runExecGit(
-      buildReviewDiffArgs([], `${releaseBranch}...${taskBranch}`),
-      {
-        cwd: project.localPath,
-        maxBuffer: SIXTY_FOUR_MIB,
-        // Cast only: Next.js types make NODE_ENV a required key of ProcessEnv.
-        env: REVIEW_GIT_ENV as NodeJS.ProcessEnv,
-      },
-    );
-    rawPatch = patchRes.stdout;
-  } catch (err) {
-    diffError = (err instanceof Error ? err.message : String(err)).trim();
-    rawPatch = "";
-    files.length = 0;
   }
 
   // Scan added lines for secrets from the unredacted patch
@@ -526,38 +536,34 @@ export async function getReview(
   patch = redact(patch);
 
   // Check result
-  let check: ReviewCheck | null = null;
+  let check: ReviewCheck | null;
   if (options?.checkResult !== undefined) {
     check = options.checkResult;
   } else {
-    const lastRun = db
+    const lastImplementRun = db
       .select()
       .from(runs)
-      .where(eq(runs.taskId, task.id))
+      .where(and(eq(runs.taskId, task.id), eq(runs.role, "implement")))
       .orderBy(desc(runs.id))
       .limit(1)
       .get();
 
-    if (lastRun && lastRun.checkExitCode !== null && lastRun.checkExitCode !== undefined) {
-      const ok = lastRun.checkExitCode === 0;
+    if (
+      lastImplementRun &&
+      lastImplementRun.checkExitCode !== null &&
+      lastImplementRun.checkExitCode !== undefined
+    ) {
+      const ok = lastImplementRun.checkExitCode === 0;
       check = {
         ok,
-        exitCode: lastRun.checkExitCode,
+        exitCode: lastImplementRun.checkExitCode,
         output: redact(
-          lastRun.checkOutput ??
-            (ok ? "Check passed" : `Check failed with exit code ${lastRun.checkExitCode}`),
+          lastImplementRun.checkOutput ??
+            (ok ? "Check passed" : `Check failed with exit code ${lastImplementRun.checkExitCode}`),
         ),
       };
-    } else if (lastRun && lastRun.exitStatus !== null && lastRun.exitStatus !== undefined) {
-      const ok = lastRun.exitStatus === 0;
-      check = {
-        ok,
-        exitCode: lastRun.exitStatus,
-        output: redact(
-          lastRun.checkOutput ??
-            (ok ? "Check passed" : `Check failed with exit code ${lastRun.exitStatus}`),
-        ),
-      };
+    } else {
+      check = null;
     }
   }
 
@@ -732,8 +738,7 @@ export async function getReview(
 
   const getValidAck = (
     gateId: GateId,
-    gateStatus: "pass" | "blocked" | "needs-ack",
-    gateItems: string[],
+    fingerprint: string,
   ): { id?: number; ackedAt: string; note: string } | null => {
     const ack = rawAckMap.get(gateId);
     if (!ack) return null;
@@ -743,11 +748,7 @@ export async function getReview(
     if (!ack.itemsSha256) {
       return null;
     }
-    const fp = computeGateFingerprint(
-      { id: gateId, status: gateStatus, items: gateItems },
-      gateId === "cross-review" ? latestReview : null,
-    );
-    if (ack.itemsSha256 !== fp) {
+    if (ack.itemsSha256 !== fingerprint) {
       return null;
     }
     return {
@@ -757,42 +758,36 @@ export async function getReview(
     };
   };
 
+  const createGate = (
+    id: GateId,
+    status: "pass" | "blocked" | "needs-ack",
+    items: string[],
+  ): Gate => {
+    const fingerprint = computeGateFingerprint(
+      { id, status, items },
+      id === "cross-review" ? latestReview : null,
+    );
+    return {
+      id,
+      status,
+      items,
+      fingerprint,
+      ack: getValidAck(id, fingerprint),
+    };
+  };
+
   const gates: Gate[] = [
-    {
-      id: "secrets",
-      status: secretGateStatus,
-      items: secretItems,
-      ack: getValidAck("secrets", secretGateStatus, secretItems),
-    },
-    {
-      id: "dependencies",
-      status: depItems.length > 0 ? "needs-ack" : "pass",
-      items: depItems,
-      ack: getValidAck("dependencies", depItems.length > 0 ? "needs-ack" : "pass", depItems),
-    },
-    {
-      id: "tests",
-      status: testItems.length > 0 ? "needs-ack" : "pass",
-      items: testItems,
-      ack: getValidAck("tests", testItems.length > 0 ? "needs-ack" : "pass", testItems),
-    },
-    {
-      id: "check",
-      status: checkGateStatus,
-      items: checkGateItems,
-      ack: getValidAck("check", checkGateStatus, checkGateItems),
-    },
-    {
-      id: "cross-review",
-      status: crossReviewGateStatus,
-      items: crossReviewGateItems,
-      ack: getValidAck("cross-review", crossReviewGateStatus, crossReviewGateItems),
-    },
+    createGate("secrets", secretGateStatus, secretItems),
+    createGate("dependencies", depItems.length > 0 ? "needs-ack" : "pass", depItems),
+    createGate("tests", testItems.length > 0 ? "needs-ack" : "pass", testItems),
+    createGate("check", checkGateStatus, checkGateItems),
+    createGate("cross-review", crossReviewGateStatus, crossReviewGateItems),
   ];
 
   return {
     task,
     releaseBranch,
+    headSha: currentHeadSha,
     diff: {
       files,
       patch,
@@ -818,8 +813,9 @@ export function listInReviewTasks(
 }
 
 /**
- * Approve task: 409 unless in-review, no gate is blocked, and every needs-ack gate is acked.
- * Merges daedalus/<task> into the release branch with mergeNoFf.
+ * Approve task: 409 unless in-review, no gate is blocked, every needs-ack gate is acked,
+ * and headSha matches the reviewed snapshot headSha.
+ * Merges the reviewed commit SHA (not the branch name) into the release branch with mergeNoFf.
  * Uses a temporary worktree under <dataDir>/worktrees/ (or checked out release worktree if clean).
  * Never touches main or default branch.
  */
@@ -827,6 +823,7 @@ export async function approveTask(
   db: DaedalusDb,
   project: ReviewProject,
   taskCode: string,
+  headSha: string,
   options?: ApproveOptions,
 ): Promise<{ sha: string; status: TaskStatus }> {
   const review = await getReview(db, project, taskCode, {
@@ -840,6 +837,10 @@ export async function approveTask(
       `Task ${task.code} is "${task.status}", expected "in-review" to approve.`,
       409,
     );
+  }
+
+  if (!headSha || review.headSha === null || review.headSha !== headSha) {
+    throw new ReviewError("The review changed since you opened it; reload.", 409);
   }
 
   // Check gates
@@ -876,8 +877,9 @@ export async function approveTask(
   const gitWorktreeForBranch = options?.gitOps?.worktreeForBranch ?? worktreeForBranch;
   const gitStatusPorcelain = options?.gitOps?.statusPorcelain ?? statusPorcelain;
   const gitAddWorktreeForBranch = options?.gitOps?.addWorktreeForBranch ?? addWorktreeForBranch;
-  const gitMergeNoFf = options?.gitOps?.mergeNoFf ?? mergeNoFf;
+  const gitMergeCommitNoFf = options?.gitOps?.mergeCommitNoFf ?? mergeCommitNoFf;
   const gitRemoveWorktree = options?.gitOps?.removeWorktree ?? removeWorktree;
+  const runExecGit = options?.gitOps?.execGit ?? execGit;
 
   const checkedOut = await gitWorktreeForBranch(repo, targetBranch);
   let workDir: string;
@@ -906,9 +908,9 @@ export async function approveTask(
   }
 
   try {
-    let result: Awaited<ReturnType<typeof mergeNoFf>>;
+    let result: Awaited<ReturnType<typeof mergeCommitNoFf>>;
     try {
-      result = await gitMergeNoFf(workDir, taskBranch, `Merge task ${task.code}: ${task.title}`);
+      result = await gitMergeCommitNoFf(workDir, headSha, `Merge task ${task.code}: ${task.title}`);
     } catch (err) {
       const detail = err instanceof GitError ? err.message : String(err);
       throw new ReviewError(`git refused the merge, nothing was changed.\n${detail}`.trim(), 409);
@@ -920,6 +922,18 @@ export async function approveTask(
         409,
       );
     }
+
+    // After the merge, check whether the task branch still points at headSha
+    let currentBranchSha: string | null = null;
+    try {
+      const revRes = await runExecGit(["rev-parse", "--verify", `${taskBranch}^{commit}`], {
+        cwd: repo,
+      });
+      currentBranchSha = revRes.stdout.trim() || null;
+    } catch {
+      currentBranchSha = null;
+    }
+    const branchMoved = currentBranchSha !== headSha;
 
     // transition(approve)
     const transFn = options?.transition ?? defaultTransition;
@@ -951,19 +965,30 @@ export async function approveTask(
       // ignore
     }
 
-    // Remove task worktree, keep branch
-    const dataDir = options?.dataDir ?? resolve(repo, ".daedalus-data");
-    const taskWorktreeDir = resolve(dataDir, "worktrees", String(project.id), task.code.toLowerCase());
-    if (existsSync(taskWorktreeDir)) {
-      try {
-        await gitRemoveWorktree(repo, taskWorktreeDir);
-      } catch {
-        // ignore
-      }
-      try {
-        rmSync(taskWorktreeDir, { recursive: true, force: true });
-      } catch {
-        // ignore
+    if (branchMoved) {
+      // Task branch moved: keep merge, do NOT delete task branch, do NOT remove task worktree, add inbox item
+      db.insert(inbox)
+        .values({
+          projectId: project.id,
+          kind: "review",
+          link: `/projects/${project.id}/review#${task.code}`,
+        })
+        .run();
+    } else {
+      // Remove task worktree
+      const dataDir = options?.dataDir ?? resolve(repo, ".daedalus-data");
+      const taskWorktreeDir = resolve(dataDir, "worktrees", String(project.id), task.code.toLowerCase());
+      if (existsSync(taskWorktreeDir)) {
+        try {
+          await gitRemoveWorktree(repo, taskWorktreeDir);
+        } catch {
+          // ignore
+        }
+        try {
+          rmSync(taskWorktreeDir, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
       }
     }
 
@@ -986,28 +1011,28 @@ export async function approveTask(
 
 /**
  * Send back: notes 1–4000 chars; transition(requeue); store notes on task;
- * remove worktree and delete task branch.
+ * remove worktree and delete task branch. Refuses (409) if headSha does not match.
  */
 export async function sendBack(
   db: DaedalusDb,
   project: ReviewProject,
   taskCode: string,
   notes: string,
+  headSha: string,
   options?: SendBackOptions,
 ): Promise<{ status: TaskStatus }> {
   if (typeof notes !== "string" || notes.trim().length < 1 || notes.length > 4000) {
     throw new ReviewError("Review notes must be between 1 and 4000 characters.", 400);
   }
 
-  const task = db
-    .select()
-    .from(tasks)
-    .where(eq(tasks.projectId, project.id))
-    .all()
-    .find((t) => t.code.toLowerCase() === taskCode.toLowerCase());
+  const review = await getReview(db, project, taskCode, {
+    dataDir: options?.dataDir,
+    gitOps: options?.gitOps ? { execGit: options.gitOps.execGit } : undefined,
+  });
+  const task = review.task;
 
-  if (!task) {
-    throw new ReviewError(`Task ${taskCode} not found in project ${project.id}`, 404);
+  if (!headSha || review.headSha === null || review.headSha !== headSha) {
+    throw new ReviewError("The review changed since you opened it; reload.", 409);
   }
 
   const transFn = options?.transition ?? defaultTransition;
@@ -1072,22 +1097,23 @@ export async function sendBack(
 
 /**
  * Discard: transition(requeue), remove worktree, delete branch, clear notes.
+ * Refuses (409) if headSha does not match.
  */
 export async function discardTask(
   db: DaedalusDb,
   project: ReviewProject,
   taskCode: string,
+  headSha: string,
   options?: DiscardOptions,
 ): Promise<{ status: TaskStatus }> {
-  const task = db
-    .select()
-    .from(tasks)
-    .where(eq(tasks.projectId, project.id))
-    .all()
-    .find((t) => t.code.toLowerCase() === taskCode.toLowerCase());
+  const review = await getReview(db, project, taskCode, {
+    dataDir: options?.dataDir,
+    gitOps: options?.gitOps ? { execGit: options.gitOps.execGit } : undefined,
+  });
+  const task = review.task;
 
-  if (!task) {
-    throw new ReviewError(`Task ${taskCode} not found in project ${project.id}`, 404);
+  if (!headSha || review.headSha === null || review.headSha !== headSha) {
+    throw new ReviewError("The review changed since you opened it; reload.", 409);
   }
 
   const transFn = options?.transition ?? defaultTransition;
@@ -1152,6 +1178,7 @@ export async function discardTask(
 
 /**
  * Acknowledge a needs-ack gate (1-1000 characters).
+ * Refuses with 409 unless headSha and fingerprint match the getReview snapshot.
  */
 export async function ackGate(
   db: DaedalusDb,
@@ -1159,6 +1186,8 @@ export async function ackGate(
   taskCode: string,
   gateId: string,
   note: string,
+  headSha: string,
+  fingerprint: string,
   options?: AckGateOptions,
 ): Promise<{
   gate: string;
@@ -1171,16 +1200,10 @@ export async function ackGate(
     throw new ReviewError("Acknowledgement note must be between 1 and 1000 characters.", 400);
   }
 
-  const task = db
-    .select()
-    .from(tasks)
-    .where(eq(tasks.projectId, project.id))
-    .all()
-    .find((t) => t.code.toLowerCase() === taskCode.toLowerCase());
-
-  if (!task) {
-    throw new ReviewError(`Task ${taskCode} not found in project ${project.id}`, 404);
-  }
+  const review = await getReview(db, project, taskCode, {
+    gitOps: options?.gitOps,
+  });
+  const task = review.task;
 
   if (task.status !== "in-review") {
     throw new ReviewError(
@@ -1189,12 +1212,19 @@ export async function ackGate(
     );
   }
 
-  const review = await getReview(db, project, taskCode, {
-    gitOps: options?.gitOps,
-  });
   const gate = review.gates.find((g) => g.id === gateId);
   if (!gate) {
     throw new ReviewError(`Unknown gate '${gateId}'.`, 404);
+  }
+
+  if (
+    !headSha ||
+    !fingerprint ||
+    review.headSha === null ||
+    review.headSha !== headSha ||
+    gate.fingerprint !== fingerprint
+  ) {
+    throw new ReviewError("The review changed since you opened it; reload.", 409);
   }
 
   if (gate.status !== "needs-ack") {
@@ -1204,35 +1234,6 @@ export async function ackGate(
     );
   }
 
-  const runExecGit = options?.gitOps?.execGit ?? execGit;
-  const taskBranch = task.branch || `daedalus/${task.code.toLowerCase()}`;
-  let headSha: string | null;
-  try {
-    const revRes = await runExecGit(["rev-parse", "--verify", `${taskBranch}^{commit}`], {
-      cwd: project.localPath,
-    });
-    headSha = revRes.stdout.trim() || null;
-  } catch {
-    headSha = null;
-  }
-
-  let latestReview: typeof reviews.$inferSelect | null = null;
-  if (gateId === "cross-review") {
-    try {
-      latestReview = db
-        .select()
-        .from(reviews)
-        .where(eq(reviews.taskId, task.id))
-        .orderBy(desc(reviews.id))
-        .limit(1)
-        .get() ?? null;
-    } catch {
-      latestReview = null;
-    }
-  }
-
-  const itemsSha256 = computeGateFingerprint(gate, latestReview);
-
   const ackedAt = new Date().toISOString();
   db.insert(reviewAcks)
     .values({
@@ -1241,7 +1242,7 @@ export async function ackGate(
       note: note.trim(),
       ackedAt,
       headSha,
-      itemsSha256,
+      itemsSha256: fingerprint,
     })
     .onConflictDoUpdate({
       target: [reviewAcks.taskId, reviewAcks.gate],
@@ -1249,7 +1250,7 @@ export async function ackGate(
         note: note.trim(),
         ackedAt,
         headSha,
-        itemsSha256,
+        itemsSha256: fingerprint,
       },
     })
     .run();
@@ -1259,6 +1260,6 @@ export async function ackGate(
     note: note.trim(),
     ackedAt,
     headSha,
-    itemsSha256,
+    itemsSha256: fingerprint,
   };
 }

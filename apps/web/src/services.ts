@@ -108,18 +108,20 @@ export type Services = SessionServices & {
   /** List all in-review tasks for a project (T6.1). 404 if no such project. */
   listInReviewTasks(projectId: number): Promise<Array<typeof tasks.$inferSelect>>;
   /** Approve task into release branch (T6.1). */
-  approveTask(projectId: number, taskCode: string): Promise<{ sha: string; status: TaskStatus }>;
+  approveTask(projectId: number, taskCode: string, headSha: string): Promise<{ sha: string; status: TaskStatus }>;
   /** Send back task with notes (T6.1). */
-  sendBack(projectId: number, taskCode: string, notes: string): Promise<{ status: TaskStatus }>;
+  sendBack(projectId: number, taskCode: string, notes: string, headSha: string): Promise<{ status: TaskStatus }>;
   /** Discard task, delete branch and worktree, clear notes (T6.1). */
-  discardTask(projectId: number, taskCode: string): Promise<{ status: TaskStatus }>;
+  discardTask(projectId: number, taskCode: string, headSha: string): Promise<{ status: TaskStatus }>;
   /** Acknowledge a needs-ack gate (T6.1). */
   ackGate(
     projectId: number,
     taskCode: string,
     gateId: string,
     note: string,
-  ): Promise<{ gate: string; note: string; ackedAt: string; headSha?: string | null }>;
+    headSha: string,
+    fingerprint: string,
+  ): Promise<{ gate: string; note: string; ackedAt: string; headSha?: string | null; itemsSha256?: string | null }>;
   /** Start a cross-review on an in-review task (T6.2). */
   startCrossReview(projectId: number, taskCode: string): Promise<{ reviewId: number }>;
 };

@@ -21,12 +21,16 @@ export async function POST(
     }
 
     const body = await readJsonBody(req);
+    const headSha = typeof body.headSha === "string" ? body.headSha.trim() : "";
+    if (!/^[0-9a-f]{40}$/i.test(headSha)) {
+      throw new HttpError(400, "Valid 40-character hex headSha is required.");
+    }
     const notes = typeof body.notes === "string" ? body.notes : "";
     if (notes.trim().length < 1 || notes.length > 4000) {
       throw new HttpError(400, "Review notes must be between 1 and 4000 characters.");
     }
 
-    const result = await getServices().sendBack(Number(id), code, notes);
+    const result = await getServices().sendBack(Number(id), code, notes, headSha);
     return jsonResponse(200, { ok: true, ...result });
   } catch (err) {
     return toErrorResponse(err);

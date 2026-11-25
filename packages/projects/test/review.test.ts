@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import {
+  inbox,
   openDb,
   projects,
   providers,
@@ -15,7 +16,7 @@ import {
   tasks,
   type DaedalusDb,
 } from "@daedalus/db";
-import { GitError } from "@daedalus/git";
+import { execGit, type ExecGitOptions, GitError, mergeCommitNoFf } from "@daedalus/git";
 import {
   NotImplementedError,
   type TaskEvent,
@@ -219,8 +220,9 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     expect(jsonOutput).not.toContain(secretKey);
     expect(review.diff.patch).toContain("[REDACTED:anthropic]");
 
+    const headSha12 = git(repoDir, "rev-parse", "daedalus/t1.2");
     // Approval should be blocked with 409
-    await expect(approveTask(db, projectRow, "T1.2", { dataDir })).rejects.toMatchObject({
+    await expect(approveTask(db, projectRow, "T1.2", headSha12, { dataDir })).rejects.toMatchObject({
       status: 409,
       message: expect.stringMatching(/gate 'secrets' is blocked/i),
     });
@@ -271,14 +273,23 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     expect(testGate?.items).toContain("test/auth.test.ts");
     expect(testGate?.ack).toBeNull();
 
+    const headSha13 = git(repoDir, "rev-parse", "daedalus/t1.3");
     // Approve fails because unacked
-    await expect(approveTask(db, projectRow, "T1.3", { dataDir })).rejects.toMatchObject({
+    await expect(approveTask(db, projectRow, "T1.3", headSha13, { dataDir })).rejects.toMatchObject({
       status: 409,
       message: expect.stringMatching(/gate 'tests' requires acknowledgement/i),
     });
 
     // Acknowledge the gate
-    const ackRes = await ackGate(db, projectRow, "T1.3", "tests", "Obsolete auth test removed intentionally");
+    const ackRes = await ackGate(
+      db,
+      projectRow,
+      "T1.3",
+      "tests",
+      "Obsolete auth test removed intentionally",
+      reviewBefore.headSha!,
+      testGate!.fingerprint,
+    );
     expect(ackRes.gate).toBe("tests");
     expect(ackRes.note).toBe("Obsolete auth test removed intentionally");
 
@@ -364,7 +375,17 @@ describe("Review center (T6.1, SPEC#Review)", () => {
       .run();
 
     // Acknowledge cross-review gate so task can be approved without running cross-review
-    await ackGate(db, projectRow, "T1.5", "cross-review", "ack cross-review for test");
+    const r15 = await getReview(db, projectRow, "T1.5");
+    const xrGate15 = r15.gates.find((g) => g.id === "cross-review");
+    await ackGate(
+      db,
+      projectRow,
+      "T1.5",
+      "cross-review",
+      "ack cross-review for test",
+      r15.headSha!,
+      xrGate15!.fingerprint,
+    );
 
     // Mock check passed in runner
     const transitionTable: Record<string, Transition> = {
@@ -377,7 +398,8 @@ describe("Review center (T6.1, SPEC#Review)", () => {
 
     // Set recorded check result
     const { approveTask: approve } = await import("../src/review.js");
-    const res = await approve(db, projectRow, "T1.5", {
+    const headSha15 = git(repoDir, "rev-parse", "daedalus/t1.5");
+    const res = await approve(db, projectRow, "T1.5", headSha15, {
       dataDir,
       transition: mockTransition,
     });
@@ -441,10 +463,21 @@ describe("Review center (T6.1, SPEC#Review)", () => {
       .run();
 
     // Acknowledge cross-review gate so task can reach git merge
-    await ackGate(db, projectRow, "T1.6", "cross-review", "ack cross-review for test");
+    const r16 = await getReview(db, projectRow, "T1.6");
+    const xrGate16 = r16.gates.find((g) => g.id === "cross-review");
+    await ackGate(
+      db,
+      projectRow,
+      "T1.6",
+      "cross-review",
+      "ack cross-review for test",
+      r16.headSha!,
+      xrGate16!.fingerprint,
+    );
 
+    const headSha16 = git(repoDir, "rev-parse", "daedalus/t1.6");
     await expect(
-      approveTask(db, projectRow, "T1.6", {
+      approveTask(db, projectRow, "T1.6", headSha16, {
         dataDir,
         transition: () => ({ state: { status: "done", attempts: 1 }, inbox: null }),
       }),
@@ -497,7 +530,8 @@ describe("Review center (T6.1, SPEC#Review)", () => {
       return transitionTable[key]!;
     };
 
-    const res = await sendBack(db, projectRow, "T1.7", "Please fix the edge case in login", {
+    const headSha17 = git(repoDir, "rev-parse", "daedalus/t1.7");
+    const res = await sendBack(db, projectRow, "T1.7", "Please fix the edge case in login", headSha17, {
       dataDir,
       transition: mockTransition,
     });
@@ -551,7 +585,8 @@ describe("Review center (T6.1, SPEC#Review)", () => {
       return transitionTable[key]!;
     };
 
-    const res = await discardTask(db, projectRow, "T1.8", {
+    const headSha18 = git(repoDir, "rev-parse", "daedalus/t1.8");
+    const res = await discardTask(db, projectRow, "T1.8", headSha18, {
       dataDir,
       transition: mockTransition,
     });
@@ -597,14 +632,25 @@ describe("Review center (T6.1, SPEC#Review)", () => {
       .run();
 
     // Acknowledge cross-review gate so task can reach transition
-    await ackGate(db, projectRow, "T1.9", "cross-review", "ack cross-review for test");
+    const r19 = await getReview(db, projectRow, "T1.9");
+    const xrGate19 = r19.gates.find((g) => g.id === "cross-review");
+    await ackGate(
+      db,
+      projectRow,
+      "T1.9",
+      "cross-review",
+      "ack cross-review for test",
+      r19.headSha!,
+      xrGate19!.fingerprint,
+    );
 
     const throwingTransition = (): Transition => {
       throw new NotImplementedError("T5.2: the owner writes the task state machine");
     };
 
+    const headSha19 = git(repoDir, "rev-parse", "daedalus/t1.9");
     await expect(
-      approveTask(db, projectRow, "T1.9", {
+      approveTask(db, projectRow, "T1.9", headSha19, {
         dataDir,
         transition: throwingTransition,
       }),
@@ -614,7 +660,7 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     });
 
     await expect(
-      sendBack(db, projectRow, "T1.9", "notes", {
+      sendBack(db, projectRow, "T1.9", "notes", headSha19, {
         dataDir,
         transition: throwingTransition,
       }),
@@ -624,7 +670,7 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     });
 
     await expect(
-      discardTask(db, projectRow, "T1.9", {
+      discardTask(db, projectRow, "T1.9", headSha19, {
         dataDir,
         transition: throwingTransition,
       }),
@@ -696,11 +742,11 @@ describe("Review center (T6.1, SPEC#Review)", () => {
       .run();
 
     const throwingGitOps = {
-      execGit: async (args: string[]) => {
+      execGit: async (args: string[], opts: ExecGitOptions) => {
         if (args.includes("diff")) {
           throw new GitError("diff buffer overflow");
         }
-        return { stdout: "", stderr: "" };
+        return execGit(args, opts);
       },
     };
 
@@ -711,8 +757,9 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     expect(secretGate?.status).toBe("blocked");
     expect(secretGate?.items[0]).toContain("diff unavailable: diff buffer overflow");
 
+    const headShaS1 = git(repoDir, "rev-parse", "daedalus/t-s1");
     await expect(
-      approveTask(db, projectRow, "T-S1", {
+      approveTask(db, projectRow, "T-S1", headShaS1, {
         dataDir,
         gitOps: throwingGitOps,
       }),
@@ -789,7 +836,15 @@ describe("Review center (T6.1, SPEC#Review)", () => {
       .run();
 
     await expect(
-      ackGate(db, projectRow, "T-S3-QUEUED", "dependencies", "Ack attempt on queued task"),
+      ackGate(
+        db,
+        projectRow,
+        "T-S3-QUEUED",
+        "dependencies",
+        "Ack attempt on queued task",
+        "0".repeat(40),
+        "0".repeat(64),
+      ),
     ).rejects.toMatchObject({
       status: 409,
       message: expect.stringMatching(/expected "in-review"/i),
@@ -833,7 +888,15 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     expect(depGate1?.ack).toBeNull();
 
     // Acknowledge the gate
-    const ackRes = await ackGate(db, projectRow, "T-S3-SHA", "dependencies", "Verified v1.0.0");
+    const ackRes = await ackGate(
+      db,
+      projectRow,
+      "T-S3-SHA",
+      "dependencies",
+      "Verified v1.0.0",
+      r1.headSha!,
+      depGate1!.fingerprint,
+    );
     expect(ackRes.gate).toBe("dependencies");
 
     const r2 = await getReview(db, projectRow, "T-S3-SHA");
@@ -854,9 +917,10 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     expect(depGate3?.status).toBe("needs-ack");
     expect(depGate3?.ack).toBeNull();
 
+    const headShaS3 = git(repoDir, "rev-parse", "daedalus/t-s3-sha");
     // Approve must be refused because needs-ack gate is unacknowledged
     await expect(
-      approveTask(db, projectRow, "T-S3-SHA", { dataDir }),
+      approveTask(db, projectRow, "T-S3-SHA", headShaS3, { dataDir }),
     ).rejects.toMatchObject({
       status: 409,
       message: expect.stringMatching(/gate 'dependencies' requires acknowledgement/i),
@@ -894,13 +958,23 @@ describe("Review center (T6.1, SPEC#Review)", () => {
       .run();
 
     // Acknowledge the dependencies gate
-    await ackGate(db, projectRow, "T-S3-SB", "dependencies", "Acked before send-back");
+    const rBeforeSb = await getReview(db, projectRow, "T-S3-SB");
+    const depGateSb = rBeforeSb.gates.find((g) => g.id === "dependencies");
+    await ackGate(
+      db,
+      projectRow,
+      "T-S3-SB",
+      "dependencies",
+      "Acked before send-back",
+      rBeforeSb.headSha!,
+      depGateSb!.fingerprint,
+    );
 
     const rBefore = await getReview(db, projectRow, "T-S3-SB");
     expect(rBefore.gates.find((g) => g.id === "dependencies")?.ack).not.toBeNull();
 
     // Send back
-    await sendBack(db, projectRow, "T-S3-SB", "Need fix", {
+    await sendBack(db, projectRow, "T-S3-SB", "Need fix", rBeforeSb.headSha!, {
       dataDir,
       transition: () => ({ state: { status: "queued", attempts: 1 }, inbox: null }),
     });
@@ -1069,7 +1143,8 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     expect(secretGate?.items).toContain("secret.txt:1");
     expect(secretGate?.items).toContain(".gitattributes: changes how git shows diffs");
 
-    await expect(approveTask(db, projectRow, "T-SEC-GA", { dataDir })).rejects.toMatchObject({
+    const headShaGa = git(repoDir, "rev-parse", "daedalus/t-sec-gitattr");
+    await expect(approveTask(db, projectRow, "T-SEC-GA", headShaGa, { dataDir })).rejects.toMatchObject({
       status: 409,
       message: expect.stringMatching(/gate 'secrets' is blocked/i),
     });
@@ -1153,14 +1228,23 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     expect(secretGate?.status).toBe("needs-ack");
     expect(secretGate?.items).toContain("sample.bin: binary or attribute change, not scanned");
 
+    const headShaBin = git(repoDir, "rev-parse", "daedalus/t-sec-bin");
     // Approval fails because unacknowledged
-    await expect(approveTask(db, projectRow, "T-SEC-BIN", { dataDir })).rejects.toMatchObject({
+    await expect(approveTask(db, projectRow, "T-SEC-BIN", headShaBin, { dataDir })).rejects.toMatchObject({
       status: 409,
       message: expect.stringMatching(/gate 'secrets' requires acknowledgement/i),
     });
 
     // Acknowledge the gate
-    await ackGate(db, projectRow, "T-SEC-BIN", "secrets", "Verified binary sample asset");
+    await ackGate(
+      db,
+      projectRow,
+      "T-SEC-BIN",
+      "secrets",
+      "Verified binary sample asset",
+      review.headSha!,
+      secretGate!.fingerprint,
+    );
     const reviewAfterAck = await getReview(db, projectRow, "T-SEC-BIN");
     const secretGateAfter = reviewAfterAck.gates.find((g) => g.id === "secrets");
     expect(secretGateAfter?.ack?.note).toBe("Verified binary sample asset");
@@ -1410,14 +1494,14 @@ describe("Review center (T6.1, SPEC#Review)", () => {
       .run();
 
     const truncatedGitOps = {
-      execGit: async (args: string[]) => {
+      execGit: async (args: string[], opts: ExecGitOptions) => {
         if (args.includes("--name-status")) {
           return { stdout: "R100\0only-old-path.txt\0", stderr: "" };
         }
         if (args.includes("--numstat")) {
           return { stdout: "0\t0\t\0only-old-path.txt\0dest.txt\0", stderr: "" };
         }
-        return { stdout: "", stderr: "" };
+        return execGit(args, opts);
       },
     };
 
@@ -1462,14 +1546,14 @@ describe("Review center (T6.1, SPEC#Review)", () => {
       .run();
 
     const missingNumstatGitOps = {
-      execGit: async (args: string[]) => {
+      execGit: async (args: string[], opts: ExecGitOptions) => {
         if (args.includes("--name-status")) {
           return { stdout: "M\0missing.txt\0", stderr: "" };
         }
         if (args.includes("--numstat")) {
           return { stdout: "", stderr: "" };
         }
-        return { stdout: "", stderr: "" };
+        return execGit(args, opts);
       },
     };
 
@@ -1525,13 +1609,21 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     expect(xrGate?.ack).toBeNull();
 
     // approveTask is rejected because cross-review gate requires acknowledgement
-    await expect(approveTask(db, projectRow, "T-XR-GATE", { dataDir })).rejects.toMatchObject({
+    await expect(approveTask(db, projectRow, "T-XR-GATE", review.headSha!, { dataDir })).rejects.toMatchObject({
       status: 409,
       message: expect.stringMatching(/gate 'cross-review' requires acknowledgement/i),
     });
 
     // Acknowledge the cross-review gate
-    const ackRes = await ackGate(db, projectRow, "T-XR-GATE", "cross-review", "Acknowledged lack of cross-review for test");
+    const ackRes = await ackGate(
+      db,
+      projectRow,
+      "T-XR-GATE",
+      "cross-review",
+      "Acknowledged lack of cross-review for test",
+      review.headSha!,
+      xrGate!.fingerprint,
+    );
     expect(ackRes.gate).toBe("cross-review");
 
     // Review now reflects the acknowledgement
@@ -1590,7 +1682,15 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     expect(gate1?.ack).toBeNull();
 
     // 2. Owner acks failed review A
-    await ackGate(db, projectRow, "T-XR-REACK", "cross-review", "Acknowledged failed review A");
+    await ackGate(
+      db,
+      projectRow,
+      "T-XR-REACK",
+      "cross-review",
+      "Acknowledged failed review A",
+      r1.headSha!,
+      gate1!.fingerprint,
+    );
 
     const r2 = await getReview(db, projectRow, "T-XR-REACK");
     const gate2 = r2.gates.find((g) => g.id === "cross-review");
@@ -1621,13 +1721,21 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     expect(gate3?.ack).toBeNull();
 
     // 5. Approve is refused (409)
-    await expect(approveTask(db, projectRow, "T-XR-REACK", { dataDir })).rejects.toMatchObject({
+    await expect(approveTask(db, projectRow, "T-XR-REACK", r3.headSha!, { dataDir })).rejects.toMatchObject({
       status: 409,
       message: expect.stringMatching(/gate 'cross-review' requires acknowledgement/i),
     });
 
     // 6. Owner acks again
-    await ackGate(db, projectRow, "T-XR-REACK", "cross-review", "Acknowledged review B must-fix");
+    await ackGate(
+      db,
+      projectRow,
+      "T-XR-REACK",
+      "cross-review",
+      "Acknowledged review B must-fix",
+      r3.headSha!,
+      gate3!.fingerprint,
+    );
 
     const r4 = await getReview(db, projectRow, "T-XR-REACK");
     const gate4 = r4.gates.find((g) => g.id === "cross-review");
@@ -1693,7 +1801,7 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     expect(r2.gates.find((g) => g.id === "dependencies")?.ack).toBeNull();
 
     // Approve refused with 409
-    await expect(approveTask(db, projectRow, "T-ACK-NULLS", { dataDir })).rejects.toMatchObject({
+    await expect(approveTask(db, projectRow, "T-ACK-NULLS", headSha, { dataDir })).rejects.toMatchObject({
       status: 409,
       message: expect.stringMatching(/gate 'dependencies' requires acknowledgement/i),
     });
@@ -1730,7 +1838,17 @@ describe("Review center (T6.1, SPEC#Review)", () => {
       .run();
 
     // Acknowledge dependencies gate while branch exists
-    await ackGate(db, projectRow, "T-DEL-HEAD", "dependencies", "Ack while branch exists");
+    const rInit = await getReview(db, projectRow, "T-DEL-HEAD");
+    const depInit = rInit.gates.find((g) => g.id === "dependencies");
+    await ackGate(
+      db,
+      projectRow,
+      "T-DEL-HEAD",
+      "dependencies",
+      "Ack while branch exists",
+      rInit.headSha!,
+      depInit!.fingerprint,
+    );
     const rBefore = await getReview(db, projectRow, "T-DEL-HEAD");
     expect(rBefore.gates.find((g) => g.id === "dependencies")?.ack).not.toBeNull();
 
@@ -1742,7 +1860,7 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     expect(rAfter.gates.every((g) => g.ack === null)).toBe(true);
 
     // Approve must be refused with 409
-    await expect(approveTask(db, projectRow, "T-DEL-HEAD", { dataDir })).rejects.toMatchObject({
+    await expect(approveTask(db, projectRow, "T-DEL-HEAD", rInit.headSha!, { dataDir })).rejects.toMatchObject({
       status: 409,
     });
   });
@@ -1784,7 +1902,15 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     expect(secBefore?.ack).toBeNull();
 
     // Acknowledge secrets gate
-    const ackRes = await ackGate(db, projectRow, "T-SEC-NOFALSE", "secrets", "Verified binary asset");
+    const ackRes = await ackGate(
+      db,
+      projectRow,
+      "T-SEC-NOFALSE",
+      "secrets",
+      "Verified binary asset",
+      rBefore.headSha!,
+      secBefore!.fingerprint,
+    );
     expect(ackRes.itemsSha256).toBeDefined();
 
     // Call getReview again when nothing has changed
@@ -1793,5 +1919,485 @@ describe("Review center (T6.1, SPEC#Review)", () => {
     expect(secAfter?.status).toBe("needs-ack");
     expect(secAfter?.ack).not.toBeNull();
     expect(secAfter?.ack?.note).toBe("Verified binary asset");
+  });
+
+  it("ack with a fingerprint from before a new cross-review row -> 409, nothing stored", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-stale-fp", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "code.ts"), "export const a = 1;\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "implement code");
+    const headSha = git(repoDir, "rev-parse", "daedalus/t-stale-fp");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-STALE-FP",
+        title: "Stale Fingerprint Task",
+        status: "in-review",
+        branch: "daedalus/t-stale-fp",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    // GET review before cross-review row
+    const r1 = await getReview(db, projectRow, "T-STALE-FP");
+    const xrGate1 = r1.gates.find((g) => g.id === "cross-review");
+    expect(xrGate1?.status).toBe("needs-ack");
+    const staleFp = xrGate1!.fingerprint;
+
+    // A new cross-review row lands
+    db.insert(reviews)
+      .values({
+        taskId: t!.id,
+        reviewer: "antigravity",
+        status: "done",
+        headSha,
+        findings: JSON.stringify([
+          { severity: "low", file: "code.ts", line: 1, claim: "Nit suggestion", proof: "Proof" },
+        ]),
+        claudeTriage: JSON.stringify([
+          { index: 0, bucket: "nit", reason: "Minor nit" },
+        ]),
+      })
+      .run();
+
+    // Attempting to ack with the old fingerprint refuses with 409
+    await expect(
+      ackGate(db, projectRow, "T-STALE-FP", "cross-review", "Trying old ack", r1.headSha!, staleFp),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "The review changed since you opened it; reload.",
+    });
+
+    // Nothing stored
+    const storedAcks = db.select().from(reviewAcks).where(eq(reviewAcks.taskId, t!.id)).all();
+    expect(storedAcks).toHaveLength(0);
+  });
+
+  it("ack/approve with a stale headSha (commit added to the task branch after the GET) -> 409; release branch unchanged", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-stale-sha", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "package.json"), JSON.stringify({ name: "app", version: "1.0.0" }));
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "first commit");
+    git(repoDir, "checkout", "main");
+
+    const releaseShaBefore = git(repoDir, "rev-parse", "daedalus/release-v1.0");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-STALE-SHA",
+        title: "Stale HeadSha Task",
+        status: "in-review",
+        branch: "daedalus/t-stale-sha",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    // GET review snapshot
+    const r = await getReview(db, projectRow, "T-STALE-SHA");
+    const staleHeadSha = r.headSha!;
+    const depGate = r.gates.find((g) => g.id === "dependencies");
+    expect(depGate?.status).toBe("needs-ack");
+    const fp = depGate!.fingerprint;
+
+    // A new commit lands on the task branch after the GET
+    git(repoDir, "checkout", "daedalus/t-stale-sha");
+    writeFileSync(join(repoDir, "extra.txt"), "extra\n");
+    git(repoDir, "add", "extra.txt");
+    git(repoDir, "commit", "-m", "commit added after GET");
+    git(repoDir, "checkout", "main");
+
+    // ack with stale headSha -> 409, nothing stored
+    await expect(
+      ackGate(db, projectRow, "T-STALE-SHA", "dependencies", "Acking with stale headSha", staleHeadSha, fp),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "The review changed since you opened it; reload.",
+    });
+
+    const storedAcks = db.select().from(reviewAcks).where(eq(reviewAcks.taskId, t!.id)).all();
+    expect(storedAcks).toHaveLength(0);
+
+    // approve with stale headSha -> 409, release branch unchanged
+    await expect(
+      approveTask(db, projectRow, "T-STALE-SHA", staleHeadSha, { dataDir }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "The review changed since you opened it; reload.",
+    });
+
+    expect(git(repoDir, "rev-parse", "daedalus/release-v1.0")).toBe(releaseShaBefore);
+  });
+
+  it("approve merges exactly the reviewed SHA: add a commit to the task branch between getReview and the merge (inject via gitOps) -> the release branch contains the reviewed commit and not the new one; inbox item exists", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-merge-sha", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "reviewed-feature.txt"), "reviewed content\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "reviewed commit");
+    const reviewedSha = git(repoDir, "rev-parse", "daedalus/t-merge-sha");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-MERGE-SHA",
+        title: "Merge Reviewed SHA Task",
+        status: "in-review",
+        branch: "daedalus/t-merge-sha",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    // Acknowledge cross-review gate on the reviewed commit
+    const rInit = await getReview(db, projectRow, "T-MERGE-SHA");
+    const xrGate = rInit.gates.find((g) => g.id === "cross-review");
+    await ackGate(
+      db,
+      projectRow,
+      "T-MERGE-SHA",
+      "cross-review",
+      "ack cross-review",
+      reviewedSha,
+      xrGate!.fingerprint,
+    );
+
+    // Injected gitOps: between getReview and mergeCommitNoFf, add a new commit to daedalus/t-merge-sha
+    let unmergedSha = "";
+    const realMerge = mergeCommitNoFf;
+    const injectedGitOps = {
+      mergeCommitNoFf: async (workDir: string, branchOrCommit: string, message: string) => {
+        // Add a commit to task branch before merge happens
+        git(repoDir, "checkout", "daedalus/t-merge-sha");
+        writeFileSync(join(repoDir, "unreviewed-sneak.txt"), "sneaked in content\n");
+        git(repoDir, "add", ".");
+        git(repoDir, "commit", "-m", "sneaked in commit after review");
+        unmergedSha = git(repoDir, "rev-parse", "daedalus/t-merge-sha");
+        git(repoDir, "checkout", "main");
+
+        return realMerge(workDir, branchOrCommit, message);
+      },
+    };
+
+    const res = await approveTask(db, projectRow, "T-MERGE-SHA", reviewedSha, {
+      dataDir,
+      gitOps: injectedGitOps,
+      transition: () => ({ state: { status: "done", attempts: 1 }, inbox: null }),
+    });
+
+    expect(res.sha).toBe(git(repoDir, "rev-parse", "daedalus/release-v1.0"));
+
+    // Release branch contains the reviewed commit and NOT the new one
+    expect(git(repoDir, "show", "daedalus/release-v1.0:reviewed-feature.txt")).toBe("reviewed content");
+    expect(() => git(repoDir, "show", "daedalus/release-v1.0:unreviewed-sneak.txt")).toThrow();
+
+    // Task branch still points at unmergedSha (moved) and was NOT deleted
+    expect(git(repoDir, "branch", "--list", "daedalus/t-merge-sha")).toContain("daedalus/t-merge-sha");
+    expect(git(repoDir, "rev-parse", "daedalus/t-merge-sha")).toBe(unmergedSha);
+
+    // Task is marked done
+    const updatedTask = db.select().from(tasks).where(eq(tasks.id, t!.id)).get();
+    expect(updatedTask?.status).toBe("done");
+
+    // Inbox item exists
+    const inboxItems = db
+      .select()
+      .from(inbox)
+      .where(eq(inbox.projectId, projectRow.id))
+      .all();
+    expect(inboxItems.length).toBeGreaterThan(0);
+    const item = inboxItems.find((i) => i.link.includes("T-MERGE-SHA"));
+    expect(item).toBeDefined();
+    expect(item?.kind).toBe("review");
+  });
+
+  it("the diff's file list and patch both come from the same SHA (commit between the calls via injected execGit -> still consistent)", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-diff-sha", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "initial-file.txt"), "initial content\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "initial commit on task branch");
+    const initialSha = git(repoDir, "rev-parse", "daedalus/t-diff-sha");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-DIFF-SHA",
+        title: "Diff Consistency Task",
+        status: "in-review",
+        branch: "daedalus/t-diff-sha",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    // Injected execGit: after the first diff call (--name-status), add a new commit with a new file
+    const injectedExecGit = async (args: string[], opts: ExecGitOptions) => {
+      const res = await execGit(args, opts);
+      if (args.includes("diff") && args.includes("--name-status")) {
+        // Add a commit to daedalus/t-diff-sha before numstat and patch diff calls run
+        git(repoDir, "checkout", "daedalus/t-diff-sha");
+        writeFileSync(join(repoDir, "sneaked-file.txt"), "sneaked in diff file\n");
+        git(repoDir, "add", ".");
+        git(repoDir, "commit", "-m", "sneaked commit between diff calls");
+        git(repoDir, "checkout", "main");
+      }
+      return res;
+    };
+
+    const review = await getReview(db, projectRow, "T-DIFF-SHA", {
+      gitOps: { execGit: injectedExecGit },
+    });
+
+    expect(review.headSha).toBe(initialSha);
+
+    // Both files list and patch diff reflect only initialSha
+    expect(review.diff.files.map((f) => f.path)).toEqual(["initial-file.txt"]);
+    expect(review.diff.patch).toContain("initial-file.txt");
+    expect(review.diff.patch).not.toContain("sneaked-file.txt");
+  });
+
+  it("send-back with a stale headSha -> 409, branch and task status unchanged", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-sb-stale", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "sb-file.txt"), "content\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "commit for send-back test");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-SB-STALE",
+        title: "Send Back Stale Task",
+        status: "in-review",
+        branch: "daedalus/t-sb-stale",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-SB-STALE");
+    const staleHeadSha = review.headSha!;
+
+    // Commit added to branch after GET
+    git(repoDir, "checkout", "daedalus/t-sb-stale");
+    writeFileSync(join(repoDir, "sb-file2.txt"), "more\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "new commit after GET");
+    git(repoDir, "checkout", "main");
+
+    await expect(
+      sendBack(db, projectRow, "T-SB-STALE", "needs work", staleHeadSha, { dataDir }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "The review changed since you opened it; reload.",
+    });
+
+    // Task status and branch unchanged
+    const taskAfter = db.select().from(tasks).where(eq(tasks.id, t!.id)).get();
+    expect(taskAfter?.status).toBe("in-review");
+    expect(taskAfter?.reviewNotes).toBeNull();
+    expect(git(repoDir, "branch", "--list", "daedalus/t-sb-stale")).toContain("daedalus/t-sb-stale");
+  });
+
+  it("discard with a stale headSha -> 409, branch and task status unchanged", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-disc-stale", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "disc-file.txt"), "content\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "commit for discard test");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-DISC-STALE",
+        title: "Discard Stale Task",
+        status: "in-review",
+        branch: "daedalus/t-disc-stale",
+      })
+      .returning()
+      .all();
+
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 0,
+        checkOutput: "ok",
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-DISC-STALE");
+    const staleHeadSha = review.headSha!;
+
+    // Commit added to branch after GET
+    git(repoDir, "checkout", "daedalus/t-disc-stale");
+    writeFileSync(join(repoDir, "disc-file2.txt"), "more\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "new commit after GET");
+    git(repoDir, "checkout", "main");
+
+    await expect(
+      discardTask(db, projectRow, "T-DISC-STALE", staleHeadSha, { dataDir }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "The review changed since you opened it; reload.",
+    });
+
+    // Task status and branch unchanged
+    const taskAfter = db.select().from(tasks).where(eq(tasks.id, t!.id)).get();
+    expect(taskAfter?.status).toBe("in-review");
+    expect(git(repoDir, "branch", "--list", "daedalus/t-disc-stale")).toContain("daedalus/t-disc-stale");
+  });
+
+  it("implement run with checkExitCode 1, then a newer review run with exitStatus 0 -> check gate blocked", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-check-role", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "check.txt"), "code\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "implement commit");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-CHECK-ROLE",
+        title: "Check Role Task",
+        status: "in-review",
+        branch: "daedalus/t-check-role",
+      })
+      .returning()
+      .all();
+
+    // Older implement run with checkExitCode: 1 (failed)
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: 1,
+        checkOutput: "Check failed on tests",
+        exitStatus: 0,
+      })
+      .run();
+
+    // Newer review run with exitStatus: 0 (and checkExitCode: null)
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "review",
+        checkExitCode: null,
+        checkOutput: null,
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-CHECK-ROLE");
+    const checkGate = review.gates.find((g) => g.id === "check");
+    expect(checkGate?.status).toBe("blocked");
+    expect(checkGate?.items[0]).toContain("Last check failed with exit code 1");
+    expect(review.check?.ok).toBe(false);
+    expect(review.check?.exitCode).toBe(1);
+  });
+
+  it("implement run with checkExitCode null and exitStatus 0 -> check gate blocked with 'Check result missing'", async () => {
+    git(repoDir, "checkout", "-b", "daedalus/t-check-null", "daedalus/release-v1.0");
+    writeFileSync(join(repoDir, "check-null.txt"), "code\n");
+    git(repoDir, "add", ".");
+    git(repoDir, "commit", "-m", "implement commit");
+    git(repoDir, "checkout", "main");
+
+    const [t] = db
+      .insert(tasks)
+      .values({
+        projectId: projectRow.id,
+        code: "T-CHECK-NULL",
+        title: "Check Null Task",
+        status: "in-review",
+        branch: "daedalus/t-check-null",
+      })
+      .returning()
+      .all();
+
+    // Implement run timed out or never set checkExitCode (null), exitStatus 0
+    db.insert(runs)
+      .values({
+        taskId: t!.id,
+        providerId: providerRow.id,
+        role: "implement",
+        checkExitCode: null,
+        checkOutput: null,
+        exitStatus: 0,
+      })
+      .run();
+
+    const review = await getReview(db, projectRow, "T-CHECK-NULL");
+    expect(review.check).toBeNull();
+    const checkGate = review.gates.find((g) => g.id === "check");
+    expect(checkGate?.status).toBe("blocked");
+    expect(checkGate?.items).toContain("Check result missing");
   });
 });

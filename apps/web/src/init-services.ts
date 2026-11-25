@@ -359,25 +359,25 @@ export function initServices({ dataDir, repoRoot }: ServicesOptions): Services {
       if (!project) throw new ImportError("No such project.", 404);
       return listInReviewTasks(db, projectId);
     },
-    approveTask: async (projectId, taskCode) => {
+    approveTask: async (projectId, taskCode, headSha) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      return approveTask(db, project, taskCode, { dataDir });
+      return approveTask(db, project, taskCode, headSha, { dataDir });
     },
-    sendBack: async (projectId, taskCode, notes) => {
+    sendBack: async (projectId, taskCode, notes, headSha) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      return sendBack(db, project, taskCode, notes, { dataDir });
+      return sendBack(db, project, taskCode, notes, headSha, { dataDir });
     },
-    discardTask: async (projectId, taskCode) => {
+    discardTask: async (projectId, taskCode, headSha) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      return discardTask(db, project, taskCode, { dataDir });
+      return discardTask(db, project, taskCode, headSha, { dataDir });
     },
-    ackGate: async (projectId, taskCode, gateId, note) => {
+    ackGate: async (projectId, taskCode, gateId, note, headSha, fingerprint) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      return ackGate(db, project, taskCode, gateId, note);
+      return ackGate(db, project, taskCode, gateId, note, headSha, fingerprint);
     },
     startCrossReview: async (projectId, taskCode) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();

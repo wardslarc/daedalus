@@ -34,15 +34,10 @@ export async function addWorktreeForBranch(repoDir: string, worktreeDir: string,
 
 export type MergeResult = { ok: true; sha: string } | { ok: false; conflicts: string[] };
 
-/**
- * Merge `branch` into the current branch of `dir` with a merge commit, skipping hooks.
- * On a conflict the merge is aborted, so the checkout is exactly as before.
- */
-export async function mergeNoFf(dir: string, branch: string, message: string): Promise<MergeResult> {
-  await validateBranchName(branch, dir);
+async function runMerge(dir: string, target: string, message: string): Promise<MergeResult> {
   if (!message) throw new GitError("Merge message cannot be empty");
   try {
-    await execGit(["merge", "--no-ff", "--no-verify", "--no-edit", "-m", message, "--end-of-options", branch], { cwd: dir });
+    await execGit(["merge", "--no-ff", "--no-verify", "--no-edit", "-m", message, "--end-of-options", target], { cwd: dir });
   } catch (err) {
     const { stdout } = await execGit(["diff", "--name-only", "--diff-filter=U"], { cwd: dir }).catch(() => ({ stdout: "" }));
     const conflicts = stdout.split("\n").filter(Boolean);
@@ -54,4 +49,31 @@ export async function mergeNoFf(dir: string, branch: string, message: string): P
   }
   const { stdout } = await execGit(["rev-parse", "HEAD"], { cwd: dir });
   return { ok: true, sha: stdout.trim() };
+}
+
+/**
+ * Merge `branch` into the current branch of `dir` with a merge commit, skipping hooks.
+ * Accepts branch names only.
+ * On a conflict the merge is aborted, so the checkout is exactly as before.
+ */
+export async function mergeNoFf(dir: string, branch: string, message: string): Promise<MergeResult> {
+  await validateBranchName(branch, dir);
+  return runMerge(dir, branch, message);
+}
+
+/**
+ * Merge `sha` into the current branch of `dir` with a merge commit, skipping hooks.
+ * Accepts lowercase 40-character commit SHAs only.
+ * On a conflict the merge is aborted, so the checkout is exactly as before.
+ */
+export async function mergeCommitNoFf(dir: string, sha: string, message: string): Promise<MergeResult> {
+  if (typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) {
+    throw new GitError(`Invalid commit SHA '${sha}'`);
+  }
+  try {
+    await execGit(["rev-parse", "--verify", "--end-of-options", `${sha}^{commit}`], { cwd: dir });
+  } catch {
+    throw new GitError(`'${sha}' does not name a commit`);
+  }
+  return runMerge(dir, sha, message);
 }

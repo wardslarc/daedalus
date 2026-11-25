@@ -134,10 +134,15 @@ export default function ReviewPage() {
       setApproveSubmitting(true);
       setActionError(null);
       setActionSuccess(null);
-      const res = await postJson(`/api/projects/${id}/review/${selectedCode}/approve`);
+      const res = await postJson(`/api/projects/${id}/review/${selectedCode}/approve`, {
+        headSha: review?.headSha,
+      });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; sha?: string };
       if (!res.ok) {
         setActionError(body.error || "Approval failed.");
+        if (res.status === 409) {
+          await loadReview(selectedCode);
+        }
       } else {
         setActionSuccess(`Task ${selectedCode} approved and merged (commit ${body.sha?.slice(0, 8)}).`);
         await loadQueue();
@@ -161,10 +166,14 @@ export default function ReviewPage() {
       setActionSuccess(null);
       const res = await postJson(`/api/projects/${id}/review/${selectedCode}/send-back`, {
         notes: sendBackNotes.trim(),
+        headSha: review?.headSha,
       });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!res.ok) {
         setActionError(body.error || "Failed to send back task.");
+        if (res.status === 409) {
+          await loadReview(selectedCode);
+        }
       } else {
         setActionSuccess(`Task ${selectedCode} sent back with notes and requeued.`);
         setSendBackOpen(false);
@@ -184,11 +193,16 @@ export default function ReviewPage() {
       setDiscardStep("busy");
       setActionError(null);
       setActionSuccess(null);
-      const res = await postJson(`/api/projects/${id}/review/${selectedCode}/discard`);
+      const res = await postJson(`/api/projects/${id}/review/${selectedCode}/discard`, {
+        headSha: review?.headSha,
+      });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!res.ok) {
         setActionError(body.error || "Failed to discard task.");
         setDiscardStep("idle");
+        if (res.status === 409) {
+          await loadReview(selectedCode);
+        }
       } else {
         setActionSuccess(`Task ${selectedCode} discarded, branch deleted, and requeued.`);
         setDiscardStep("idle");
@@ -207,16 +221,22 @@ export default function ReviewPage() {
       setActionError("Acknowledgement note must be between 1 and 1000 characters.");
       return;
     }
+    const gate = review?.gates.find((g) => g.id === gateId);
     try {
       setAckSubmitting((prev) => ({ ...prev, [gateId]: true }));
       setActionError(null);
       const res = await postJson(`/api/projects/${id}/review/${selectedCode}/ack-gate`, {
         gateId,
         note,
+        headSha: review?.headSha,
+        fingerprint: gate?.fingerprint,
       });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!res.ok) {
         setActionError(body.error || `Failed to acknowledge gate ${gateId}.`);
+        if (res.status === 409) {
+          await loadReview(selectedCode);
+        }
       } else {
         setAckNotes((prev) => ({ ...prev, [gateId]: "" }));
         await loadReview(selectedCode);
@@ -251,9 +271,11 @@ export default function ReviewPage() {
   // Check locking conditions for Approve button
   const blockedGate = review?.gates.find((g) => g.status === "blocked");
   const unackedGate = review?.gates.find((g) => g.status === "needs-ack" && !g.ack);
-  const isApproveLocked = Boolean(blockedGate || unackedGate);
+  const isApproveLocked = Boolean(blockedGate || unackedGate || !review?.headSha);
   let lockReason = "";
-  if (blockedGate) {
+  if (!review?.headSha) {
+    lockReason = "Locked: task head commit cannot be resolved.";
+  } else if (blockedGate) {
     lockReason = `Locked: gate '${blockedGate.id}' is blocked (${blockedGate.items.join(", ") || "check failed"}).`;
   } else if (unackedGate) {
     lockReason = `Locked: gate '${unackedGate.id}' requires acknowledgement before approval.`;

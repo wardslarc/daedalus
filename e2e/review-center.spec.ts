@@ -145,16 +145,6 @@ Done when: Task passes.
         timeout: 30_000,
       });
 
-      // Acknowledge cross-review gate so task can be approved without running cross-review
-      const db2 = new DatabaseSync(join(E2E_DATA_DIR, "daedalus.db"), { timeout: 5000 });
-      const tRow = db2
-        .prepare("SELECT id FROM tasks WHERE project_id = ? AND code = ?")
-        .get(projectId, "T1.1") as { id: number };
-      db2
-        .prepare("INSERT INTO review_acks (task_id, gate, acked_at, note) VALUES (?, 'cross-review', ?, 'test ack')")
-        .run(tRow.id, new Date().toISOString());
-      db2.close();
-
       // Navigate to Review center
       await page.goto(`/projects/${projectId}/review`);
       await expect(page.getByRole("heading", { level: 1, name: "Review" })).toBeVisible();
@@ -168,6 +158,13 @@ Done when: Task passes.
       await expect(page.locator(".review-diff-pre")).toBeVisible();
       await expect(page.getByText("Check execution")).toBeVisible();
       await expect(page.getByText("Cross-review: comes in T6.2")).toBeVisible();
+
+      // Acknowledge cross-review gate so task can be approved without running cross-review
+      await page.locator("#ack-note-cross-review").fill("test ack");
+      await page.getByRole("button", { name: "Acknowledge gate" }).click();
+      await expect(
+        page.locator(".review-gate-card", { hasText: "Cross-review" }).getByText("Acknowledged"),
+      ).toBeVisible();
 
       // Approve button should be enabled (check passed, no secrets or dependencies touched)
       const approveBtn = page.getByRole("button", { name: "Approve & Merge" });
@@ -327,6 +324,123 @@ Done when: Both tasks pass.
         page.getByText("The reviewer changed files; its review was discarded."),
       ).toBeVisible();
       await expect(page.locator(".review-cross-review-status-line")).toContainText("tampered");
+    } finally {
+      deleteProject(projectId);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the page sends headSha/fingerprint when acknowledging gates and approving", async ({ page }) => {
+    const dir = fixtureRepo("review-center-pin");
+    const docsDir = join(dir, "docs");
+    mkdirSync(docsDir, { recursive: true });
+
+    writeFileSync(
+      join(docsDir, "INTAKE.md"),
+      "# Intake\n- **Problem:** Review pin test\n- **Users:** Dev\n- **Constraints:** None\n",
+      "utf8",
+    );
+    writeFileSync(
+      join(docsDir, "SPEC.md"),
+      "# Spec\n## Overview\nReview pin spec overview\n## Verify\nVerify item\n",
+      "utf8",
+    );
+    writeFileSync(
+      join(docsDir, "mock.html"),
+      "<!DOCTYPE html><html><body>Mock</body></html>",
+      "utf8",
+    );
+    writeFileSync(
+      join(docsDir, "PLAN.md"),
+      `# Plan
+## M1 — v1.0 Pin Release
+Done when: Task passes.
+- [ ] **T1.1 Review Pin Task** \`[claude]\` — [[SPEC#Overview]]
+  A task that succeeds and awaits review.
+  check: echo pass-pin-ok
+`,
+      "utf8",
+    );
+    git(dir, "add", ".");
+    git(dir, "commit", "-m", "add shaping docs");
+
+    await login(page);
+
+    const imp = await post(page, "/api/projects/import", {
+      source: dir,
+      profile: "personal",
+      name: "Review Pin Test",
+    });
+    expect(imp.status).toBe(201);
+    const projectId = (imp.json.project as { id: number }).id;
+
+    try {
+      // Record shaping approvals & start milestone
+      const db = new DatabaseSync(join(E2E_DATA_DIR, "daedalus.db"), { timeout: 5000 });
+      const now = new Date().toISOString();
+      db.prepare(
+        `INSERT OR REPLACE INTO shaping_state (project_id, spec_approved_at, mock_approved_at, mock_artifact_url, mock_approved_by, plan_approved_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(projectId, now, now, "https://example.com/mock", "Tester", now);
+      db.close();
+
+      const startRes = await post(page, `/api/projects/${projectId}/chat/start-milestone`, {
+        version: "v1.0",
+        milestoneCode: "M1",
+      });
+      expect(startRes.status).toBe(200);
+
+      // Run task to in-review
+      await page.goto(`/projects/${projectId}/pipeline`);
+      const card = page.locator('[data-testid="task-card-T1.1"]');
+      await expect(card).toBeVisible();
+      await card.getByRole("button", { name: "Run" }).click();
+
+      const inReviewColumn = page.locator(".pipeline-column", { hasText: "In review" });
+      await expect(inReviewColumn.locator('[data-testid="task-card-T1.1"]')).toBeVisible({
+        timeout: 30_000,
+      });
+
+      // Navigate to Review center
+      await page.goto(`/projects/${projectId}/review`);
+      await expect(page.getByRole("heading", { level: 1, name: "Review" })).toBeVisible();
+
+      // Intercept ack-gate POST to verify headSha and fingerprint are sent
+      let ackPayload: Record<string, unknown> | null = null;
+      await page.route("**/api/projects/*/review/*/ack-gate", async (route, req) => {
+        ackPayload = req.postDataJSON() as Record<string, unknown>;
+        await route.continue();
+      });
+
+      // Acknowledge the cross-review gate
+      await page.locator("#ack-note-cross-review").fill("Owner ack with pin verification");
+      await page.getByRole("button", { name: "Acknowledge gate" }).click();
+      await expect(
+        page.locator(".review-gate-card", { hasText: "Cross-review" }).getByText("Acknowledged"),
+      ).toBeVisible();
+
+      expect(ackPayload).not.toBeNull();
+      expect(ackPayload!["headSha"]).toMatch(/^[0-9a-f]{40}$/);
+      expect(ackPayload!["fingerprint"]).toMatch(/^[0-9a-f]{64}$/);
+
+      // Intercept approve POST to verify headSha is sent
+      let approvePayload: Record<string, unknown> | null = null;
+      await page.route("**/api/projects/*/review/*/approve", async (route, req) => {
+        approvePayload = req.postDataJSON() as Record<string, unknown>;
+        await route.continue();
+      });
+
+      const approveBtn = page.getByRole("button", { name: "Approve & Merge" });
+      await expect(approveBtn).toBeEnabled();
+      await approveBtn.click();
+
+      expect(approvePayload).not.toBeNull();
+      expect(approvePayload!["headSha"]).toBe(ackPayload!["headSha"]);
+
+      // Verify completion
+      await expect(page.getByText("Nothing waiting for review.")).toBeVisible({
+        timeout: 15_000,
+      });
     } finally {
       deleteProject(projectId);
       rmSync(dir, { recursive: true, force: true });

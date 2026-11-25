@@ -23,6 +23,8 @@ export async function POST(
     const body = await readJsonBody(req);
     const gateId = typeof body.gateId === "string" ? body.gateId.trim() : "";
     const note = typeof body.note === "string" ? body.note : "";
+    const headSha = typeof body.headSha === "string" ? body.headSha.trim() : "";
+    const fingerprint = typeof body.fingerprint === "string" ? body.fingerprint.trim() : "";
 
     if (!gateId) {
       throw new HttpError(400, "Gate ID is required.");
@@ -30,8 +32,14 @@ export async function POST(
     if (note.trim().length < 1 || note.length > 1000) {
       throw new HttpError(400, "Acknowledgement note must be between 1 and 1000 characters.");
     }
+    if (!/^[0-9a-f]{40}$/i.test(headSha)) {
+      throw new HttpError(400, "Valid 40-character hex headSha is required.");
+    }
+    if (!/^[0-9a-f]{64}$/i.test(fingerprint)) {
+      throw new HttpError(400, "Valid 64-character hex fingerprint is required.");
+    }
 
-    const result = await getServices().ackGate(Number(id), code, gateId, note);
+    const result = await getServices().ackGate(Number(id), code, gateId, note, headSha, fingerprint);
     return jsonResponse(200, { ok: true, ...result });
   } catch (err) {
     return toErrorResponse(err);
