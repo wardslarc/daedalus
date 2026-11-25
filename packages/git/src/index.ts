@@ -298,5 +298,11 @@ export async function deleteBranch(dir: string, name: string): Promise<void> {
 }
 
 export { addWorktreeForBranch, mergeCommitNoFf, mergeNoFf, statusPorcelain, worktreeForBranch, type MergeResult } from "./merge.js";
-export { execGit, execGitQuiet, type ExecGitOptions, type ExecGitResult } from "./exec.js";
+export {
+  execGit,
+  execGitQuiet,
+  resetRepoConfigCache,
+  type ExecGitOptions,
+  type ExecGitResult,
+} from "./exec.js";
 

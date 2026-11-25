@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   addDetachedWorktree,
   addWorktree,
@@ -33,6 +33,13 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
     return d;
   }
 
+  function makeGlobalConfig(): string {
+    const globalConfigFile = join(makeTemp("git-global-"), "global.gitconfig");
+    writeFileSync(globalConfigFile, "");
+    vi.stubEnv("GIT_CONFIG_GLOBAL", globalConfigFile);
+    return globalConfigFile;
+  }
+
   function repo(): { dir: string; markerFile: string } {
     const dir = makeTemp("git-sec-repo-");
     const markerFile = join(makeTemp("git-sec-marker-"), "marker.txt");
@@ -52,6 +59,7 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
   }
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     for (const d of dirsToCleanup) {
       try {
         rmSync(d, { recursive: true, force: true });
@@ -120,7 +128,8 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
     const fsmonitorScript = join(makeTemp("fsmon-"), "fsmonitor.sh");
     makeScript(fsmonitorScript, markerFile);
 
-    g(dir, "config", "core.fsmonitor", fsmonitorScript);
+    const globalConfig = makeGlobalConfig();
+    g(dir, "config", "--file", globalConfig, "core.fsmonitor", fsmonitorScript);
 
     const lines = await statusPorcelain(dir);
     expect(Array.isArray(lines)).toBe(true);
@@ -133,8 +142,9 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
     // If invoked, writes marker and fails
     makeScript(gpgScript, markerFile, "exit 1");
 
-    g(dir, "config", "commit.gpgSign", "true");
-    g(dir, "config", "gpg.program", gpgScript);
+    const globalConfig = makeGlobalConfig();
+    g(dir, "config", "--file", globalConfig, "commit.gpgSign", "true");
+    g(dir, "config", "--file", globalConfig, "gpg.program", gpgScript);
 
     writeFileSync(join(dir, "change.txt"), "new content\n");
     const sha = await commitAll(dir, "Commit without gpg");
@@ -156,10 +166,11 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
     g(dir, "add", ".gitattributes", "file.txt");
     g(dir, "commit", "-m", "add attributes and file");
 
-    g(dir, "config", "filter.evil.clean", filterScript);
-    g(dir, "config", "filter.evil.smudge", filterScript);
-    g(dir, "config", "filter.evil.process", filterScript);
-    g(dir, "config", "filter.evil.required", "true");
+    const globalConfig = makeGlobalConfig();
+    g(dir, "config", "--file", globalConfig, "filter.evil.clean", filterScript);
+    g(dir, "config", "--file", globalConfig, "filter.evil.smudge", filterScript);
+    g(dir, "config", "--file", globalConfig, "filter.evil.process", filterScript);
+    g(dir, "config", "--file", globalConfig, "filter.evil.required", "true");
 
     const wt = join(makeTemp("wt-filter-"), "wt");
     await addWorktree(dir, wt, { branch: "wt-filter", from: "main" });
@@ -190,9 +201,10 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
     g(dir, "add", ".gitattributes", "file.txt");
     g(dir, "commit", "-m", "add attributes and file");
 
-    g(dir, "config", "filter.custom.clean", filterScript);
-    g(dir, "config", "filter.custom.smudge", filterScript);
-    g(dir, "config", "filter.custom.process", filterScript);
+    const globalConfig = makeGlobalConfig();
+    g(dir, "config", "--file", globalConfig, "filter.custom.clean", filterScript);
+    g(dir, "config", "--file", globalConfig, "filter.custom.smudge", filterScript);
+    g(dir, "config", "--file", globalConfig, "filter.custom.process", filterScript);
 
     const wt = join(makeTemp("wt-spaces-"), "wt");
     await addWorktree(dir, wt, { branch: "wt-spaces", from: "main" });
@@ -220,8 +232,9 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
 
     // Value contains a newline and a pattern that would look like an invalid filter key if values were parsed
     const multilineValue = `${filterScript}\nfilter.x y.smudge ${filterScript}`;
-    g(dir, "config", "filter.custom.clean", multilineValue);
-    g(dir, "config", "filter.custom.smudge", multilineValue);
+    const globalConfig = makeGlobalConfig();
+    g(dir, "config", "--file", globalConfig, "filter.custom.clean", multilineValue);
+    g(dir, "config", "--file", globalConfig, "filter.custom.smudge", multilineValue);
 
     const wt = join(makeTemp("wt-nl-"), "wt");
     // Must not create a bogus name or be refused because of the value
@@ -243,7 +256,8 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
     const { dir } = repo();
 
     // Filter name with space
-    g(dir, "config", "filter.evil space.clean", "cat");
+    const globalConfig1 = makeGlobalConfig();
+    g(dir, "config", "--file", globalConfig1, "filter.evil space.clean", "cat");
     const wtSpace = join(makeTemp("wt-space-"), "wt-space");
     await expect(addWorktree(dir, wtSpace, { branch: "b-space", from: "main" })).rejects.toThrow(
       new GitError("Unsafe filter name in repo config"),
@@ -252,7 +266,8 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
 
     // Filter name with =
     const { dir: dir2 } = repo();
-    g(dir2, "config", "filter.evil=equal.clean", "cat");
+    const globalConfig2 = makeGlobalConfig();
+    g(dir2, "config", "--file", globalConfig2, "filter.evil=equal.clean", "cat");
     const wtEqual = join(makeTemp("wt-equal-"), "wt-equal");
     await expect(addWorktree(dir2, wtEqual, { branch: "b-equal", from: "main" })).rejects.toThrow(
       new GitError("Unsafe filter name in repo config"),
@@ -263,7 +278,8 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
   it("plain rev-parse call does not run git config --get-regexp (fast-path and observable counter)", async () => {
     const { dir } = repo();
     // Plant an unsafe filter name that would throw if config --get-regexp were run
-    g(dir, "config", "filter.unsafe name.clean", "cat");
+    const globalConfig = makeGlobalConfig();
+    g(dir, "config", "--file", globalConfig, "filter.unsafe name.clean", "cat");
 
     resetListingCounter();
     expect(listingCounter).toBe(0);
@@ -296,8 +312,9 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
     writeFileSync(join(dir, ".gitattributes"), "* merge=evil\n");
     g(dir, "add", ".gitattributes");
     g(dir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "attributes");
-    g(dir, "config", "merge.evil.driver", `${mergeScript} %O %A %B %L %P`);
-    g(dir, "config", "merge.evil.name", "evil merge driver");
+    const globalConfig = makeGlobalConfig();
+    g(dir, "config", "--file", globalConfig, "merge.evil.driver", `${mergeScript} %O %A %B %L %P`);
+    g(dir, "config", "--file", globalConfig, "merge.evil.name", "evil merge driver");
 
     // Create a branch with conflicting changes
     g(dir, "checkout", "-q", "-b", "conflict-branch");
@@ -337,8 +354,9 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
     g(dir, "add", ".gitattributes", "data.txt");
     g(dir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "add data");
 
-    g(dir, "config", "diff.evil.command", diffScript);
-    g(dir, "config", "diff.evil.textconv", textconvScript);
+    const globalConfig = makeGlobalConfig();
+    g(dir, "config", "--file", globalConfig, "diff.evil.command", diffScript);
+    g(dir, "config", "--file", globalConfig, "diff.evil.textconv", textconvScript);
 
     writeFileSync(join(dir, "data.txt"), "line two\n");
     g(dir, "-c", "core.hooksPath=/dev/null", "add", "data.txt");
@@ -371,9 +389,10 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
     g(dir, "add", ".gitattributes", "tracked.txt");
     g(dir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "add tracked");
 
-    g(dir, "config", "filter.evil.clean", filterScript);
-    g(dir, "config", "filter.evil.smudge", filterScript);
-    g(dir, "config", "filter.evil.required", "true");
+    const globalConfig = makeGlobalConfig();
+    g(dir, "config", "--file", globalConfig, "filter.evil.clean", filterScript);
+    g(dir, "config", "--file", globalConfig, "filter.evil.smudge", filterScript);
+    g(dir, "config", "--file", globalConfig, "filter.evil.required", "true");
 
     // Modify the file in the working tree
     writeFileSync(join(dir, "tracked.txt"), "modified in working tree\n");
@@ -395,8 +414,9 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
     g(dir, "add", ".gitattributes", "doc.txt");
     g(dir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "v1 commit");
 
-    g(dir, "config", "diff.evil.command", diffScript);
-    g(dir, "config", "diff.evil.textconv", textconvScript);
+    const globalConfig = makeGlobalConfig();
+    g(dir, "config", "--file", globalConfig, "diff.evil.command", diffScript);
+    g(dir, "config", "--file", globalConfig, "diff.evil.textconv", textconvScript);
 
     writeFileSync(join(dir, "doc.txt"), "version 2\n");
     g(dir, "-c", "core.hooksPath=/dev/null", "add", "doc.txt");
@@ -423,13 +443,15 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
 
   it("unsafe merge or diff driver name in repo config fails closed with GitError", async () => {
     const { dir } = repo();
-    g(dir, "config", "merge.evil driver.driver", "cat");
+    const globalConfig1 = makeGlobalConfig();
+    g(dir, "config", "--file", globalConfig1, "merge.evil driver.driver", "cat");
     await expect(execGit(["merge", "main"], { cwd: dir })).rejects.toThrow(
       new GitError("Unsafe filter name in repo config"),
     );
 
     const { dir: dir2 } = repo();
-    g(dir2, "config", "diff.evil=diff.command", "cat");
+    const globalConfig2 = makeGlobalConfig();
+    g(dir2, "config", "--file", globalConfig2, "diff.evil=diff.command", "cat");
     await expect(execGit(["diff", "HEAD"], { cwd: dir2 })).rejects.toThrow(
       new GitError("Unsafe filter name in repo config"),
     );
@@ -471,10 +493,11 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
     g(dir, "add", ".gitattributes", "file.txt");
     g(dir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "initial with dot filter");
 
-    g(dir, "config", "filter.a.b.clean", filterScript);
-    g(dir, "config", "filter.a.b.smudge", filterScript);
-    g(dir, "config", "filter.a.b.process", filterScript);
-    g(dir, "config", "filter.a.b.required", "true");
+    const globalConfig = makeGlobalConfig();
+    g(dir, "config", "--file", globalConfig, "filter.a.b.clean", filterScript);
+    g(dir, "config", "--file", globalConfig, "filter.a.b.smudge", filterScript);
+    g(dir, "config", "--file", globalConfig, "filter.a.b.process", filterScript);
+    g(dir, "config", "--file", globalConfig, "filter.a.b.required", "true");
 
     // worktree add checks out files -> smudge filter neutralized
     const wt = join(makeTemp("wt-dot-"), "wt");
@@ -522,8 +545,9 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
     ).trim();
     g(dir, "update-ref", "HEAD", newSha);
 
-    g(dir, "config", "log.showSignature", "true");
-    g(dir, "config", "gpg.program", gpgScript);
+    const globalConfig = makeGlobalConfig();
+    g(dir, "config", "--file", globalConfig, "log.showSignature", "true");
+    g(dir, "config", "--file", globalConfig, "gpg.program", gpgScript);
 
     await execGit(["log", "-1"], { cwd: dir });
     expect(existsSync(markerFile)).toBe(false);
@@ -647,7 +671,8 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
   it("repo config submodule.<name>.ignore=none (not in .gitmodules): statusPorcelain and diff HEAD leave no marker", async () => {
     const { superDir, subFile, markerFile, subName } = setupSubmoduleWithCleanFilter();
 
-    g(superDir, "config", `submodule.${subName}.ignore`, "none");
+    const globalConfig = makeGlobalConfig();
+    g(superDir, "config", "--file", globalConfig, `submodule.${subName}.ignore`, "none");
 
     const future = new Date(Date.now() + 10_000);
     utimesSync(subFile, future, future);

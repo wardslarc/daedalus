@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { GitError, stripUserInfo } from "./error.js";
 
@@ -118,7 +119,7 @@ export function findSubcommandIndex(args: string[]): number {
       break;
     }
   }
-  if (idx < args.length && args[idx] !== "--" && args[idx] !== "--end-of-options") {
+  if (idx < args.length && !args[idx]!.startsWith("-")) {
     return idx;
   }
   return -1;
@@ -218,7 +219,364 @@ function validateCallerConfig(configStr: string): void {
   }
 }
 
+const NO_SUBSECTION_ALLOWED: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  [
+    "core",
+    new Set([
+      "repositoryformatversion",
+      "filemode",
+      "bare",
+      "logallrefupdates",
+      "ignorecase",
+      "precomposeunicode",
+      "symlinks",
+      "autocrlf",
+      "eol",
+      "safecrlf",
+      "quotepath",
+      "abbrev",
+      "longpaths",
+    ]),
+  ],
+  ["extensions", new Set(["worktreeconfig", "objectformat"])],
+  ["user", new Set(["name", "email"])],
+  ["init", new Set(["defaultbranch"])],
+  ["pull", new Set(["rebase", "ff"])],
+  ["push", new Set(["default", "autosetupremote"])],
+  ["fetch", new Set(["prune"])],
+  ["merge", new Set(["ff", "conflictstyle"])],
+  ["diff", new Set(["renames", "algorithm", "noprefix", "mnemonicprefix"])],
+  ["status", new Set(["showuntrackedfiles"])],
+]);
+
+const SUBSECTION_ALLOWED: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  [
+    "branch",
+    new Set([
+      "remote",
+      "merge",
+      "rebase",
+      "pushremote",
+      "description",
+      "vscode-merge-base",
+    ]),
+  ],
+  ["remote", new Set(["url", "pushurl", "fetch", "tagopt", "prune"])],
+  ["submodule", new Set(["url", "active", "branch"])],
+]);
+
+export function isConfigKeyAllowed(rawKey: string): boolean {
+  const firstDot = rawKey.indexOf(".");
+  const lastDot = rawKey.lastIndexOf(".");
+  if (firstDot === -1 || firstDot === 0 || lastDot === rawKey.length - 1) {
+    return false;
+  }
+
+  const section = rawKey.slice(0, firstDot).toLowerCase();
+  const variable = rawKey.slice(lastDot + 1).toLowerCase();
+
+  // color.<any> = section color, any subsection/variable
+  if (section === "color") {
+    return true;
+  }
+
+  const hasSubsection = firstDot !== lastDot;
+  if (!hasSubsection) {
+    const allowedVars = NO_SUBSECTION_ALLOWED.get(section);
+    return allowedVars !== undefined && allowedVars.has(variable);
+  }
+
+  const subsection = rawKey.slice(firstDot + 1, lastDot);
+  if (!subsection) {
+    return false;
+  }
+
+  const allowedVars = SUBSECTION_ALLOWED.get(section);
+  return allowedVars !== undefined && allowedVars.has(variable);
+}
+
+export interface RepoConfigCacheEntry {
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  sha256: string;
+}
+
+const repoConfigCache = new Map<string, RepoConfigCacheEntry>();
+const repoCheckedFiles = new Map<string, string[]>();
+
+type PostListingHook = () => void | Promise<void>;
+let postListingHookForTest: PostListingHook | null = null;
+
+export function setPostListingHookForTest(hook: PostListingHook | null): void {
+  postListingHookForTest = hook;
+}
+
+export function resetRepoConfigCache(): void {
+  repoConfigCache.clear();
+  repoCheckedFiles.clear();
+  postListingHookForTest = null;
+}
+
+function getFileSnapshot(filePath: string): RepoConfigCacheEntry | null {
+  try {
+    const st = statSync(filePath);
+    if (!st.isFile()) return null;
+    const content = readFileSync(filePath);
+    const sha256 = createHash("sha256").update(content).digest("hex");
+    return {
+      ino: st.ino,
+      size: st.size,
+      mtimeMs: st.mtimeMs,
+      sha256,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function snapshotsMatch(a: RepoConfigCacheEntry | null, b: RepoConfigCacheEntry | null): boolean {
+  if (!a || !b) return false;
+  return a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.sha256 === b.sha256;
+}
+
+export async function checkRepoConfigAllowed(
+  cwd: string,
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  timeoutMs?: number,
+  maxBuffer?: number,
+): Promise<void> {
+  const timeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const bufferLimit = maxBuffer ?? 10 * 1024 * 1024;
+  const processEnv = {
+    ...process.env,
+    ...env,
+    GIT_TERMINAL_PROMPT: "0",
+  };
+
+  let commonDir: string;
+  let gitDir: string;
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      [...BASE_CONFIG_ARGS, "rev-parse", "--git-common-dir", "--git-dir"],
+      { cwd, timeout, maxBuffer: bufferLimit, env: processEnv },
+    );
+    const lines = stdout.trim().split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (lines.length < 2) {
+      throw new GitError("Unexpected output from git rev-parse --git-common-dir --git-dir");
+    }
+    commonDir = resolve(cwd, lines[0]!);
+    gitDir = resolve(cwd, lines[1]!);
+  } catch (err: unknown) {
+    if (err instanceof GitError) {
+      throw err;
+    }
+    const nodeErr = err as {
+      code?: number | string;
+      status?: number;
+      stderr?: string;
+      message?: string;
+    };
+    const exitCode = typeof nodeErr.code === "number" ? nodeErr.code : (nodeErr.status ?? null);
+    const rawStderr = typeof nodeErr.stderr === "string" ? nodeErr.stderr : "";
+    const cleanStderr = stripUserInfo(rawStderr.trim().slice(0, 2048));
+    if (exitCode === 128 && cleanStderr.toLowerCase().includes("not a git repository")) {
+      return;
+    }
+    const cleanMsg = cleanStderr || stripUserInfo(nodeErr.message ?? "git rev-parse failed");
+    throw new GitError(cleanMsg, { exitCode, stderr: cleanStderr });
+  }
+
+  const commonConfigFile = join(commonDir, "config");
+  const worktreeConfigFile = join(gitDir, "config.worktree");
+
+  // Check cache hit
+  const checkedFiles = repoCheckedFiles.get(gitDir);
+  if (checkedFiles && checkedFiles.length > 0) {
+    let hit = true;
+    for (const filePath of checkedFiles) {
+      const cached = repoConfigCache.get(filePath);
+      if (!cached) {
+        hit = false;
+        break;
+      }
+      try {
+        const st = statSync(filePath);
+        if (!st.isFile()) {
+          hit = false;
+          break;
+        }
+        if (st.ino !== cached.ino || st.size !== cached.size || st.mtimeMs !== cached.mtimeMs) {
+          hit = false;
+          break;
+        }
+        const content = readFileSync(filePath);
+        const hash = createHash("sha256").update(content).digest("hex");
+        if (hash !== cached.sha256) {
+          hit = false;
+          break;
+        }
+      } catch {
+        hit = false;
+        break;
+      }
+    }
+
+    if (hit && !checkedFiles.includes(worktreeConfigFile) && existsSync(worktreeConfigFile)) {
+      hit = false;
+    }
+
+    if (hit) {
+      return;
+    }
+  }
+
+  // Cache miss: take before-listing snapshot of config files
+  const beforeCommon = getFileSnapshot(commonConfigFile);
+  const beforeWorktree = getFileSnapshot(worktreeConfigFile);
+
+  // List local config keys
+  let localStdout: string;
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      [...BASE_CONFIG_ARGS, "config", "--no-includes", "--local", "-z", "--name-only", "--list"],
+      { cwd, timeout, maxBuffer: bufferLimit, env: processEnv },
+    );
+    localStdout = stdout;
+  } catch (err: unknown) {
+    const nodeErr = err as {
+      code?: number | string;
+      status?: number;
+      stderr?: string;
+      message?: string;
+    };
+    const exitCode = typeof nodeErr.code === "number" ? nodeErr.code : (nodeErr.status ?? null);
+    const rawStderr = typeof nodeErr.stderr === "string" ? nodeErr.stderr : "";
+    const cleanStderr = stripUserInfo(rawStderr.trim().slice(0, 2048));
+    const hasStderr = rawStderr.trim().length > 0;
+    if (exitCode === 1 && !hasStderr) {
+      localStdout = "";
+    } else {
+      const cleanMsg = cleanStderr || stripUserInfo(nodeErr.message ?? "git config --local failed");
+      throw new GitError(cleanMsg, { exitCode, stderr: cleanStderr });
+    }
+  }
+
+  const localKeys = localStdout ? localStdout.split("\0").filter(Boolean) : [];
+
+  let hasWorktreeConfig = false;
+  for (const k of localKeys) {
+    const firstDot = k.indexOf(".");
+    const lastDot = k.lastIndexOf(".");
+    if (firstDot !== -1) {
+      const sec = k.slice(0, firstDot).toLowerCase();
+      const vr = k.slice(lastDot + 1).toLowerCase();
+      if (sec === "extensions" && vr === "worktreeconfig") {
+        hasWorktreeConfig = true;
+        break;
+      }
+    }
+  }
+
+  let worktreeKeys: string[] = [];
+  if (hasWorktreeConfig) {
+    let worktreeStdout: string;
+    try {
+      const { stdout } = await execFileAsync(
+        "git",
+        [...BASE_CONFIG_ARGS, "config", "--no-includes", "--worktree", "-z", "--name-only", "--list"],
+        { cwd, timeout, maxBuffer: bufferLimit, env: processEnv },
+      );
+      worktreeStdout = stdout;
+    } catch (err: unknown) {
+      const nodeErr = err as {
+        code?: number | string;
+        status?: number;
+        stderr?: string;
+        message?: string;
+      };
+      const exitCode = typeof nodeErr.code === "number" ? nodeErr.code : (nodeErr.status ?? null);
+      const rawStderr = typeof nodeErr.stderr === "string" ? nodeErr.stderr : "";
+      const cleanStderr = stripUserInfo(rawStderr.trim().slice(0, 2048));
+      const hasStderr = rawStderr.trim().length > 0;
+      if (exitCode === 1 && !hasStderr) {
+        worktreeStdout = "";
+      } else {
+        const cleanMsg = cleanStderr || stripUserInfo(nodeErr.message ?? "git config --worktree failed");
+        throw new GitError(cleanMsg, { exitCode, stderr: cleanStderr });
+      }
+    }
+    worktreeKeys = worktreeStdout ? worktreeStdout.split("\0").filter(Boolean) : [];
+  }
+
+  // Hook for testing race condition between listing and post-listing hash
+  if (postListingHookForTest) {
+    await postListingHookForTest();
+  }
+
+  const allKeys = [...localKeys, ...worktreeKeys];
+  for (const key of allKeys) {
+    if (!isConfigKeyAllowed(key)) {
+      throw new GitError(
+        `Repo config has '${key}', which Daedalus doesn't allow (ADR 0023). Remove it with \`git config --unset ${key}\`, or ask for it to be added.`
+      );
+    }
+  }
+
+  // Verify that config files did not change between before-listing and after-listing.
+  // Cache only if both match; otherwise do not cache (re-list next call).
+  const afterCommon = getFileSnapshot(commonConfigFile);
+  const afterWorktree = hasWorktreeConfig ? getFileSnapshot(worktreeConfigFile) : null;
+
+  const filesToCache: Array<{ path: string; snapshot: RepoConfigCacheEntry }> = [];
+
+  if (beforeCommon || afterCommon) {
+    if (!snapshotsMatch(beforeCommon, afterCommon)) {
+      return;
+    }
+    if (afterCommon) {
+      filesToCache.push({ path: commonConfigFile, snapshot: afterCommon });
+    }
+  }
+
+  if (hasWorktreeConfig && (beforeWorktree || afterWorktree)) {
+    if (!snapshotsMatch(beforeWorktree, afterWorktree)) {
+      return;
+    }
+    if (afterWorktree) {
+      filesToCache.push({ path: worktreeConfigFile, snapshot: afterWorktree });
+    }
+  }
+
+  const filesActuallyRead: string[] = [];
+  for (const { path, snapshot } of filesToCache) {
+    repoConfigCache.set(path, snapshot);
+    filesActuallyRead.push(path);
+  }
+  repoCheckedFiles.set(gitDir, filesActuallyRead);
+}
+
+const DISALLOWED_ENV_VARS: ReadonlySet<string> = new Set([
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_CONFIG",
+  "GIT_CONFIG_PARAMETERS",
+  "GIT_CONFIG_COUNT",
+]);
+
 export async function execGit(args: string[], options: ExecGitOptions): Promise<ExecGitResult> {
+  // Disallowed git environment variables in options.env
+  if (options.env) {
+    for (const [key, value] of Object.entries(options.env)) {
+      if (value !== undefined && DISALLOWED_ENV_VARS.has(key)) {
+        throw new GitError("Daedalus doesn't pass git global options other than -c");
+      }
+    }
+  }
+
   // Scan up to first '--' or '--end-of-options' (those and everything after are never inspected)
   let scanLimit = args.length;
   for (let i = 0; i < args.length; i++) {
@@ -239,14 +597,11 @@ export async function execGit(args: string[], options: ExecGitOptions): Promise<
   }
 
   // Caller config: -c <key>=<value> pairs and joined -c<key>=<value>, anywhere before the subcommand
-  const subcommandIdx = findSubcommandIndex(args);
-  const configLimit = subcommandIdx !== -1 ? Math.min(subcommandIdx, scanLimit) : scanLimit;
-
   let cIdx = 0;
-  while (cIdx < configLimit) {
+  while (cIdx < args.length) {
     const arg = args[cIdx]!;
     if (arg === "-c") {
-      if (cIdx + 1 >= scanLimit) {
+      if (cIdx + 1 >= args.length) {
         throw new GitError("Missing argument for -c flag");
       }
       validateCallerConfig(args[cIdx + 1]!);
@@ -255,9 +610,17 @@ export async function execGit(args: string[], options: ExecGitOptions): Promise<
       validateCallerConfig(arg.slice(2));
       cIdx += 1;
     } else {
-      cIdx += 1;
+      break;
     }
   }
+
+  // If any arg before the subcommand is not -c <kv> / -c<kv> -> throw GitError
+  if (cIdx < args.length && args[cIdx]!.startsWith("-")) {
+    throw new GitError("Daedalus doesn't pass git global options other than -c");
+  }
+
+  const subcommandIdx = cIdx < args.length ? cIdx : -1;
+  const subcommand = subcommandIdx !== -1 ? args[subcommandIdx] : undefined;
 
   const timeout = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxBuffer = options.maxBuffer ?? 10 * 1024 * 1024;
@@ -268,8 +631,10 @@ export async function execGit(args: string[], options: ExecGitOptions): Promise<
   };
 
   try {
-    const subcommandIdx = findSubcommandIndex(args);
-    const subcommand = subcommandIdx !== -1 ? args[subcommandIdx] : undefined;
+    if (subcommand !== "init" && subcommand !== "clone" && subcommand !== "ls-remote") {
+      await checkRepoConfigAllowed(options.cwd, env, timeout, maxBuffer);
+    }
+
     const driverArgs: string[] = [];
 
     const shouldRunListing = !subcommand || !SKIP_LISTING_SUBCOMMANDS.has(subcommand);
