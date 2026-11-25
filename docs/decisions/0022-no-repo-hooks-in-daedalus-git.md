@@ -32,8 +32,11 @@
     cherry-pick, stash, checkout -m) and `diff.<name>.command` / `diff.<name>.textconv` (run on diff, show, log -p,
     blame). One listing call, `git config -z --name-only --get-regexp '^(filter|merge|diff)\.'`, collects the
     names; each gets `filter.<n>.process= clean=cat smudge=cat required=false`, `merge.<n>.driver=false` (a custom
-    merge always conflicts instead of running a program: fail closed) and `diff.<n>.command= diff.<n>.textconv=cat`.
-    Globally also `-c diff.external= -c core.editor=true -c sequence.editor=true`.
+    merge always conflicts instead of running a program: fail closed) and `diff.<n>.textconv=cat`. An empty
+    `diff.<n>.command=` is not used: git then tries to run an empty program and every diff fails (checked by
+    hand). Instead, for `diff, log, show, blame, format-patch`, `execGit` inserts `--no-ext-diff --no-textconv`
+    (blame: `--no-textconv` only) right after the subcommand, as review diffs already do. Globally also
+    `-c core.editor=true -c sequence.editor=true`.
   - Subcommands: the listing and overrides apply to **every** call except object-only ones that never read
     the working tree or run drivers: `rev-parse, show-ref, check-ref-format, for-each-ref, cat-file, rev-list,
     merge-base, symbolic-ref, config, ls-remote, init, clone` (the last three run before or without a repo). An
