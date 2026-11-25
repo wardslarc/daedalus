@@ -16,6 +16,7 @@ import {
 } from "../src/index.js";
 import {
   findSubcommand,
+  lastSubmoduleNames,
   listingCounter,
   resetListingCounter,
   SKIP_LISTING_SUBCOMMANDS,
@@ -705,5 +706,247 @@ describe("Daedalus git calls never run programs named in repo config (ADR 0022)"
     await expect(
       execGit(["diff", "--ignore-submodules=untracked", "HEAD"], { cwd: dir }),
     ).rejects.toThrow(GitError);
+  });
+
+  it("work-tree .gitmodules deleted, index and HEAD have submodule.<name>.ignore = none: leaves no marker and collects submodule name", async () => {
+    const { superDir, subFile, markerFile, subName } = setupSubmoduleWithCleanFilter();
+
+    g(superDir, "config", "--file", ".gitmodules", `submodule.${subName}.ignore`, "none");
+    g(superDir, "add", ".gitmodules");
+    g(superDir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "set ignore=none in .gitmodules");
+
+    // Delete work-tree .gitmodules
+    rmSync(join(superDir, ".gitmodules"));
+
+    const future = new Date(Date.now() + 10_000);
+    utimesSync(subFile, future, future);
+
+    resetListingCounter();
+    await execGit(["checkout", "--", "."], { cwd: superDir });
+
+    expect(existsSync(markerFile)).toBe(false);
+    expect(lastSubmoduleNames.has(subName)).toBe(true);
+
+    const future2 = new Date(Date.now() + 20_000);
+    utimesSync(subFile, future2, future2);
+    await execGit(["reset", "--hard"], { cwd: superDir });
+    expect(existsSync(markerFile)).toBe(false);
+  });
+
+  it("caller passes --ignore-sub=none throws GitError; diff with --ignore-submodules=dirty succeeds", async () => {
+    const { superDir } = setupSubmoduleWithCleanFilter();
+
+    await expect(
+      execGit(["status", "--ignore-sub=none"], { cwd: superDir }),
+    ).rejects.toThrow(GitError);
+
+    await expect(
+      execGit(["diff", "--ignore-submodules=dirty"], { cwd: superDir }),
+    ).resolves.not.toThrow();
+  });
+
+  it("caller config -c: security-sensitive keys rejected with GitError, diff.external= empty allowed", async () => {
+    const { dir } = repo();
+
+    await expect(
+      execGit(["-c", "core.hooksPath=/tmp/x", "status"], { cwd: dir }),
+    ).rejects.toThrow(GitError);
+
+    await expect(
+      execGit(["-ccore.hooksPath=/tmp/x", "status"], { cwd: dir }),
+    ).rejects.toThrow(GitError);
+
+    await expect(
+      execGit(["-c", "diff.external=", "status"], { cwd: dir }),
+    ).resolves.not.toThrow();
+
+    await expect(
+      execGit(["-c", "diff.external=/tmp/x", "status"], { cwd: dir }),
+    ).rejects.toThrow(GitError);
+
+    await expect(
+      execGit(["-c", "SUBMODULE.c.ignore=none", "status"], { cwd: dir }),
+    ).rejects.toThrow(GitError);
+  });
+
+  it("a path literally named --ignore-sub=none after -- is allowed", async () => {
+    const { dir } = repo();
+    const weirdFile = join(dir, "--ignore-sub=none");
+    writeFileSync(weirdFile, "content\n");
+
+    await expect(
+      execGit(["add", "--", "--ignore-sub=none"], { cwd: dir }),
+    ).resolves.not.toThrow();
+
+    await expect(
+      execGit(["checkout", "--", "--ignore-sub=none"], { cwd: dir }),
+    ).resolves.not.toThrow();
+  });
+
+  it("repo without .gitmodules in index, HEAD, or work-tree: execGit succeeds without error", async () => {
+    const { dir } = repo();
+    resetListingCounter();
+    const res = await execGit(["status", "--porcelain"], { cwd: dir });
+    expect(res.stdout).toBe("");
+    expect(lastSubmoduleNames.size).toBe(0);
+  });
+
+  it("unborn branch with no commits: execGit succeeds without error", async () => {
+    const dir = makeTemp("git-unborn-");
+    g(dir, "init", "--initial-branch=main");
+    resetListingCounter();
+    const res = await execGit(["status", "--porcelain"], { cwd: dir });
+    expect(res.stdout).toBe("");
+    expect(lastSubmoduleNames.size).toBe(0);
+  });
+
+  it("submodule only in index (not in HEAD or worktree): collects submodule name from :.gitmodules", async () => {
+    const { superDir, subFile, markerFile, subName } = setupSubmoduleWithCleanFilter();
+
+    // Stage ignore=none in .gitmodules but do not commit it to HEAD
+    g(superDir, "config", "--file", ".gitmodules", `submodule.${subName}.ignore`, "none");
+    g(superDir, "add", ".gitmodules");
+    // Remove from worktree so it only exists in index
+    rmSync(join(superDir, ".gitmodules"));
+
+    const future = new Date(Date.now() + 10_000);
+    utimesSync(subFile, future, future);
+
+    resetListingCounter();
+    await execGit(["checkout", "--", "."], { cwd: superDir });
+    expect(lastSubmoduleNames.has(subName)).toBe(true);
+    expect(existsSync(markerFile)).toBe(false);
+  });
+
+  it("submodule only in HEAD (not in index or worktree): collects submodule name from HEAD:.gitmodules", async () => {
+    const { superDir, subFile, markerFile, subName } = setupSubmoduleWithCleanFilter();
+
+    g(superDir, "config", "--file", ".gitmodules", `submodule.${subName}.ignore`, "none");
+    g(superDir, "add", ".gitmodules");
+    g(superDir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "commit .gitmodules to HEAD");
+
+    // Remove .gitmodules from index and worktree
+    g(superDir, "rm", ".gitmodules");
+
+    const future = new Date(Date.now() + 10_000);
+    utimesSync(subFile, future, future);
+
+    resetListingCounter();
+    await execGit(["checkout", "--", "."], { cwd: superDir });
+    expect(lastSubmoduleNames.has(subName)).toBe(true);
+    expect(existsSync(markerFile)).toBe(false);
+  });
+
+  it("conflicted .gitmodules in index: collects submodule names from conflicting stages 1-3", async () => {
+    const { dir } = repo();
+
+    // Create branch-a with .gitmodules having submodule "sub-side-a"
+    g(dir, "checkout", "-q", "-b", "branch-a");
+    writeFileSync(
+      join(dir, ".gitmodules"),
+      '[submodule "sub-side-a"]\n\tpath = sub-side-a\n\turl = https://example.com/sub-side-a\n',
+    );
+    g(dir, "-c", "core.hooksPath=/dev/null", "add", ".gitmodules");
+    g(dir, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "add sub-side-a on branch-a");
+
+    // Create branch-b from main with conflicting .gitmodules having submodule "sub-side-b" with ignore = none
+    g(dir, "checkout", "-q", "main");
+    g(dir, "checkout", "-q", "-b", "branch-b");
+    writeFileSync(
+      join(dir, ".gitmodules"),
+      '[submodule "sub-side-b"]\n\tpath = sub-side-b\n\turl = https://example.com/sub-side-b\n\tignore = none\n',
+    );
+    g(dir, "-c", "core.hooksPath=/dev/null", "add", ".gitmodules");
+    g(dir, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "add sub-side-b on branch-b");
+
+    // Checkout branch-a and merge branch-b to create conflict on .gitmodules
+    g(dir, "checkout", "-q", "branch-a");
+    try {
+      execFileSync("git", ["merge", "--no-ff", "branch-b"], { cwd: dir, stdio: "ignore" });
+    } catch {
+      // Expected merge conflict
+    }
+
+    try {
+      // Work-tree .gitmodules replaced by a file without sub-side-b
+      writeFileSync(
+        join(dir, ".gitmodules"),
+        '[submodule "unrelated"]\n\tpath = unrelated\n\turl = https://example.com/unrelated\n',
+      );
+
+      resetListingCounter();
+      // Run status command which triggers driver and submodule discovery
+      await execGit(["status", "--porcelain"], { cwd: dir });
+
+      // The collected names include sub-side-b from stage 3
+      expect(lastSubmoduleNames.has("sub-side-b")).toBe(true);
+      expect(lastSubmoduleNames.has("sub-side-a")).toBe(true);
+      expect(lastSubmoduleNames.has("unrelated")).toBe(true);
+    } finally {
+      // Abort the merge in the test cleanup
+      try {
+        g(dir, "merge", "--abort");
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  it("corrupt .gitmodules in work tree: throws GitError and nothing is run", async () => {
+    const { superDir, markerFile } = setupSubmoduleWithCleanFilter();
+
+    // Plant corrupt .gitmodules in the work tree
+    writeFileSync(join(superDir, ".gitmodules"), '[submodule "c"\n');
+
+    await expect(
+      execGit(["checkout", "--", "."], { cwd: superDir }),
+    ).rejects.toThrow(GitError);
+
+    // Assert that the command did not execute anything
+    expect(existsSync(markerFile)).toBe(false);
+  });
+
+  it("corrupt .gitmodules in work tree: execGit status throws GitError", async () => {
+    const { dir } = repo();
+    writeFileSync(join(dir, ".gitmodules"), '[submodule "c"\n');
+
+    await expect(
+      execGit(["status"], { cwd: dir }),
+    ).rejects.toThrow(GitError);
+  });
+
+  it("corrupt .gitmodules in index blob: throws GitError and nothing is run", async () => {
+    const { superDir, markerFile } = setupSubmoduleWithCleanFilter();
+
+    // Remove work-tree .gitmodules
+    rmSync(join(superDir, ".gitmodules"));
+
+    // Hash a corrupt .gitmodules blob and put it into index stage 0
+    const corruptSha = execFileSync("git", ["hash-object", "-w", "--stdin"], {
+      cwd: superDir,
+      input: '[submodule "c"\n',
+      encoding: "utf8",
+    }).trim();
+    g(superDir, "update-index", "--add", "--cacheinfo", "100644", corruptSha, ".gitmodules");
+
+    await expect(
+      execGit(["checkout", "--", "."], { cwd: superDir }),
+    ).rejects.toThrow(GitError);
+
+    expect(existsSync(markerFile)).toBe(false);
+  });
+
+  it("corrupt repo config: driver listing throws GitError and nothing is run", async () => {
+    const { superDir, markerFile } = setupSubmoduleWithCleanFilter();
+
+    // Corrupt .git/config
+    const configPath = join(superDir, ".git", "config");
+    writeFileSync(configPath, '[filter "c"\n', { flag: "a" });
+
+    await expect(
+      execGit(["checkout", "--", "."], { cwd: superDir }),
+    ).rejects.toThrow(GitError);
+
+    expect(existsSync(markerFile)).toBe(false);
   });
 });
