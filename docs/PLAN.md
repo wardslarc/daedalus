@@ -226,7 +226,7 @@ Status changes go through the T5.2 state machine; review and gate records are se
   project's app in a recorded Chromium window (screenshots, video, Playwright trace) and the owner marks each item
   pass or fail with a note. Fail → bug (fix task) or change (change request), chosen by the owner.
   check: unit + e2e tests — a failed item adds a frozen fix task to the milestone; the trace and screenshots are saved under the data folder
-- [ ] **T6.5 Saved UAT scripts and replay** `[gemini]` — [[SPEC#Release gate]]
+- [x] **T6.5 Saved UAT scripts and replay** `[gemini]` — [[SPEC#Release gate]]
   Accepting a UAT item saves its recording as a Playwright codegen script in the project. Every later release
   replays all saved scripts before manual UAT; a failing script blocks Ship and becomes a fix task.
   check: e2e — an accepted item's script is saved and replayed on the next release; a broken script blocks the gate

@@ -342,6 +342,9 @@ importers:
       '@daedalus/providers':
         specifier: workspace:*
         version: link:../providers
+      '@playwright/test':
+        specifier: 1.65.1
+        version: 1.65.1
       drizzle-orm:
         specifier: 0.45.4
         version: 0.45.4(@types/better-sqlite3@9.6.0)(better-sqlite3@13.2.0)

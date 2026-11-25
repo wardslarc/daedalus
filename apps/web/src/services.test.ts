@@ -1,12 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { projects, tasks } from "@daedalus/db";
+import { openDb, projects, tasks } from "@daedalus/db";
 import { closeServices, initServices } from "./init-services.js";
 import { getServices } from "./services.js";
+import { isE2eTempDataDir, resolveUatDeps } from "./uat-e2e-fakes.js";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
@@ -677,6 +678,96 @@ describe("services: project chat and intake", () => {
       const json = (await res.json()) as { error?: string };
       expect(json.error).toMatch(/SPEC\.md/i);
     });
+  });
+});
+
+describe("services: DAE_UAT_FAKE guard", () => {
+  const createdDirs: string[] = [];
+
+  afterEach(async () => {
+    delete process.env.DAE_UAT_FAKE;
+    vi.restoreAllMocks();
+    await closeServices();
+    for (const d of createdDirs.splice(0)) {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores DAE_UAT_FAKE=1 for a non-temp data dir and warns once", async () => {
+    process.env.DAE_UAT_FAKE = "1";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    // Genuine non-temp path (outside os.tmpdir()) -> fail closed, real deps
+    const memDb = openDb(":memory:");
+    try {
+      expect(isE2eTempDataDir(process.cwd())).toBe(false);
+      const directDeps = resolveUatDeps(memDb, process.cwd());
+      expect(directDeps).toEqual({ db: memDb, dataDir: process.cwd() });
+      expect(directDeps.processRunner).toBeUndefined();
+      expect(directDeps.replayRunner).toBeUndefined();
+      expect(directDeps.codegenRunner).toBeUndefined();
+      expect(directDeps.browserLauncher).toBeUndefined();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0]?.[0]).toMatch(/Ignoring DAE_UAT_FAKE=1/i);
+    } finally {
+      memDb.$client.close();
+    }
+
+    warnSpy.mockClear();
+
+    // Nested folder named dae-e2e-x (not directly inside os.tmpdir()) via initServices -> real deps
+    const parentDir = mkdtempSync(join(tmpdir(), "svc-nontemp-"));
+    createdDirs.push(parentDir);
+    const nestedDir = join(parentDir, "dae-e2e-x");
+    const s = initServices({ dataDir: nestedDir, repoRoot: "/srv/daedalus" });
+    expect(s.uatDeps?.processRunner).toBeUndefined();
+    expect(s.uatDeps?.portProbe).toBeUndefined();
+    expect(s.uatDeps?.urlProbe).toBeUndefined();
+    expect(s.uatDeps?.browserLauncher).toBeUndefined();
+    expect(s.uatDeps?.codegenRunner).toBeUndefined();
+    expect(s.uatDeps?.replayRunner).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0]?.[0]).toMatch(/Ignoring DAE_UAT_FAKE=1/i);
+  });
+
+  it("ignores DAE_UAT_FAKE=1 for wrong prefix or symlinked dae-e2e-* pointing elsewhere", () => {
+    process.env.DAE_UAT_FAKE = "1";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    // Directly in tmpdir() without dae-e2e- prefix
+    const plainTmp = mkdtempSync(join(tmpdir(), "svc-plain-"));
+    createdDirs.push(plainTmp);
+    const s = initServices({ dataDir: plainTmp, repoRoot: "/srv/daedalus" });
+    expect(s.uatDeps?.replayRunner).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+
+    // Symlink in tmpdir() named dae-e2e-* targeting plainTmp -> realpathSync resolves outside dae-e2e-*
+    const symlinkPath = join(tmpdir(), `dae-e2e-sym-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    symlinkSync(plainTmp, symlinkPath);
+    createdDirs.push(symlinkPath);
+    expect(isE2eTempDataDir(symlinkPath)).toBe(false);
+  });
+
+  it("honours DAE_UAT_FAKE=1 when dataDir is directly inside tmpdir() with dae-e2e- prefix and warns once", () => {
+    process.env.DAE_UAT_FAKE = "1";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const e2eDir = mkdtempSync(join(tmpdir(), "dae-e2e-x-"));
+    createdDirs.push(e2eDir);
+
+    const s = initServices({ dataDir: e2eDir, repoRoot: "/srv/daedalus" });
+    expect(s.uatDeps?.processRunner).toBeTypeOf("function");
+    expect(s.uatDeps?.portProbe).toBeTypeOf("function");
+    expect(s.uatDeps?.urlProbe).toBeTypeOf("function");
+    expect(s.uatDeps?.browserLauncher).toBeTypeOf("function");
+    expect(s.uatDeps?.codegenRunner).toBeTypeOf("function");
+    expect(s.uatDeps?.replayRunner).toBeTypeOf("function");
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0]?.[0]).toMatch(/UAT fakes are ON/i);
+
+    // Dev reload / second initServices call does not warn again
+    initServices({ dataDir: e2eDir, repoRoot: "/srv/daedalus" });
+    expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 });
 

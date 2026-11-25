@@ -49,6 +49,9 @@ describe("@daedalus/db", () => {
       "uat_app_config",
       "uat_items",
       "uat_marks",
+      "uat_replay_results",
+      "uat_replay_runs",
+      "uat_scripts",
       "uat_sessions",
       "usage",
     ]);

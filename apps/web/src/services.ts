@@ -5,8 +5,8 @@
  * handlers reach them through this object on globalThis (Symbol.for key, so it also
  * survives Next's dev reloads).
  */
-import type { DaedalusDb, gateFindings, projects, tasks, uatAppConfig, uatItems, uatMarks, uatSessions } from "@daedalus/db";
-import type { ApproveMockInput, ApprovePlanInput, ApproveSpecInput, BrowseResult, CreateInput, createProject, ImportInput, importProject, MarkUatItemInput, mergeKit, MilestoneState, MockApproval, ParsedMilestone, PipelineTask, ReleaseGateData, ReviewData, RunTaskResult, SaveIntakeInput, ShapingState, StartMilestoneInput, TaskRunner } from "@daedalus/projects";
+import type { DaedalusDb, gateFindings, projects, tasks, uatAppConfig, uatItems, uatMarks, uatReplayRuns, uatScripts, uatSessions } from "@daedalus/db";
+import type { ApproveMockInput, ApprovePlanInput, ApproveSpecInput, BrowseResult, CreateInput, createProject, ImportInput, importProject, MarkUatItemInput, mergeKit, MilestoneState, MockApproval, ParsedMilestone, PipelineTask, ReleaseGateData, ReviewData, RunTaskResult, SaveIntakeInput, ShapingState, StartMilestoneInput, StartRecordingTarget, TaskRunner, UatDeps, UatRecordingState, UatReplayResultItem, UatScriptInfo } from "@daedalus/projects";
 import type { ProfileRules } from "@daedalus/core/profiles";
 import type { TaskStatus } from "@daedalus/core/task-state";
 import type { ProviderEntry, SessionManager } from "@daedalus/providers";
@@ -104,6 +104,8 @@ export type Services = SessionServices & {
   listRunning(): Array<{ projectId: number; taskCode: string; taskId: number }>;
   /** Task runner instance (T5.3). */
   runner: TaskRunner;
+  /** Resolved UAT dependencies (real in normal servers, e2e fakes only in temp dae-e2e-* dataDir). */
+  uatDeps?: UatDeps;
   /** Get review data for a task (T6.1). 404 if no such project or task. */
   getReview(projectId: number, taskCode: string): Promise<ReviewData>;
   /** List all in-review tasks for a project (T6.1). 404 if no such project. */
@@ -172,6 +174,25 @@ export type Services = SessionServices & {
     sessionId: string,
     nameParts: string[],
   ): { path: string; contentType: string; attachment: boolean };
+  /** Start Playwright codegen recording for an item or script replacement (T6.5). */
+  startScriptRecording(
+    projectId: number,
+    target: StartRecordingTarget,
+  ): Promise<{ recording: UatRecordingState }>;
+  /** Retire an active UAT script with a written reason (T6.5). */
+  retireUatScript(
+    projectId: number,
+    scriptId: number,
+    reason: string,
+  ): Promise<typeof uatScripts.$inferSelect>;
+  /** List saved UAT scripts with text and last result (T6.5). */
+  listUatScripts(projectId: number): Promise<UatScriptInfo[]>;
+  /** Get UAT script replay runs and latest results (T6.5). */
+  getUatReplayResults(projectId: number): Promise<{
+    latestRun: typeof uatReplayRuns.$inferSelect | null;
+    runs: Array<typeof uatReplayRuns.$inferSelect>;
+    results: UatReplayResultItem[];
+  }>;
 };
 
 export type SessionServices = {

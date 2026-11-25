@@ -55,6 +55,16 @@ export default function ReleaseGatePage() {
   const [specInput, setSpecInput] = useState("");
   const [addingSpecItem, setAddingSpecItem] = useState(false);
 
+  // UAT Scripts state (T6.5)
+  const [recordingBusy, setRecordingBusy] = useState(false);
+  const [expandedScripts, setExpandedScripts] = useState<Record<number, boolean>>({});
+  const [scriptDialog, setScriptDialog] = useState<{
+    scriptId: number;
+    type: "replace" | "retire";
+    reason: string;
+    busy: boolean;
+  } | null>(null);
+
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const loadGate = useCallback(
@@ -83,12 +93,14 @@ export default function ReleaseGatePage() {
     loadGate(true);
   }, [loadGate]);
 
-  // Polling every 3s while gate status is "running", runningChecks, or session is starting
+  // Polling every 3s while gate status is "running", runningChecks, session starting, recording, or replaying
   useEffect(() => {
     const isRunning =
       gate?.status === "running" ||
       runningChecks ||
-      gate?.uat?.session?.status === "starting";
+      gate?.uat?.session?.status === "starting" ||
+      Boolean(gate?.uat?.recording?.active) ||
+      gate?.uat?.replay?.status === "running";
     if (isRunning) {
       pollTimerRef.current = setTimeout(() => {
         loadGate(false);
@@ -105,7 +117,14 @@ export default function ReleaseGatePage() {
         pollTimerRef.current = null;
       }
     };
-  }, [gate?.status, gate?.uat?.session?.status, runningChecks, loadGate]);
+  }, [
+    gate?.status,
+    gate?.uat?.session?.status,
+    gate?.uat?.recording?.active,
+    gate?.uat?.replay?.status,
+    runningChecks,
+    loadGate,
+  ]);
 
   useEffect(() => {
     if (gate?.uat?.config) {
@@ -296,6 +315,72 @@ export default function ReleaseGatePage() {
       setActionError(err instanceof Error ? err.message : "Failed to add item from spec.");
     } finally {
       setAddingSpecItem(false);
+    }
+  };
+
+  // Handle Record script for a UAT item (T6.5)
+  const handleRecordScript = async (itemId: number) => {
+    if (!id || recordingBusy) return;
+    try {
+      setRecordingBusy(true);
+      setActionError(null);
+      setActionSuccess(null);
+      const res = await postJson(`/api/projects/${id}/release/uat/scripts/record`, {
+        itemId,
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        setActionError(body.error || "Failed to start script recording.");
+      } else {
+        setActionSuccess("Playwright codegen started. Close the recorder window when done.");
+        await loadGate(false);
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to start script recording.");
+    } finally {
+      setRecordingBusy(false);
+    }
+  };
+
+  // Handle Replace / Retire script dialog submit (T6.5)
+  const handleScriptDialogSubmit = async () => {
+    if (!id || !scriptDialog || scriptDialog.busy) return;
+    const trimmed = scriptDialog.reason.trim();
+    if (trimmed.length < 1 || trimmed.length > 500) {
+      setActionError("Reason must be between 1 and 500 characters.");
+      return;
+    }
+
+    try {
+      setScriptDialog((prev) => (prev ? { ...prev, busy: true } : null));
+      setActionError(null);
+      setActionSuccess(null);
+
+      const endpoint =
+        scriptDialog.type === "replace"
+          ? `/api/projects/${id}/release/uat/scripts/${scriptDialog.scriptId}/replace`
+          : `/api/projects/${id}/release/uat/scripts/${scriptDialog.scriptId}/retire`;
+
+      const res = await postJson(endpoint, { reason: trimmed });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        setActionError(body.error || `Failed to ${scriptDialog.type} script.`);
+      } else {
+        const wasReplace = scriptDialog.type === "replace";
+        setScriptDialog(null);
+        setActionSuccess(
+          wasReplace
+            ? "Playwright codegen started for replacement script. Close the recorder window when done."
+            : "UAT script retired.",
+        );
+        await loadGate(false);
+      }
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : `Failed to ${scriptDialog.type} script.`,
+      );
+    } finally {
+      setScriptDialog((prev) => (prev ? { ...prev, busy: false } : null));
     }
   };
 
@@ -693,6 +778,71 @@ export default function ReleaseGatePage() {
               </div>
             </div>
 
+            {/* Earlier-Release Script Replay Status & Results (T6.5, ADR 0024) */}
+            <div className="uat-replay-card">
+              <div className="uat-item-header">
+                <div className="uat-item-badges">
+                  <span className="uat-config-label">Earlier-Release Script Replay</span>
+                  <ReplayStatusBadge status={gate.uat?.replay?.status ?? "none"} />
+                </div>
+                {gate.uat?.replay?.latestRun && (
+                  <span className="uat-recording-meta">
+                    {gate.uat.replay.latestRun.passedScripts}/
+                    {gate.uat.replay.latestRun.totalScripts} passed · Head{" "}
+                    <code>{gate.uat.replay.latestRun.headSha.slice(0, 8)}</code>
+                  </span>
+                )}
+              </div>
+
+              {(!gate.uat?.replay ||
+                (gate.uat.replay.earlierActiveCount === 0 && !gate.uat.replay.latestRun)) ? (
+                <p className="review-muted-text">
+                  No active scripts from earlier releases to replay.
+                </p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  {gate.uat.replay.latestRun?.error && (
+                    <div className="release-finding-detail">{gate.uat.replay.latestRun.error}</div>
+                  )}
+                  {gate.uat.replay.results.length > 0 && (
+                    <div className="uat-recordings-list">
+                      {gate.uat.replay.results.map((r) => (
+                        <div key={r.id} className="uat-replay-result-row">
+                          <div className="uat-item-header">
+                            <div className="uat-item-badges">
+                              <ReplayStatusBadge status={r.status} />
+                              <span className="finding-badge finding-check-badge">
+                                #{r.scriptId} ({r.scriptReleaseVersion || "earlier"})
+                              </span>
+                              <span className="uat-recording-name">{r.itemText}</span>
+                            </div>
+                            {r.traceUrl && (
+                              <a
+                                href={r.traceUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="btn-secondary-sm"
+                                download
+                              >
+                                Download trace
+                              </a>
+                            )}
+                          </div>
+                          {r.detail && <div className="release-finding-detail">{r.detail}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {gate.uat?.recording?.lastError && (
+              <div className="review-alert review-alert-error" role="alert">
+                Script recording error: {gate.uat.recording.lastError}
+              </div>
+            )}
+
             {/* Checklist Items */}
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -709,6 +859,12 @@ export default function ReleaseGatePage() {
                 <div className="uat-items-list">
                   {gate.uat.items.map((item) => {
                     const isMarkDialogOpen = markDialog?.itemId === item.id;
+                    const draftScript = gate.uat?.scripts?.find(
+                      (s) => s.itemId === item.id && s.status === "draft",
+                    );
+                    const isThisItemRecording =
+                      Boolean(gate.uat?.recording?.active) &&
+                      gate.uat?.recording?.itemId === item.id;
                     const markClass =
                       item.status === "pass"
                         ? "uat-mark-badge-pass"
@@ -729,6 +885,18 @@ export default function ReleaseGatePage() {
                             </span>
                           </div>
                           <div className="uat-item-actions">
+                            {gate.uat?.session?.status === "running" && (
+                              <button
+                                type="button"
+                                className="btn-secondary-sm"
+                                disabled={
+                                  recordingBusy || Boolean(gate.uat?.recording?.active)
+                                }
+                                onClick={() => handleRecordScript(item.id)}
+                              >
+                                {isThisItemRecording ? "Recording…" : "Record script"}
+                              </button>
+                            )}
                             <button
                               type="button"
                               className="btn-secondary-sm"
@@ -756,6 +924,20 @@ export default function ReleaseGatePage() {
                         </div>
 
                         <div className="uat-item-text">{item.text}</div>
+
+                        {draftScript && (
+                          <div className="uat-script-draft-box">
+                            <div className="uat-item-badges">
+                              <span className="finding-badge uat-mark-badge-retest">
+                                Draft script
+                              </span>
+                              <span className="uat-recording-meta">
+                                Origin: {draftScript.recordedOrigin} · Click Pass to accept
+                              </span>
+                            </div>
+                            <pre className="uat-script-pre">{draftScript.scriptText}</pre>
+                          </div>
+                        )}
 
                         {item.latestMark && (
                           <div className="release-finding-outcome-details">
@@ -907,6 +1089,212 @@ export default function ReleaseGatePage() {
               </form>
             </div>
 
+            {/* Saved Scripts List (T6.5, ADR 0024) */}
+            {(() => {
+              const savedScripts = (gate.uat?.scripts ?? []).filter(
+                (s) => s.status !== "draft",
+              );
+              const sessionRunning = gate.uat?.session?.status === "running";
+              const isRecordingNow = Boolean(gate.uat?.recording?.active);
+              return (
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "12px" }}>
+                  <div className="release-section-header">
+                    <h2>Saved UAT scripts ({savedScripts.length})</h2>
+                  </div>
+
+                  {savedScripts.length === 0 ? (
+                    <p className="review-muted-text">
+                      No saved UAT scripts yet. Record a script during a session and mark its item Pass to save it.
+                    </p>
+                  ) : (
+                    <div className="uat-scripts-list">
+                      {savedScripts.map((script) => {
+                        const isExpanded = Boolean(expandedScripts[script.id]);
+                        const isDialogOpen = scriptDialog?.scriptId === script.id;
+                        const isReplacingThis =
+                          isRecordingNow && gate.uat?.recording?.replaceScriptId === script.id;
+
+                        return (
+                          <div key={script.id} className="uat-script-card">
+                            <div className="uat-item-header">
+                              <div className="uat-item-badges">
+                                <span className="finding-badge finding-state-badge">
+                                  #{script.id}
+                                </span>
+                                <span className="finding-badge finding-check-badge">
+                                  {script.releaseVersion}
+                                </span>
+                                <span
+                                  className={`finding-badge ${
+                                    script.status === "active"
+                                      ? "uat-mark-badge-pass"
+                                      : "finding-state-badge"
+                                  }`}
+                                >
+                                  {script.status}
+                                </span>
+                                {script.lastResult && (
+                                  <ReplayStatusBadge status={script.lastResult.status} />
+                                )}
+                                <span className="uat-recording-meta">{script.recordedOrigin}</span>
+                              </div>
+
+                              <div className="uat-item-actions">
+                                <button
+                                  type="button"
+                                  className="btn-secondary-sm"
+                                  onClick={() =>
+                                    setExpandedScripts((prev) => ({
+                                      ...prev,
+                                      [script.id]: !isExpanded,
+                                    }))
+                                  }
+                                >
+                                  {isExpanded ? "Hide script" : "View script"}
+                                </button>
+                                {script.lastResult?.traceUrl && (
+                                  <a
+                                    href={script.lastResult.traceUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="btn-secondary-sm"
+                                    download
+                                  >
+                                    Download trace
+                                  </a>
+                                )}
+                                {script.status === "active" && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="btn-secondary-sm"
+                                      disabled={!sessionRunning || isRecordingNow}
+                                      title={
+                                        !sessionRunning
+                                          ? "Start a UAT session to record a replacement"
+                                          : undefined
+                                      }
+                                      onClick={() =>
+                                        setScriptDialog({
+                                          scriptId: script.id,
+                                          type: "replace",
+                                          reason: "",
+                                          busy: false,
+                                        })
+                                      }
+                                    >
+                                      {isReplacingThis ? "Recording…" : "Replace"}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn-secondary-sm"
+                                      onClick={() =>
+                                        setScriptDialog({
+                                          scriptId: script.id,
+                                          type: "retire",
+                                          reason: "",
+                                          busy: false,
+                                        })
+                                      }
+                                    >
+                                      Retire
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="uat-item-text">{script.itemText}</div>
+
+                            {script.status === "retired" && script.retiredReason && (
+                              <div className="release-finding-outcome-details">
+                                <span>
+                                  <strong>Retired reason:</strong> {script.retiredReason}
+                                </span>
+                                {script.replacedBy && (
+                                  <span>Replaced by script #{script.replacedBy}</span>
+                                )}
+                              </div>
+                            )}
+
+                            {script.lastResult?.detail && (
+                              <div className="release-finding-detail">
+                                {script.lastResult.detail}
+                              </div>
+                            )}
+
+                            {isExpanded && (
+                              <pre className="uat-script-pre">{script.scriptText}</pre>
+                            )}
+
+                            {isDialogOpen && scriptDialog && (
+                              <div className="release-dialog-panel">
+                                <div className="release-dialog-title">
+                                  {scriptDialog.type === "replace"
+                                    ? `Replace Script #${script.id}`
+                                    : `Retire Script #${script.id}`}
+                                </div>
+                                <label
+                                  className="release-dialog-label"
+                                  htmlFor={`script-reason-${script.id}`}
+                                >
+                                  Reason (required, 1–500 characters):
+                                </label>
+                                <textarea
+                                  id={`script-reason-${script.id}`}
+                                  rows={2}
+                                  maxLength={500}
+                                  className="release-dialog-textarea"
+                                  placeholder={
+                                    scriptDialog.type === "replace"
+                                      ? "Explain why the app behavior changed intentionally..."
+                                      : "Explain why this script is being retired..."
+                                  }
+                                  value={scriptDialog.reason}
+                                  disabled={scriptDialog.busy}
+                                  onChange={(e) =>
+                                    setScriptDialog((prev) =>
+                                      prev ? { ...prev, reason: e.target.value } : null,
+                                    )
+                                  }
+                                />
+                                <div className="release-dialog-actions">
+                                  <button
+                                    type="button"
+                                    className="btn-secondary-sm"
+                                    disabled={scriptDialog.busy}
+                                    onClick={() => setScriptDialog(null)}
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn-primary-sm"
+                                    disabled={
+                                      scriptDialog.busy ||
+                                      scriptDialog.reason.trim().length < 1 ||
+                                      scriptDialog.reason.trim().length > 500
+                                    }
+                                    onClick={handleScriptDialogSubmit}
+                                  >
+                                    {scriptDialog.busy
+                                      ? "Submitting…"
+                                      : scriptDialog.type === "replace"
+                                        ? "Record replacement"
+                                        : "Confirm retire"}
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Recordings List */}
             <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "12px" }}>
               <div className="release-section-header">
@@ -982,6 +1370,18 @@ export default function ReleaseGatePage() {
       )}
     </>
   );
+}
+
+function ReplayStatusBadge({ status }: { status: string }) {
+  const badgeClass =
+    status === "passed" || status === "none"
+      ? "uat-mark-badge-pass"
+      : status === "failed" || status === "error"
+        ? "uat-mark-badge-fail"
+        : status === "running" || status === "pending"
+          ? "uat-mark-badge-retest"
+          : "finding-state-badge";
+  return <span className={`finding-badge ${badgeClass}`}>{status}</span>;
 }
 
 function CheckRow({

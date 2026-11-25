@@ -3968,5 +3968,68 @@ dialog.modal-dialog::backdrop {
   color: var(--muted);
 }
 
+/* Saved UAT Scripts & Replay (T6.5, ADR 0024) */
+.uat-replay-card {
+  background-color: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.uat-replay-result-row {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.uat-script-draft-box {
+  background-color: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.uat-script-pre {
+  font-family: var(--font-mono);
+  word-spacing: normal;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink);
+  background-color: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre;
+}
+
+.uat-scripts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.uat-script-card {
+  background-color: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+
 
 

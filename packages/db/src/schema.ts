@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   check,
+  foreignKey,
   integer,
   sqliteTable,
   text,
@@ -485,5 +486,118 @@ export const uatSessions = sqliteTable(
       .where(sql`${table.status} in ('starting', 'running')`),
   ],
 );
+
+export const uatScripts = sqliteTable(
+  "uat_scripts",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    projectId: integer("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    itemId: integer("item_id").references(() => uatItems.id, {
+      onDelete: "set null",
+    }),
+    itemText: text("item_text").notNull(),
+    releaseVersion: text("release_version").notNull(),
+    recordedOrigin: text("recorded_origin").notNull(),
+    headSha: text("head_sha").notNull(),
+    sessionId: text("session_id").references(() => uatSessions.id, {
+      onDelete: "set null",
+    }),
+    scriptText: text("script_text").notNull(),
+    sha256: text("sha256").notNull(),
+    status: text("status", { enum: ["draft", "active", "retired"] })
+      .notNull()
+      .default("draft"),
+    retiredReason: text("retired_reason"),
+    replacedBy: integer("replaced_by"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(CURRENT_TIMESTAMP)`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`(CURRENT_TIMESTAMP)`),
+  },
+  (table) => [
+    check(
+      "uat_scripts_status_check",
+      sql`${table.status} in ('draft', 'active', 'retired')`,
+    ),
+    foreignKey({
+      name: "uat_scripts_replaced_by_fk",
+      columns: [table.replacedBy],
+      foreignColumns: [table.id],
+    }).onDelete("set null"),
+  ],
+);
+
+export const uatReplayRuns = sqliteTable(
+  "uat_replay_runs",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    projectId: integer("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").references(() => uatSessions.id, {
+      onDelete: "set null",
+    }),
+    releaseVersion: text("release_version").notNull(),
+    headSha: text("head_sha").notNull(),
+    kind: text("kind", { enum: ["full", "single"] })
+      .notNull()
+      .default("full"),
+    status: text("status", {
+      enum: ["running", "passed", "failed", "error"],
+    }).notNull(),
+    totalScripts: integer("total_scripts").notNull().default(0),
+    passedScripts: integer("passed_scripts").notNull().default(0),
+    failedScripts: integer("failed_scripts").notNull().default(0),
+    error: text("error"),
+    startedAt: text("started_at")
+      .notNull()
+      .default(sql`(CURRENT_TIMESTAMP)`),
+    finishedAt: text("finished_at"),
+  },
+  (table) => [
+    check(
+      "uat_replay_runs_kind_check",
+      sql`${table.kind} in ('full', 'single')`,
+    ),
+    check(
+      "uat_replay_runs_status_check",
+      sql`${table.status} in ('running', 'passed', 'failed', 'error')`,
+    ),
+  ],
+);
+
+export const uatReplayResults = sqliteTable(
+  "uat_replay_results",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    runId: integer("run_id")
+      .notNull()
+      .references(() => uatReplayRuns.id, { onDelete: "cascade" }),
+    projectId: integer("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    scriptId: integer("script_id")
+      .notNull()
+      .references(() => uatScripts.id, { onDelete: "cascade" }),
+    status: text("status", { enum: ["passed", "failed", "error"] }).notNull(),
+    detail: text("detail"),
+    tracePath: text("trace_path"),
+    durationMs: integer("duration_ms"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(CURRENT_TIMESTAMP)`),
+  },
+  (table) => [
+    check(
+      "uat_replay_results_status_check",
+      sql`${table.status} in ('passed', 'failed', 'error')`,
+    ),
+  ],
+);
+
 
 

@@ -30,6 +30,7 @@ export default defineConfig({
       DAE_PROJECTS_HOME: E2E_PROJECTS_HOME,
       DAE_E2E_PASSWORD: E2E_PASSWORD,
       DAE_PROVIDERS_FILE: E2E_PROVIDERS_FILE,
+      DAE_UAT_FAKE: "1",
       ...(devServer ? {} : { NODE_ENV: "production" }),
     },
   },

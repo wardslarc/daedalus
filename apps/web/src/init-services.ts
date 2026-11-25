@@ -6,11 +6,12 @@ import { eq } from "drizzle-orm";
 import { openDb, projects, tasks as tasksTable, shapingState } from "@daedalus/db";
 import { branchExists } from "@daedalus/git";
 import { assertProviderAllowed, effectiveGeminiAllowed, ProfileRuleError, rulesFor, validateProjectSettings } from "@daedalus/core/profiles";
-import { ackGate, addUatItemFromSpec, approveMockDoc, approvePlanDoc, approveSpecDoc, approveTask, beginMockSession, beginPlanSession, beginSpecInterview, closeAllReviews, createProject, decideFinding, discardTask, getReleaseGate, getReview, getShapingState, getUatAppConfig, ImportError, importProject, listFolders, listInReviewTasks, markUatItem, mergeKit, realGitOps, recoverGateRunsOnStartup, recoverReviewsOnStartup, recoverUatSessionsOnStartup, refreshVerifyStage, resolveUatRecordingPath, saveIntakeDoc, sendBack, setChecklistItem, setUatAppConfig, startCrossReview, startGateRun, startMilestoneRelease, startUatSession, stopAllGateRuns, stopAllUatSessions, stopUatSession, syncPlanTasksToDb, TaskRunner, uatScreenshot } from "@daedalus/projects";
+import { ackGate, addUatItemFromSpec, approveMockDoc, approvePlanDoc, approveSpecDoc, approveTask, beginMockSession, beginPlanSession, beginSpecInterview, closeAllReviews, createProject, decideFinding, discardTask, getReleaseGate, getReview, getShapingState, getUatAppConfig, getUatReplayResults, ImportError, importProject, listFolders, listInReviewTasks, listUatScripts, markUatItem, mergeKit, realGitOps, recoverGateRunsOnStartup, recoverReviewsOnStartup, recoverUatSessionsOnStartup, refreshVerifyStage, resolveUatRecordingPath, retireUatScript, saveIntakeDoc, sendBack, setChecklistItem, setUatAppConfig, startCrossReview, startGateRun, startMilestoneRelease, startScriptRecording, startUatSession, stopAllGateRuns, stopAllUatSessions, stopUatSession, syncPlanTasksToDb, TaskRunner, uatScreenshot, type UatDeps } from "@daedalus/projects";
 import { loadProviders, repoProvidersFile, SessionManager, syncProviders } from "@daedalus/providers";
 import { SERVICES_KEY, type PipelineStage, type Services, type ServicesHolder } from "./services.js";
 import { toSessionInfo } from "./ws/channel.js";
 import { TerminalManager } from "./terminal.js";
+import { resolveUatDeps } from "./uat-e2e-fakes.js";
 
 export type ServicesOptions = { dataDir: string; repoRoot: string; port?: number };
 
@@ -39,6 +40,9 @@ export function initServices({ dataDir, repoRoot, port }: ServicesOptions): Serv
   recoverReviewsOnStartup(db);
   recoverGateRunsOnStartup(db);
   recoverUatSessionsOnStartup(db, dataDir);
+
+  const uatDeps: UatDeps = resolveUatDeps(db, dataDir);
+
   const services: Services = {
     db,
     dataDir,
@@ -47,6 +51,7 @@ export function initServices({ dataDir, repoRoot, port }: ServicesOptions): Serv
     providers,
     sessions,
     runner,
+    uatDeps,
     runTask: (projectId, taskCode) => runner.runTask(projectId, taskCode),
     listRunning: () => runner.listRunning(),
     startSession: async (projectId, providerId) => {
@@ -436,32 +441,54 @@ export function initServices({ dataDir, repoRoot, port }: ServicesOptions): Serv
     startUatSession: async (projectId) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      return startUatSession({ db, dataDir }, projectId);
+      return startUatSession(uatDeps, projectId);
     },
     stopUatSession: async (projectId) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      return stopUatSession({ db, dataDir }, projectId);
+      return stopUatSession(uatDeps, projectId);
     },
     uatScreenshot: async (projectId) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      return uatScreenshot({ db, dataDir }, projectId);
+      return uatScreenshot(uatDeps, projectId);
     },
     addUatItemFromSpec: async (projectId, text) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      return addUatItemFromSpec({ db, dataDir }, projectId, text);
+      return addUatItemFromSpec(uatDeps, projectId, text);
     },
     markUatItem: async (projectId, itemId, input) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
-      return markUatItem({ db, dataDir }, projectId, itemId, input);
+      return markUatItem(uatDeps, projectId, itemId, input);
     },
     resolveUatRecordingPath: (projectId, sessionId, nameParts) => {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new ImportError("No such project.", 404);
       return resolveUatRecordingPath({ db, dataDir }, projectId, sessionId, nameParts);
+    },
+    startScriptRecording: async (projectId, target) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      const { recording, promise } = await startScriptRecording(uatDeps, projectId, target);
+      promise.catch(() => undefined);
+      return { recording };
+    },
+    retireUatScript: async (projectId, scriptId, reason) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return retireUatScript(uatDeps, projectId, scriptId, reason);
+    },
+    listUatScripts: async (projectId) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return listUatScripts(uatDeps, projectId);
+    },
+    getUatReplayResults: async (projectId) => {
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new ImportError("No such project.", 404);
+      return getUatReplayResults(uatDeps, projectId);
     },
   };
   holder[SERVICES_KEY] = services;

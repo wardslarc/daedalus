@@ -32,5 +32,6 @@ export {
 } from "./cross-review.js";
 export * from "./release-gate.js";
 export * from "./uat.js";
+export * from "./uat-scripts.js";
 
 

@@ -78,6 +78,13 @@
       "when": 1795577215795,
       "tag": "0010_steady_hellcat",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1795596700666,
+      "tag": "0011_silent_warpath",
+      "breakpoints": true
     }
   ]
 }

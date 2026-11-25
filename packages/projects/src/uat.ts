@@ -33,7 +33,21 @@ import { redact, scrubEnv } from "@daedalus/providers";
 import { parsePlanMarkdown } from "./pipeline.js";
 import { readShapingDoc, SHAPING_DOCS } from "./shaping.js";
 import { refreshVerifyStage } from "./release-gate.js";
-import type { Browser, BrowserContext, Page, Response } from "playwright";
+import {
+  assertSessionReplayFinished,
+  cleanupScriptsOnSessionStop,
+  getUatScriptsAndReplayState,
+  promoteDraftScriptInTx,
+  recoverScriptsOnStartup,
+  runSessionReplay,
+  stopAllScriptProcesses,
+  type UatCodegenRunner,
+  type UatRecordingState,
+  type UatReplayRunner,
+  type UatReplayState,
+  type UatScriptInfo,
+} from "./uat-scripts.js";
+import type { Browser, BrowserContext, Page } from "playwright";
 
 export class UatError extends Error {
   override name = "UatError";
@@ -56,18 +70,22 @@ export type UatPortProbe = (port: number) => Promise<boolean>;
 
 export type UatTracingStopOpts = { path: string };
 
+export type UatBrowserPage = {
+  goto: (url: string) => Promise<unknown>;
+  screenshot: (opts: { path: string }) => Promise<Buffer>;
+  close?: () => Promise<void>;
+};
+
+export type UatBrowserContext = {
+  close: () => Promise<void>;
+  tracing: { stop: (opts: UatTracingStopOpts) => Promise<void> };
+  newPage: () => Promise<UatBrowserPage>;
+};
+
 export type UatBrowserInstance = {
   browser: Browser | { close: () => Promise<void> };
-  context: BrowserContext | {
-    close: () => Promise<void>;
-    tracing: { stop: (opts: UatTracingStopOpts) => Promise<void> };
-    newPage: () => Promise<Page>;
-  };
-  page: Page | {
-    goto: (url: string) => Promise<Response | null | void>;
-    screenshot: (opts: { path: string }) => Promise<Buffer>;
-    close?: () => Promise<void>;
-  };
+  context: BrowserContext | UatBrowserContext;
+  page: Page | UatBrowserPage;
 };
 
 export type UatBrowserLauncher = (opts: {
@@ -85,6 +103,8 @@ export type UatDeps = {
   urlProbe?: UatUrlProbe;
   portProbe?: UatPortProbe;
   browserLauncher?: UatBrowserLauncher;
+  codegenRunner?: UatCodegenRunner;
+  replayRunner?: UatReplayRunner;
   daedalusPort?: number;
 };
 
@@ -129,6 +149,9 @@ export type UatGateData = {
   session: typeof uatSessions.$inferSelect | null;
   config: typeof uatAppConfig.$inferSelect | null;
   recordings: UatRecordingFile[];
+  scripts: UatScriptInfo[];
+  replay: UatReplayState;
+  recording: UatRecordingState;
   gateLine: {
     status: "pass" | "fail";
     detail?: string;
@@ -148,7 +171,7 @@ export type MarkUatItemInput = {
 // In-memory active UAT sessions tracking
 // ---------------------------------------------------------------------------
 
-type ActiveUatSession = {
+export type ActiveUatSession = {
   sessionId: string;
   projectId: number;
   status: "starting" | "running";
@@ -157,11 +180,46 @@ type ActiveUatSession = {
   repoPath: string;
   childPid: number | null;
   killApp: () => void;
+  killReplay?: () => void;
+  killCodegen?: () => void;
+  replayFinished: boolean;
   browserInstance: UatBrowserInstance | null;
   cancelled?: boolean;
 };
 
 const activeUatSessions = new Map<number, ActiveUatSession>();
+
+export function getActiveUatSession(projectId: number): ActiveUatSession | undefined {
+  return activeUatSessions.get(projectId);
+}
+
+export function setActiveSessionReplayKill(
+  projectId: number,
+  killFn: (() => void) | undefined,
+): void {
+  const active = activeUatSessions.get(projectId);
+  if (active) {
+    active.killReplay = killFn;
+  }
+}
+
+export function setActiveSessionCodegenKill(
+  projectId: number,
+  killFn: (() => void) | undefined,
+): void {
+  const active = activeUatSessions.get(projectId);
+  if (active) {
+    active.killCodegen = killFn;
+  }
+}
+
+export function markActiveSessionReplayFinished(projectId: number): void {
+  const active = activeUatSessions.get(projectId);
+  if (active) {
+    active.replayFinished = true;
+    active.killReplay = undefined;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Config validation (ADR 0021)
@@ -563,6 +621,7 @@ export async function startUatSession(
     repoPath: project.localPath,
     childPid: null,
     killApp: () => {},
+    replayFinished: false,
     browserInstance: null,
     cancelled: false,
   };
@@ -680,6 +739,22 @@ export async function startUatSession(
   let worktreeCreated = false;
 
   const cleanupPartial = async () => {
+    if (placeholder.killCodegen) {
+      try {
+        placeholder.killCodegen();
+      } catch {
+        // ignore
+      }
+      placeholder.killCodegen = undefined;
+    }
+    if (placeholder.killReplay) {
+      try {
+        placeholder.killReplay();
+      } catch {
+        // ignore
+      }
+      placeholder.killReplay = undefined;
+    }
     if (browserInstance) {
       try {
         await browserInstance.context.close();
@@ -762,6 +837,24 @@ export async function startUatSession(
     }
     if (!answered) {
       throw new Error(`App did not respond at ${config.appUrl} within 2 minutes.`);
+    }
+
+    // 3b. Replay active earlier-release scripts before opening the headed browser (T6.5, ADR 0024)
+    await runSessionReplay(deps, {
+      projectId,
+      sessionId,
+      releaseVersion,
+      headSha,
+      appUrl: config.appUrl,
+      sessionFolder,
+      onKillRegister: (killFn) => {
+        placeholder.killReplay = killFn;
+      },
+      isCancelled: () => Boolean(placeholder.cancelled),
+    });
+
+    if (placeholder.cancelled) {
+      throw new UatError("Session stopped during startup", 400);
     }
 
     // 4. Launch Playwright browser
@@ -863,6 +956,26 @@ export async function stopUatSession(
     active.cancelled = true;
     activeUatSessions.delete(projectId);
 
+    if (active.killCodegen) {
+      try {
+        active.killCodegen();
+      } catch {
+        // ignore
+      }
+      active.killCodegen = undefined;
+    }
+
+    if (active.killReplay) {
+      try {
+        active.killReplay();
+      } catch {
+        // ignore
+      }
+      active.killReplay = undefined;
+    }
+
+    cleanupScriptsOnSessionStop(deps.db, projectId, active.sessionId);
+
     if (active.browserInstance) {
       try {
         const tracePath = join(active.sessionFolder, "trace.zip");
@@ -935,6 +1048,8 @@ export async function stopUatSession(
     throw new UatError("No running UAT session found for this project.", 404);
   }
 
+  cleanupScriptsOnSessionStop(deps.db, projectId, dbRunning.id);
+
   const worktreeDir = join(deps.dataDir, "worktrees", `uat-${projectId}-${dbRunning.id}`);
   if (existsSync(worktreeDir)) {
     try {
@@ -965,9 +1080,26 @@ export async function stopAllUatSessions(
   dataDir: string,
 ): Promise<void> {
   const now = new Date().toISOString();
+  stopAllScriptProcesses(db);
 
   for (const [, active] of activeUatSessions) {
     active.cancelled = true;
+    if (active.killCodegen) {
+      try {
+        active.killCodegen();
+      } catch {
+        // ignore
+      }
+      active.killCodegen = undefined;
+    }
+    if (active.killReplay) {
+      try {
+        active.killReplay();
+      } catch {
+        // ignore
+      }
+      active.killReplay = undefined;
+    }
     if (active.browserInstance) {
       try {
         const tracePath = join(active.sessionFolder, "trace.zip");
@@ -1039,6 +1171,7 @@ export function recoverUatSessionsOnStartup(
   dataDir: string,
 ): void {
   const now = new Date().toISOString();
+  recoverScriptsOnStartup(db);
   const openSessions = db
     .select()
     .from(uatSessions)
@@ -1131,16 +1264,17 @@ export async function markUatItem(
     throw new UatError("The release changed; reload.", 409);
   }
 
+  assertSessionReplayFinished(deps.db, projectId);
+
   const result = input.result;
   if (result !== "pass" && result !== "fail") {
     throw new UatError("result must be 'pass' or 'fail'.", 400);
   }
 
   const now = new Date().toISOString();
-  let createdTask: typeof tasks.$inferSelect | undefined;
-  let createdFinding: typeof gateFindings.$inferSelect | undefined;
   let noteToSave: string | null = null;
   let kindToSave: "bug" | "change" | null = null;
+  let checkCommand = "";
 
   if (result === "pass") {
     if (input.note !== undefined && input.note !== null) {
@@ -1165,117 +1299,130 @@ export async function markUatItem(
     kindToSave = kind;
 
     if (kind === "bug") {
-      const checkCommand = (input.checkCommand ?? "").trim();
+      checkCommand = (input.checkCommand ?? "").trim();
       if (checkCommand.length === 0 || checkCommand.length > 500) {
         throw new UatError(
           "checkCommand must be non-empty and at most 500 characters for bug marks.",
           400,
         );
       }
-
-      // Allocate next free FIX-<n> code in project
-      const existingTasks = deps.db
-        .select()
-        .from(tasks)
-        .where(eq(tasks.projectId, projectId))
-        .all();
-
-      const usedNums = new Set<number>();
-      for (const t of existingTasks) {
-        const m = /^FIX-(\d+)$/i.exec(t.code);
-        if (m && m[1]) {
-          usedNums.add(parseInt(m[1], 10));
-        }
-      }
-
-      let nextN = 1;
-      while (usedNums.has(nextN)) {
-        nextN++;
-      }
-      const taskCode = `FIX-${nextN}`;
-
-      const rawTitle = `Fix: ${item.text}`;
-      const taskTitle = rawTitle.length > 120 ? rawTitle.slice(0, 120) : rawTitle;
-
-      const descLines = [
-        `UAT item failed: ${item.text}`,
-        `Item ID: ${item.id}`,
-        `Note: ${noteToSave}`,
-      ];
-      const taskDescription = redact(descLines.join("\n"));
-
-      const activeMilestone =
-        shaping.activeMilestoneCode ?? shaping.activeMilestoneVersion ?? "M1";
-
-      const [newTask] = deps.db
-        .insert(tasks)
-        .values({
-          projectId,
-          code: taskCode,
-          title: taskTitle,
-          tag: "claude",
-          description: taskDescription,
-          checkCommand,
-          milestoneCode: activeMilestone,
-          status: "queued",
-          frozenAt: now,
-          createdAt: now,
-        })
-        .returning()
-        .all();
-
-      createdTask = newTask!;
-    } else {
-      // kind === "change"
-      const fingerprint = `uat:item:${item.id}:${Date.now()}`;
-      const [newFinding] = deps.db
-        .insert(gateFindings)
-        .values({
-          projectId,
-          releaseVersion,
-          check: "uat",
-          fingerprint,
-          severity: "moderate",
-          blocking: true,
-          state: "open",
-          outcome: "change-request",
-          title: item.text,
-          detail: noteToSave,
-          location: `UAT item #${item.position}`,
-          decidedAt: now,
-          createdAt: now,
-        })
-        .returning()
-        .all();
-
-      createdFinding = newFinding!;
     }
   }
 
   const active = activeUatSessions.get(projectId);
   const activeSessionId = active ? active.sessionId : null;
 
-  const [mark] = deps.db
-    .insert(uatMarks)
-    .values({
-      itemId: item.id,
-      result,
-      note: noteToSave,
-      kind: kindToSave,
-      headSha: currentHeadSha,
-      sessionId: activeSessionId,
-      fixTaskId: createdTask?.id ?? null,
-      findingId: createdFinding?.id ?? null,
-      markedAt: now,
-    })
-    .returning()
-    .all();
+  return deps.db.transaction((tx) => {
+    let createdTask: typeof tasks.$inferSelect | undefined;
+    let createdFinding: typeof gateFindings.$inferSelect | undefined;
 
-  return {
-    mark: mark!,
-    ...(createdTask ? { task: createdTask } : {}),
-    ...(createdFinding ? { finding: createdFinding } : {}),
-  };
+    if (result === "fail") {
+      if (kindToSave === "bug") {
+        // Allocate next free FIX-<n> code in project
+        const existingTasks = tx
+          .select()
+          .from(tasks)
+          .where(eq(tasks.projectId, projectId))
+          .all();
+
+        const usedNums = new Set<number>();
+        for (const t of existingTasks) {
+          const m = /^FIX-(\d+)$/i.exec(t.code);
+          if (m && m[1]) {
+            usedNums.add(parseInt(m[1], 10));
+          }
+        }
+
+        let nextN = 1;
+        while (usedNums.has(nextN)) {
+          nextN++;
+        }
+        const taskCode = `FIX-${nextN}`;
+
+        const rawTitle = `Fix: ${item.text}`;
+        const taskTitle = rawTitle.length > 120 ? rawTitle.slice(0, 120) : rawTitle;
+
+        const descLines = [
+          `UAT item failed: ${item.text}`,
+          `Item ID: ${item.id}`,
+          `Note: ${noteToSave}`,
+        ];
+        const taskDescription = redact(descLines.join("\n"));
+
+        const activeMilestone =
+          shaping.activeMilestoneCode ?? shaping.activeMilestoneVersion ?? "M1";
+
+        const [newTask] = tx
+          .insert(tasks)
+          .values({
+            projectId,
+            code: taskCode,
+            title: taskTitle,
+            tag: "claude",
+            description: taskDescription,
+            checkCommand,
+            milestoneCode: activeMilestone,
+            status: "queued",
+            frozenAt: now,
+            createdAt: now,
+          })
+          .returning()
+          .all();
+
+        createdTask = newTask!;
+      } else {
+        // kindToSave === "change"
+        const fingerprint = `uat:item:${item.id}:${Date.now()}`;
+        const [newFinding] = tx
+          .insert(gateFindings)
+          .values({
+            projectId,
+            releaseVersion,
+            check: "uat",
+            fingerprint,
+            severity: "moderate",
+            blocking: true,
+            state: "open",
+            outcome: "change-request",
+            title: item.text,
+            detail: noteToSave,
+            location: `UAT item #${item.position}`,
+            decidedAt: now,
+            createdAt: now,
+          })
+          .returning()
+          .all();
+
+        createdFinding = newFinding!;
+      }
+    }
+
+    const [mark] = tx
+      .insert(uatMarks)
+      .values({
+        itemId: item.id,
+        result,
+        note: noteToSave,
+        kind: kindToSave,
+        headSha: currentHeadSha,
+        sessionId: activeSessionId,
+        fixTaskId: createdTask?.id ?? null,
+        findingId: createdFinding?.id ?? null,
+        markedAt: now,
+      })
+      .returning()
+      .all();
+
+    if (result === "pass") {
+      promoteDraftScriptInTx(tx, projectId, item.id, now);
+    }
+
+    return {
+      mark: mark!,
+      ...(createdTask ? { task: createdTask } : {}),
+      ...(createdFinding ? { finding: createdFinding } : {}),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1317,11 +1464,20 @@ export async function getUatState(
   }
 
   if (!releaseVersion) {
+    const scriptsAndReplay = await getUatScriptsAndReplayState(
+      deps,
+      project,
+      null,
+      null,
+    );
     return {
       items: [],
       session,
       config,
       recordings: [],
+      scripts: scriptsAndReplay.scripts,
+      replay: scriptsAndReplay.replay,
+      recording: scriptsAndReplay.recording,
       gateLine: { status: "fail", detail: "No active release milestone" },
     };
   }
@@ -1493,6 +1649,13 @@ export async function getUatState(
     };
   });
 
+  const scriptsAndReplay = await getUatScriptsAndReplayState(
+    deps,
+    project,
+    releaseVersion,
+    shaping?.activeMilestoneBranch ?? null,
+  );
+
   // Open UAT findings
   const openUatFindings = releaseFindings.filter(
     (f) => f.check === "uat" && f.state === "open",
@@ -1502,13 +1665,18 @@ export async function getUatState(
   const hasItems = enrichedItems.length > 0;
   const allPassed = hasItems && enrichedItems.every((i) => i.status === "pass");
   const noOpenFindings = openUatFindings.length === 0;
-  const gatePass = (!hasItems || allPassed) && noOpenFindings && !blockedReason;
+  const replayPass = scriptsAndReplay.replay.passOnCurrentHead;
+  const gatePass = (!hasItems || allPassed) && noOpenFindings && replayPass && !blockedReason;
 
   let gateDetail: string;
   if (blockedReason) {
     gateDetail = blockedReason;
   } else if (!noOpenFindings) {
-    gateDetail = `${openUatFindings.length} open UAT change request(s)`;
+    gateDetail = `${openUatFindings.length} open UAT finding(s)`;
+  } else if (!replayPass) {
+    gateDetail =
+      scriptsAndReplay.replay.gateDetail ??
+      "Earlier-release UAT script replay did not pass";
   } else if (!hasItems) {
     gateDetail = "No UAT items";
   } else if (allPassed) {
@@ -1603,6 +1771,9 @@ export async function getUatState(
     session,
     config,
     recordings,
+    scripts: scriptsAndReplay.scripts,
+    replay: scriptsAndReplay.replay,
+    recording: scriptsAndReplay.recording,
     gateLine: {
       status: gatePass ? "pass" : "fail",
       detail: gateDetail,
@@ -1658,12 +1829,14 @@ export function resolveUatRecordingPath(
   const relPath = nameParts.join("/");
 
   // Allowed filename patterns per brief:
-  // (trace.zip, video/*.webm, screenshots/*.png)
+  // (trace.zip, video/*.webm, screenshots/*.png, replay.../*/trace.zip)
   const isTrace = relPath === "trace.zip";
   const isVideo = /^video\/[A-Za-z0-9_.-]+\.webm$/.test(relPath);
   const isScreenshot = /^screenshots\/[A-Za-z0-9_.-]+\.png$/.test(relPath);
+  const isReplayTrace =
+    /^replay(?:-[A-Za-z0-9-]+)?(?:\/[A-Za-z0-9_.-]+)+\/trace\.zip$/.test(relPath);
 
-  if (!isTrace && !isVideo && !isScreenshot) {
+  if (!isTrace && !isVideo && !isScreenshot && !isReplayTrace) {
     throw new UatError("File requested is not an allowed UAT recording file.", 400);
   }
 
@@ -1679,9 +1852,9 @@ export function resolveUatRecordingPath(
     throw new UatError("Session recordings folder not found.", 404);
   }
 
-  // Realpath parent folders (e.g. video/, screenshots/) so a symlinked folder is refused
-  if (nameParts.length > 1) {
-    const parentDir = join(sessionFolder, ...nameParts.slice(0, -1));
+  // Realpath every intermediate parent folder so a symlinked folder anywhere in the path is refused
+  for (let i = 1; i < nameParts.length; i++) {
+    const parentDir = join(sessionFolder, ...nameParts.slice(0, i));
     if (!existsSync(parentDir)) {
       throw new UatError("Recording file not found.", 404);
     }
@@ -1725,7 +1898,7 @@ export function resolveUatRecordingPath(
   let contentType = "application/octet-stream";
   let attachment = false;
 
-  if (isTrace) {
+  if (isTrace || isReplayTrace) {
     contentType = "application/zip";
     attachment = true;
   } else if (isVideo) {
